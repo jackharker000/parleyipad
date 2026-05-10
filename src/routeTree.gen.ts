@@ -10,12 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as FacebookRouteImport } from './routes/facebook'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ConversationNewRouteImport } from './routes/conversation.new'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FacebookRoute = FacebookRouteImport.update({
+  id: '/facebook',
+  path: '/facebook',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -31,30 +37,34 @@ const ConversationNewRoute = ConversationNewRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/facebook': typeof FacebookRoute
   '/settings': typeof SettingsRoute
   '/conversation/new': typeof ConversationNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/facebook': typeof FacebookRoute
   '/settings': typeof SettingsRoute
   '/conversation/new': typeof ConversationNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/facebook': typeof FacebookRoute
   '/settings': typeof SettingsRoute
   '/conversation/new': typeof ConversationNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/settings' | '/conversation/new'
+  fullPaths: '/' | '/facebook' | '/settings' | '/conversation/new'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/settings' | '/conversation/new'
-  id: '__root__' | '/' | '/settings' | '/conversation/new'
+  to: '/' | '/facebook' | '/settings' | '/conversation/new'
+  id: '__root__' | '/' | '/facebook' | '/settings' | '/conversation/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  FacebookRoute: typeof FacebookRoute
   SettingsRoute: typeof SettingsRoute
   ConversationNewRoute: typeof ConversationNewRoute
 }
@@ -66,6 +76,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/facebook': {
+      id: '/facebook'
+      path: '/facebook'
+      fullPath: '/facebook'
+      preLoaderRoute: typeof FacebookRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -87,9 +104,20 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  FacebookRoute: FacebookRoute,
   SettingsRoute: SettingsRoute,
   ConversationNewRoute: ConversationNewRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
