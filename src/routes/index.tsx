@@ -52,6 +52,10 @@ export const Route = createFileRoute("/")({
 
 type Suggestion = { text: string; category: string; why?: string };
 
+// Synthetic speaker label used for things James speaks via TTS, so they get
+// recorded into the transcript and folded into future suggestion prompts.
+const JAMES_SELF_LABEL = "__james_self__";
+
 const QUICK_PHRASES = [
   "Yes",
   "No",
@@ -508,6 +512,20 @@ function Home() {
         const r = await ttsFn({ data: { text, voiceId } });
         const audio = new Audio(`data:${r.mime};base64,${r.audioBase64}`);
         await audio.play();
+        // Record James's spoken line as a transcript segment so the next
+        // suggestion refresh sees it as part of the conversation.
+        if (conversationIdRef.current) {
+          const selfLabel = jamesLabelRef.current ?? JAMES_SELF_LABEL;
+          const seg: TranscriptSegment = {
+            id: newId(),
+            conversation_id: conversationIdRef.current,
+            speaker_label: selfLabel,
+            text,
+            ts: Date.now(),
+          };
+          setCommitted((prev) => [...prev, seg]);
+          await db.transcript_segments.add(seg);
+        }
         if (meta?.suggestion && conversationIdRef.current) {
           const logs = await db.suggestions_log
             .where("conversation_id")
