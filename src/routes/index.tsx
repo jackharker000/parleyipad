@@ -1018,11 +1018,99 @@ function Home() {
               )}
             </div>
             <div className="border-t border-border px-5 py-3">
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 gap-2"
+                  onClick={() => {
+                    setNewPersonName("");
+                    setNewPersonRel("");
+                    setAddingPerson(true);
+                  }}
+                >
+                  <Plus className="size-4" /> Add new person
+                </Button>
+                <Button
+                  className="flex-1"
+                  onClick={() => setShowPeoplePicker(false)}
+                >
+                  Done
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Add new person mini-modal */}
+      {addingPerson && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setAddingPerson(false)}
+        >
+          <Card
+            className="w-full max-w-md p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+              <Plus className="size-5" /> Add new person
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium">Name</label>
+                <input
+                  autoFocus
+                  value={newPersonName}
+                  onChange={(e) => setNewPersonName(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-base"
+                  placeholder="e.g. Sarah"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  Relationship (optional)
+                </label>
+                <input
+                  value={newPersonRel}
+                  onChange={(e) => setNewPersonRel(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-base"
+                  placeholder="e.g. care worker, friend"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
               <Button
-                className="w-full"
-                onClick={() => setShowPeoplePicker(false)}
+                variant="ghost"
+                onClick={() => setAddingPerson(false)}
               >
-                Done
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  const name = newPersonName.trim();
+                  if (!name) {
+                    toast.error("Name is required");
+                    return;
+                  }
+                  const p: Person = {
+                    id: newId(),
+                    name,
+                    relationship: newPersonRel.trim() || undefined,
+                    interests: [],
+                    notes: "",
+                    style_notes: "",
+                    created_at: Date.now(),
+                  };
+                  await db.people.put(p);
+                  setAllPeople((cur) =>
+                    [...cur, p].sort((a, b) => a.name.localeCompare(b.name)),
+                  );
+                  setSelectedPersonIds((cur) => [...cur, p.id]);
+                  setAddingPerson(false);
+                  toast.success(`Added ${p.name}`);
+                }}
+              >
+                Add
               </Button>
             </div>
           </Card>
