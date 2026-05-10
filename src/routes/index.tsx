@@ -37,6 +37,7 @@ import {
   generateSuggestions,
   summarizeConversation,
   synthesizeSpeech,
+  expandUtterance,
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { autoMapSpeakers, labelTranscriptForPrompt } from "@/lib/speaker-id";
@@ -143,6 +144,11 @@ function Home() {
   // Speech
   const [draft, setDraft] = useState("");
   const [speaking, setSpeaking] = useState(false);
+  const [expanding, setExpanding] = useState(false);
+  const [lastExpansion, setLastExpansion] = useState<{
+    raw: string;
+    expanded: string;
+  } | null>(null);
   const [voiceId, setVoiceId] = useState<string>("EXAVITQu4vr4xnSDxMaL");
 
   // Speaker map
@@ -165,6 +171,7 @@ function Home() {
   const ttsFn = useServerFn(synthesizeSpeech);
   const suggestFn = useServerFn(generateSuggestions);
   const summarizeFn = useServerFn(summarizeConversation);
+  const expandFn = useServerFn(expandUtterance);
 
   const scribe = useScribe({
     modelId: "scribe_v2_realtime",
@@ -529,6 +536,47 @@ function Home() {
     [allPeople, selectedPersonIds],
   );
 
+  // Expand James's truncated typing via LLM, then speak the expanded version
+  const expandAndSpeak = useCallback(async () => {
+    const raw = draft.trim();
+    if (!raw || expanding || speaking) return;
+    setExpanding(true);
+    try {
+      const peopleById = new Map(allPeople.map((p) => [p.id, p] as const));
+      const rawRecent = committed.slice(-12).map((s) => ({
+        speaker: s.speaker_label,
+        text: s.text,
+      }));
+      const recent = labelTranscriptForPrompt(
+        rawRecent,
+        speakerMapRef.current,
+        peopleById,
+        jamesLabelRef.current,
+      );
+      const ctx = await buildConversationContext({
+        personIds: personIdsRef.current,
+        place: placeRef.current,
+      });
+      const r = await expandFn({
+        data: {
+          rawText: raw,
+          recentTranscript: recent,
+          jamesProfile: ctx.jamesProfile,
+          people: ctx.people,
+          place: ctx.place,
+        },
+      });
+      const spoken = (r.expanded || raw).trim();
+      setLastExpansion({ raw, expanded: spoken });
+      setDraft("");
+      await speak(spoken);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Could not expand text");
+    } finally {
+      setExpanding(false);
+    }
+  }, [draft, expanding, speaking, expandFn, allPeople, committed, speak]);
+
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       {/* Top control bar — always visible, designed for landscape iPad */}
@@ -564,27 +612,55 @@ function Home() {
         </div>
 
         {/* Text entry — fills remaining width so it stays visible above the on-screen keyboard */}
-        <div className="flex flex-1 items-end gap-2">
-          <Textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Type something to say…"
-            className="h-[120px] min-h-[120px] flex-1 resize-none text-base"
-          />
-          <Button
-            size="lg"
-            className="h-[120px] gap-2 rounded-2xl px-5"
-            onClick={() => {
-              const t = draft.trim();
-              if (!t) return;
-              speak(t);
-              setDraft("");
-            }}
-            disabled={speaking || !draft.trim()}
-          >
-            <Volume2 className="size-5" />
-            <span className="hidden sm:inline">Speak</span>
-          </Button>
+        <div className="flex flex-1 flex-col gap-1">
+          {lastExpansion && (
+            <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs">
+              <Sparkles className="mt-0.5 size-3 shrink-0 text-primary" />
+              <div className="flex-1 leading-snug">
+                <span className="text-muted-foreground">Spoke: </span>
+                <span className="font-medium">{lastExpansion.expanded}</span>
+                <span className="ml-2 text-muted-foreground">
+                  (typed: “{lastExpansion.raw}”)
+                </span>
+              </div>
+              <button
+                onClick={() => setLastExpansion(null)}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Dismiss"
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          )}
+          <div className="flex flex-1 items-end gap-2">
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  expandAndSpeak();
+                }
+              }}
+              placeholder="Type roughly — AI will clarify and speak it…"
+              className="h-[120px] min-h-[120px] flex-1 resize-none text-base"
+            />
+            <Button
+              size="lg"
+              className="h-[120px] gap-2 rounded-2xl px-5"
+              onClick={expandAndSpeak}
+              disabled={speaking || expanding || !draft.trim()}
+            >
+              {expanding ? (
+                <Sparkles className="size-5 animate-pulse" />
+              ) : (
+                <Volume2 className="size-5" />
+              )}
+              <span className="hidden sm:inline">
+                {expanding ? "Clarifying…" : "Speak"}
+              </span>
+            </Button>
+          </div>
         </div>
 
         {/* Settings link top-right */}

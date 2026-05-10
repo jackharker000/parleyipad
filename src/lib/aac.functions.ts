@@ -488,3 +488,71 @@ export const summarizeConversation = createServerFn({ method: "POST" })
       };
     }
   });
+
+/* ----------------------- AI: expand James's typing ------------------------- */
+
+const expandSchema = z.object({
+  rawText: z.string().min(1).max(2000),
+  recentTranscript: z
+    .array(z.object({ speaker: z.string(), text: z.string() }))
+    .max(40)
+    .optional(),
+  jamesProfile: jamesProfileSchema.optional(),
+  people: z.array(personCtxSchema).optional(),
+  place: placeCtxSchema.optional(),
+});
+
+export const expandUtterance = createServerFn({ method: "POST" })
+  .inputValidator((d) => expandSchema.parse(d))
+  .handler(async ({ data }) => {
+    const apiKey = requireLovableApiKey();
+
+    const transcriptText = (data.recentTranscript ?? [])
+      .slice(-12)
+      .map((s) => `${s.speaker}: ${s.text}`)
+      .join("\n");
+
+    const jp = data.jamesProfile;
+    const profileBlock = jp
+      ? `About ${jp.name}: ${jp.background ?? ""}\nCommunication style: ${jp.communication ?? ""}\nPersonality: ${jp.personality ?? ""}\nHumor: ${jp.humor ?? ""}\n`
+      : "";
+    const peopleBlock = data.people?.length
+      ? `People present: ${data.people.map((p) => `${p.name}${p.relationship ? ` (${p.relationship})` : ""}`).join(", ")}\n`
+      : "";
+    const placeBlock = data.place ? `Location: ${data.place.name}\n` : "";
+
+    const system = `You are an AAC writing assistant for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy whose typing is heavily truncated and full of typos. Your job: take his raw typed input and rewrite it as ONE clear, natural spoken sentence (or two short sentences max) in HIS voice, appropriate as the next reply in the live conversation. Preserve his intent exactly — never add facts, opinions, or details he did not type. Fix spelling, expand abbreviations, add small connector words. Keep it concise, conversational, and under 25 words. Output ONLY the final sentence to be spoken aloud, with no quotes, no preface, no explanation.`;
+
+    const user = `${profileBlock}${peopleBlock}${placeBlock}
+Recent conversation:
+${transcriptText || "(just starting)"}
+
+James typed: "${data.rawText}"
+
+Rewrite as the spoken reply:`;
+
+    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("Expand failed:", res.status, err);
+      return { expanded: data.rawText, error: `AI error ${res.status}` };
+    }
+    const json = (await res.json()) as any;
+    const text = (json.choices?.[0]?.message?.content ?? "").trim();
+    const cleaned = text.replace(/^["'`]+|["'`]+$/g, "").trim();
+    return { expanded: cleaned || data.rawText, error: null };
+  });
