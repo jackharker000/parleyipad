@@ -115,14 +115,46 @@ export const listVoices = createServerFn({ method: "GET" }).handler(
 
 /* ----------------------------- AI: suggestions ----------------------------- */
 
+const personCtxSchema = z.object({
+  name: z.string(),
+  relationship: z.string().optional(),
+  interests: z.array(z.string()).optional(),
+  notes: z.string().optional(),
+  style_notes: z.string().optional(),
+  recentMemories: z.array(z.string()).optional(),
+  followUps: z.array(z.string()).optional(),
+});
+
+const placeCtxSchema = z.object({
+  name: z.string(),
+  notes: z.string().optional(),
+  recentMemories: z.array(z.string()).optional(),
+  followUps: z.array(z.string()).optional(),
+});
+
+const jamesProfileSchema = z.object({
+  name: z.string(),
+  background: z.string().optional(),
+  personality: z.string().optional(),
+  humor: z.string().optional(),
+  communication: z.string().optional(),
+  topicsLoved: z.string().optional(),
+  topicsAvoided: z.string().optional(),
+  signaturePhrases: z.array(z.string()).optional(),
+  currentLifeContext: z.string().optional(),
+  freeform: z.string().optional(),
+});
+
 const suggestionsSchema = z.object({
   recentTranscript: z
     .array(z.object({ speaker: z.string(), text: z.string() }))
     .max(40),
-  speakerContext: z.string().optional(),
-  placeContext: z.string().optional(),
-  styleHints: z.string().optional(),
+  jamesProfile: jamesProfileSchema.optional(),
+  people: z.array(personCtxSchema).optional(),
+  place: placeCtxSchema.optional(),
+  styleProfileJson: z.string().optional(),
   alreadyShown: z.array(z.string()).max(40).optional(),
+  model: z.string().optional(),
 });
 
 const SUGGESTION_CATEGORIES = [
@@ -146,13 +178,44 @@ export const generateSuggestions = createServerFn({ method: "POST" })
       .map((s) => `${s.speaker}: ${s.text}`)
       .join("\n");
 
-    const system = `You are an AAC (Augmentative and Alternative Communication) copilot for James, a non-speaking user. Generate 6 short, natural reply options he could tap to speak aloud. Match HIS voice: concise, warm, conversational. Mix categories. Avoid repeating any text in "alreadyShown". Each suggestion under 14 words.`;
+    const jp = data.jamesProfile;
+    const profileBlock = jp
+      ? `# About ${jp.name} (the AAC user you are speaking AS)
+${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics he loves: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics he avoids: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use his actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes: ${jp.freeform}\n` : ""}`
+      : "";
 
-    const user = `Conversation so far:
+    const peopleBlock = data.people?.length
+      ? `# People in this conversation
+${data.people
+          .map(
+            (p) =>
+              `## ${p.name}${p.relationship ? ` (${p.relationship})` : ""}
+${p.interests?.length ? `Interests: ${p.interests.join(", ")}\n` : ""}${p.notes ? `Notes: ${p.notes}\n` : ""}${p.style_notes ? `How James talks with them: ${p.style_notes}\n` : ""}${p.recentMemories?.length ? `Recent memories with them:\n- ${p.recentMemories.join("\n- ")}\n` : ""}${p.followUps?.length ? `Open follow-ups to bring up:\n- ${p.followUps.join("\n- ")}\n` : ""}`,
+          )
+          .join("\n")}`
+      : "";
+
+    const placeBlock = data.place
+      ? `# Location
+${data.place.name}${data.place.notes ? ` — ${data.place.notes}` : ""}
+${data.place.recentMemories?.length ? `Recent memories here:\n- ${data.place.recentMemories.join("\n- ")}\n` : ""}${data.place.followUps?.length ? `Open follow-ups for here:\n- ${data.place.followUps.join("\n- ")}\n` : ""}`
+      : "";
+
+    const styleBlock = data.styleProfileJson
+      ? `# Learned style profile (JSON)\n${data.styleProfileJson}\n`
+      : "";
+
+    const system = `You are an AAC (Augmentative and Alternative Communication) copilot. You generate reply options for ${jp?.name ?? "James"}, a non-speaking user, to TAP and speak aloud in real time. Suggestions must sound like HIM — not generic. Use his personality, humor, signature phrases, and shared history with the people present. Mix categories: direct answers, questions back, follow-ups about past topics, planned points, light humor when appropriate, "give me a moment" stalls. Avoid repeating any text in "alreadyShown". Each suggestion must be under 16 words and feel natural to say out loud. Prefer concrete references over generic small talk when memories or follow-ups are available.`;
+
+    const user = `${profileBlock}
+${peopleBlock}
+${placeBlock}
+${styleBlock}
+# Live conversation so far
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
-${data.speakerContext ? `Speaker context: ${data.speakerContext}\n` : ""}${data.placeContext ? `Location context: ${data.placeContext}\n` : ""}${data.styleHints ? `James's style: ${data.styleHints}\n` : ""}${data.alreadyShown?.length ? `Already shown (don't repeat): ${data.alreadyShown.join(" | ")}\n` : ""}
-Return 6 ranked suggestions.`;
+${data.alreadyShown?.length ? `# Already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
+Return 6 ranked suggestions in James's voice.`;
 
     const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
@@ -161,7 +224,7 @@ Return 6 ranked suggestions.`;
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: data.model ?? "google/gemini-2.5-pro",
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },

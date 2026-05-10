@@ -12,6 +12,8 @@ import {
   Square,
   Volume2,
   Sparkles,
+  Users,
+  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -21,6 +23,8 @@ import {
   getSettings,
   newId,
   type Conversation,
+  type Person,
+  type Place,
   type TranscriptSegment,
 } from "@/lib/db";
 import { findNearestPlace, getCurrentPosition } from "@/lib/geo";
@@ -30,6 +34,7 @@ import {
   summarizeConversation,
   synthesizeSpeech,
 } from "@/lib/aac.functions";
+import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 
 export const Route = createFileRoute("/conversation/new")({
   component: LiveConversation,
@@ -65,13 +70,48 @@ function categoryClass(cat: string): string {
   }
 }
 
+function PersonChip({
+  person,
+  selected,
+  onToggle,
+}: {
+  person: Person;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className={`flex items-center gap-2 rounded-full border-2 px-4 py-2 text-base transition-colors ${
+        selected
+          ? "border-primary bg-primary/10 text-foreground"
+          : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary"
+      }`}
+    >
+      {selected && <Check className="size-4" />}
+      <span className="font-medium">{person.name}</span>
+      {person.relationship && (
+        <span className="text-xs opacity-70">{person.relationship}</span>
+      )}
+    </button>
+  );
+}
+
 function LiveConversation() {
   const router = useRouter();
   const conversationIdRef = useRef<string>(newId());
   const startedAtRef = useRef<number>(Date.now());
   const [placeName, setPlaceName] = useState<string | null>(null);
   const placeIdRef = useRef<string | undefined>(undefined);
+  const placeRef = useRef<Place | undefined>(undefined);
   const gpsRef = useRef<{ lat: number; lng: number } | null>(null);
+
+  // People picker state
+  const [showPicker, setShowPicker] = useState(true);
+  const [allPeople, setAllPeople] = useState<Person[]>([]);
+  const [suggestedPeople, setSuggestedPeople] = useState<Person[]>([]);
+  const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
+  const personIdsRef = useRef<string[]>([]);
 
   const [committed, setCommitted] = useState<TranscriptSegment[]>([]);
   const [partial, setPartial] = useState("");
@@ -126,6 +166,9 @@ function LiveConversation() {
       };
       await db.conversations.add(conv);
 
+      const people = await db.people.orderBy("name").toArray();
+      if (!cancelled) setAllPeople(people);
+
       if (s.gps_enabled) {
         try {
           const pos = await getCurrentPosition();
@@ -137,7 +180,13 @@ function LiveConversation() {
           const match = await findNearestPlace(pos.coords.latitude, pos.coords.longitude);
           if (match) {
             placeIdRef.current = match.place.id;
+            placeRef.current = match.place;
             setPlaceName(match.place.name);
+            const usual = await suggestPeopleAtPlace(match.place.id);
+            if (!cancelled) {
+              setSuggestedPeople(usual);
+              setSelectedPersonIds(usual.map((p) => p.id));
+            }
           }
           await db.conversations.update(conversationIdRef.current, {
             gps_lat: pos.coords.latitude,
@@ -154,7 +203,6 @@ function LiveConversation() {
     };
   }, []);
 
-  // Start mic on mount
   const handleStartMic = useCallback(async () => {
     try {
       const { token } = await tokenFn();
@@ -167,7 +215,9 @@ function LiveConversation() {
     }
   }, [scribe, tokenFn]);
 
+  // Start mic only AFTER picker is dismissed
   useEffect(() => {
+    if (showPicker) return;
     handleStartMic();
     return () => {
       try {
@@ -175,7 +225,15 @@ function LiveConversation() {
       } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [showPicker]);
+
+  async function confirmPicker() {
+    personIdsRef.current = selectedPersonIds;
+    await db.conversations.update(conversationIdRef.current, {
+      person_ids: selectedPersonIds,
+    });
+    setShowPicker(false);
+  }
 
   // Suggestion refresh loop
   const refreshSuggestions = useCallback(async () => {
@@ -186,10 +244,17 @@ function LiveConversation() {
         speaker: s.speaker_label,
         text: s.text,
       }));
+      const ctx = await buildConversationContext({
+        personIds: personIdsRef.current,
+        place: placeRef.current,
+      });
       const r = await suggestFn({
         data: {
           recentTranscript: recent,
-          placeContext: placeName ?? undefined,
+          jamesProfile: ctx.jamesProfile,
+          people: ctx.people,
+          place: ctx.place,
+          styleProfileJson: ctx.styleProfileJson,
           alreadyShown: lastShownRef.current.slice(-20),
         },
       });
@@ -300,11 +365,18 @@ function LiveConversation() {
         return;
       }
 
+      const peopleNames = (
+        await db.people.bulkGet(personIdsRef.current)
+      )
+        .filter((p): p is Person => !!p)
+        .map((p) => p.name);
+
       toast.loading("Saving summary…", { id: "sum" });
       const r = await summarizeFn({
         data: {
           transcript,
           placeName: placeName ?? undefined,
+          peopleNames,
         },
       });
 
@@ -314,11 +386,13 @@ function LiveConversation() {
       });
 
       if (r.memories?.length) {
+        const primaryPersonId = personIdsRef.current[0];
         await db.memories.bulkAdd(
           r.memories.map((m: { text: string; kind: "fact" | "preference" | "event" | "todo" }) => ({
             id: newId(),
             conversation_id: conversationIdRef.current,
             place_id: placeIdRef.current,
+            person_id: primaryPersonId,
             text: m.text,
             kind: m.kind,
             status: "auto" as const,
@@ -327,10 +401,12 @@ function LiveConversation() {
         );
       }
       if (r.followUps?.length) {
+        const primaryPersonId = personIdsRef.current[0];
         await db.follow_ups.bulkAdd(
           r.followUps.map((t: string) => ({
             id: newId(),
             for_place_id: placeIdRef.current,
+            for_person_id: primaryPersonId,
             text: t,
             created_at: Date.now(),
             used: false,
@@ -352,6 +428,107 @@ function LiveConversation() {
     () => [...committed].slice(-8),
     [committed],
   );
+
+  // Render picker overlay before conversation begins
+  if (showPicker) {
+    return (
+      <main className="flex min-h-screen flex-col bg-background text-foreground">
+        <header className="flex items-center justify-between border-b border-border bg-card px-5 py-3">
+          <button
+            onClick={() => router.navigate({ to: "/" })}
+            className="flex items-center gap-2 rounded-full px-3 py-2 text-sm hover:bg-secondary"
+          >
+            <ArrowLeft className="size-5" /> Cancel
+          </button>
+          {placeName && (
+            <span className="flex items-center gap-1 text-sm text-muted-foreground">
+              <MapPin className="size-4" /> {placeName}
+            </span>
+          )}
+        </header>
+        <section className="flex-1 overflow-y-auto px-5 py-6">
+          <div className="mx-auto max-w-3xl">
+            <h2 className="flex items-center gap-2 text-2xl font-semibold">
+              <Users className="size-6" /> Who's in this conversation?
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Tap people to include their context in suggestions. You can skip if you're not sure.
+            </p>
+
+            {suggestedPeople.length > 0 && (
+              <div className="mt-6">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Usually here
+                </h3>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {suggestedPeople.map((p) => (
+                    <PersonChip
+                      key={p.id}
+                      person={p}
+                      selected={selectedPersonIds.includes(p.id)}
+                      onToggle={() =>
+                        setSelectedPersonIds((cur) =>
+                          cur.includes(p.id)
+                            ? cur.filter((x) => x !== p.id)
+                            : [...cur, p.id],
+                        )
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                All people
+              </h3>
+              {allPeople.length === 0 ? (
+                <p className="mt-2 text-sm italic text-muted-foreground">
+                  No people added yet. Add them in Settings to personalize suggestions.
+                </p>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {allPeople
+                    .filter(
+                      (p) => !suggestedPeople.find((s) => s.id === p.id),
+                    )
+                    .map((p) => (
+                      <PersonChip
+                        key={p.id}
+                        person={p}
+                        selected={selectedPersonIds.includes(p.id)}
+                        onToggle={() =>
+                          setSelectedPersonIds((cur) =>
+                            cur.includes(p.id)
+                              ? cur.filter((x) => x !== p.id)
+                              : [...cur, p.id],
+                          )
+                        }
+                      />
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+        <footer className="border-t border-border bg-card px-5 py-4">
+          <div className="mx-auto flex max-w-3xl gap-2">
+            <Button
+              variant="secondary"
+              className="h-12 flex-1"
+              onClick={confirmPicker}
+            >
+              Skip
+            </Button>
+            <Button className="h-12 flex-[2] gap-2" onClick={confirmPicker}>
+              <Mic className="size-5" /> Start conversation
+            </Button>
+          </div>
+        </footer>
+      </main>
+    );
+  }
 
   return (
     <main className="flex min-h-screen flex-col bg-background text-foreground">

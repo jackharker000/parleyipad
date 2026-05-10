@@ -101,6 +101,24 @@ export type StyleProfile = {
   json: string;
 };
 
+export type JamesProfile = {
+  id: "singleton";
+  // Structured fields
+  display_name: string;
+  age?: string;
+  background?: string; // family, career, where grew up
+  personality?: string; // dry wit, warm, etc.
+  humor_style?: string;
+  communication_style?: string; // short sentences, prefers questions, etc.
+  topics_loved?: string;
+  topics_avoided?: string;
+  signature_phrases?: string; // newline separated
+  current_life_context?: string; // recent events, what's on his mind
+  // Freeform
+  freeform_notes?: string; // anything else
+  updated_at: number;
+};
+
 class AacDb extends Dexie {
   people!: Table<Person, string>;
   places!: Table<Place, string>;
@@ -112,6 +130,7 @@ class AacDb extends Dexie {
   follow_ups!: Table<FollowUp, string>;
   settings!: Table<Settings, string>;
   style_profile!: Table<StyleProfile, string>;
+  james_profile!: Table<JamesProfile, string>;
 
   constructor() {
     super("aac_copilot");
@@ -126,6 +145,9 @@ class AacDb extends Dexie {
       follow_ups: "id, for_person_id, for_place_id, used, created_at",
       settings: "id",
       style_profile: "id",
+    });
+    this.version(2).stores({
+      james_profile: "id",
     });
   }
 }
@@ -153,5 +175,25 @@ export async function updateSettings(patch: Partial<Settings>) {
   const cur = await getSettings();
   const next = { ...cur, ...patch, id: "singleton" as const };
   await db.settings.put(next);
+  return next;
+}
+
+export const DEFAULT_JAMES_PROFILE: JamesProfile = {
+  id: "singleton",
+  display_name: "James",
+  updated_at: 0,
+};
+
+export async function getJamesProfile(): Promise<JamesProfile> {
+  const existing = await db.james_profile.get("singleton");
+  if (existing) return existing;
+  await db.james_profile.put(DEFAULT_JAMES_PROFILE);
+  return DEFAULT_JAMES_PROFILE;
+}
+
+export async function updateJamesProfile(patch: Partial<JamesProfile>) {
+  const cur = await getJamesProfile();
+  const next = { ...cur, ...patch, id: "singleton" as const, updated_at: Date.now() };
+  await db.james_profile.put(next);
   return next;
 }
