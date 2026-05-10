@@ -41,6 +41,7 @@ import {
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { autoMapSpeakers, labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { autoCreateIntroducedPeople } from "@/lib/auto-person";
+import { seedJamesIfNeeded } from "@/lib/seed";
 
 export const Route = createFileRoute("/")({
   component: Home,
@@ -152,6 +153,9 @@ function Home() {
   useEffect(() => {
     speakerMapRef.current = speakerMap;
   }, [speakerMap]);
+  useEffect(() => {
+    seedJamesIfNeeded();
+  }, []);
   useEffect(() => {
     jamesLabelRef.current = jamesLabel;
   }, [jamesLabel]);
