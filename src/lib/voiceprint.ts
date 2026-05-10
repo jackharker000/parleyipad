@@ -10,7 +10,7 @@
  * small set of known speakers in reasonably quiet conditions.
  */
 import Meyda from "meyda";
-import { db, MFCC_COEFFS, newId, type Voiceprint } from "./db";
+import { db, MFCC_COEFFS, type Voiceprint } from "./db";
 
 const FRAME = 512;
 const RMS_GATE = 0.012; // skip near-silent frames
@@ -218,6 +218,3 @@ export function bestMatch(
   if (best && best.sim >= threshold) return best;
   return null;
 }
-
-// Suppress lint about unused newId import elsewhere.
-export const _voiceprintIdHelper = () => newId();
