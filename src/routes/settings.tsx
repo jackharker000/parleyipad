@@ -47,6 +47,7 @@ import {
   type Place,
   IPAD_PRESETS,
   type IPadModel,
+  MODEL_OPTIONS,
 } from "@/lib/db";
 import {
   listVoices,
