@@ -40,6 +40,7 @@ import {
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { autoMapSpeakers, labelTranscriptForPrompt } from "@/lib/speaker-id";
+import { autoCreateIntroducedPeople } from "@/lib/auto-person";
 
 export const Route = createFileRoute("/")({
   component: Home,
@@ -359,25 +360,56 @@ function Home() {
   // Auto speaker mapping
   useEffect(() => {
     if (!active || committed.length === 0) return;
-    const candidates = allPeople.filter((p) =>
-      personIdsRef.current.includes(p.id),
-    );
-    if (candidates.length === 0) return;
-    const { mapping } = autoMapSpeakers({
-      segments: committed,
-      candidates,
-      current: speakerMapRef.current,
-      jamesSpeakerLabel: jamesLabelRef.current,
-    });
-    const changed = Object.keys(mapping).some(
-      (k) => mapping[k] !== speakerMapRef.current[k],
-    );
-    if (changed && conversationIdRef.current) {
-      setSpeakerMap(mapping);
-      db.conversations.update(conversationIdRef.current, {
-        speaker_map: mapping,
+    let cancelled = false;
+    (async () => {
+      // 1. Auto-create Person rows for anyone who introduces themselves
+      const created = await autoCreateIntroducedPeople(
+        committed,
+        allPeople,
+        { placeId: placeIdRef.current },
+      );
+      let working = allPeople;
+      if (created.length > 0 && !cancelled) {
+        working = [...allPeople, ...created];
+        setAllPeople(working);
+        // Add new arrivals to active conversation roster
+        const newIds = created.map((p) => p.id);
+        const merged = Array.from(
+          new Set([...personIdsRef.current, ...newIds]),
+        );
+        personIdsRef.current = merged;
+        setSelectedPersonIds(merged);
+        if (conversationIdRef.current) {
+          await db.conversations.update(conversationIdRef.current, {
+            person_ids: merged,
+          });
+        }
+        for (const p of created) toast.success(`Met ${p.name} — added to people`);
+      }
+
+      const candidates = working.filter((p) =>
+        personIdsRef.current.includes(p.id),
+      );
+      if (candidates.length === 0) return;
+      const { mapping } = autoMapSpeakers({
+        segments: committed,
+        candidates,
+        current: speakerMapRef.current,
+        jamesSpeakerLabel: jamesLabelRef.current,
       });
-    }
+      const changed = Object.keys(mapping).some(
+        (k) => mapping[k] !== speakerMapRef.current[k],
+      );
+      if (changed && conversationIdRef.current && !cancelled) {
+        setSpeakerMap(mapping);
+        db.conversations.update(conversationIdRef.current, {
+          speaker_map: mapping,
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [committed, allPeople, active]);
 
   // Auto-fetch suggestions
