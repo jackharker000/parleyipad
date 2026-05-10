@@ -17,7 +17,7 @@ import {
   Map as MapIcon,
   FileText,
   Upload,
-  Calendar,
+  Calendar as CalendarIcon,
   Check,
   Mic,
 } from "lucide-react";
