@@ -167,8 +167,30 @@ function SystemTab() {
 
   if (!settings) return <Card className="p-6">Loading…</Card>;
 
+  // Merge persisted custom voices + the currently selected voice into the
+  // dropdown so previously designed voices remain available across sessions.
+  const mergedVoices: Voice[] = (() => {
+    const seen = new Set<string>();
+    const out: Voice[] = [];
+    const push = (v?: Voice) => {
+      if (!v || seen.has(v.voice_id)) return;
+      seen.add(v.voice_id);
+      out.push(v);
+    };
+    for (const v of settings.custom_voices ?? []) push(v as Voice);
+    if (settings.voice_id && !seen.has(settings.voice_id)) {
+      push({
+        voice_id: settings.voice_id,
+        name: settings.voice_name || "Current voice",
+        labels: {},
+      });
+    }
+    for (const v of voices) push(v);
+    return out;
+  })();
+
   async function handleVoiceChange(voiceId: string) {
-    const v = voices.find((x) => x.voice_id === voiceId);
+    const v = mergedVoices.find((x) => x.voice_id === voiceId);
     if (!v) return;
     await updateSettings({ voice_id: v.voice_id, voice_name: v.name });
     toast.success(`Voice set to ${v.name}`);
@@ -211,11 +233,15 @@ function SystemTab() {
     toast.success("All data cleared");
   }
 
-  function addCustomVoice(v: Voice) {
+  async function addCustomVoice(v: Voice) {
     setVoices((cur) => {
       if (cur.some((x) => x.voice_id === v.voice_id)) return cur;
       return [v, ...cur];
     });
+    const existing = settings?.custom_voices ?? [];
+    if (!existing.some((x) => x.voice_id === v.voice_id)) {
+      await updateSettings({ custom_voices: [v, ...existing] });
+    }
   }
 
   return (
@@ -236,7 +262,7 @@ function SystemTab() {
               <SelectValue placeholder="Select a voice" />
             </SelectTrigger>
             <SelectContent>
-              {voices.map((v) => (
+              {mergedVoices.map((v) => (
                 <SelectItem key={v.voice_id} value={v.voice_id}>
                   {v.name}
                   {v.labels?.accent ? ` · ${v.labels.accent}` : ""}
