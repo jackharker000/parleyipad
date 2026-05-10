@@ -113,6 +113,87 @@ export const listVoices = createServerFn({ method: "GET" }).handler(
   },
 );
 
+/* --------------------- ElevenLabs: Voice Design (TTV) ---------------------- */
+
+const designSchema = z.object({
+  description: z.string().min(20).max(1000),
+  sampleText: z.string().min(100).max(1000).optional(),
+});
+
+const DEFAULT_SAMPLE_TEXT =
+  "Hello, it's good to see you again. I was just thinking about our last chat — how have things been with you this week? Take your time, I'm in no rush. There's a lot I want to catch up on, but let's start with whatever is on your mind first.";
+
+export const designVoicePreviews = createServerFn({ method: "POST" })
+  .inputValidator((d) => designSchema.parse(d))
+  .handler(async ({ data }) => {
+    const apiKey = requireElevenLabsApiKey();
+    const res = await fetch(
+      "https://api.elevenlabs.io/v1/text-to-voice/create-previews?output_format=mp3_44100_128",
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          voice_description: data.description,
+          text: data.sampleText ?? DEFAULT_SAMPLE_TEXT,
+        }),
+      },
+    );
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || `Voice design failed: ${res.status}`);
+    }
+    const json = (await res.json()) as {
+      previews: Array<{
+        audio_base_64: string;
+        generated_voice_id: string;
+        media_type?: string;
+      }>;
+    };
+    return {
+      previews: json.previews.map((p) => ({
+        generatedVoiceId: p.generated_voice_id,
+        audioBase64: p.audio_base_64,
+        mime: p.media_type ?? "audio/mpeg",
+      })),
+    };
+  });
+
+const saveDesignedSchema = z.object({
+  voiceName: z.string().min(1).max(100),
+  description: z.string().min(20).max(1000),
+  generatedVoiceId: z.string().min(1),
+});
+
+export const saveDesignedVoice = createServerFn({ method: "POST" })
+  .inputValidator((d) => saveDesignedSchema.parse(d))
+  .handler(async ({ data }) => {
+    const apiKey = requireElevenLabsApiKey();
+    const res = await fetch(
+      "https://api.elevenlabs.io/v1/text-to-voice/create-voice-from-preview",
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          voice_name: data.voiceName,
+          voice_description: data.description,
+          generated_voice_id: data.generatedVoiceId,
+        }),
+      },
+    );
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err || `Save voice failed: ${res.status}`);
+    }
+    const json = (await res.json()) as { voice_id: string; name: string };
+    return { voiceId: json.voice_id, name: json.name };
+  });
+
 /* ----------------------------- AI: suggestions ----------------------------- */
 
 const personCtxSchema = z.object({
