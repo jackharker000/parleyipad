@@ -1,8 +1,20 @@
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useServerFn } from "@tanstack/react-start";
-import { ArrowLeft, Volume2, Plus, Trash2, User } from "lucide-react";
+import {
+  ArrowLeft,
+  Volume2,
+  Plus,
+  Trash2,
+  User,
+  MapPin,
+  Users,
+  SlidersHorizontal,
+  Crosshair,
+  Search,
+  Sparkles,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -10,6 +22,12 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -26,8 +44,11 @@ import {
   newId,
   type JamesProfile,
   type Person,
+  type Place,
 } from "@/lib/db";
 import { listVoices, synthesizeSpeech } from "@/lib/aac.functions";
+import { getCurrentPosition } from "@/lib/geo";
+import { getPersonStats, groupMemories } from "@/lib/people-stats";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -37,6 +58,64 @@ type Voice = { voice_id: string; name: string; labels: Record<string, string> };
 
 function SettingsPage() {
   const router = useRouter();
+
+  return (
+    <main className="min-h-screen bg-background text-foreground">
+      <div className="mx-auto max-w-6xl px-6 py-6">
+        <header className="mb-6 flex items-center gap-3">
+          <button
+            onClick={() => router.history.back()}
+            className="rounded-full p-2 hover:bg-secondary"
+            aria-label="Back"
+          >
+            <ArrowLeft className="size-6" />
+          </button>
+          <h1 className="text-3xl font-semibold">Settings</h1>
+          <Link
+            to="/"
+            className="ml-auto text-sm text-muted-foreground underline"
+          >
+            Back to home
+          </Link>
+        </header>
+
+        <Tabs defaultValue="james">
+          <TabsList className="mb-4 h-12 w-full justify-start gap-1 bg-secondary/50">
+            <TabsTrigger value="james" className="h-10 gap-2 px-4 text-base">
+              <User className="size-4" /> About James
+            </TabsTrigger>
+            <TabsTrigger value="people" className="h-10 gap-2 px-4 text-base">
+              <Users className="size-4" /> People
+            </TabsTrigger>
+            <TabsTrigger value="places" className="h-10 gap-2 px-4 text-base">
+              <MapPin className="size-4" /> Locations
+            </TabsTrigger>
+            <TabsTrigger value="system" className="h-10 gap-2 px-4 text-base">
+              <SlidersHorizontal className="size-4" /> System
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="james">
+            <JamesProfileCard />
+          </TabsContent>
+          <TabsContent value="people">
+            <PeopleTab />
+          </TabsContent>
+          <TabsContent value="places">
+            <PlacesTab />
+          </TabsContent>
+          <TabsContent value="system">
+            <SystemTab />
+          </TabsContent>
+        </Tabs>
+      </div>
+    </main>
+  );
+}
+
+/* -------------------------------- System Tab ------------------------------ */
+
+function SystemTab() {
   const settings = useLiveQuery(() => getSettings(), []);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [loadingVoices, setLoadingVoices] = useState(true);
@@ -51,11 +130,7 @@ function SettingsPage() {
       .finally(() => setLoadingVoices(false));
   }, [fetchVoices]);
 
-  if (!settings) {
-    return (
-      <main className="min-h-screen bg-background p-6">Loading settings…</main>
-    );
-  }
+  if (!settings) return <Card className="p-6">Loading…</Card>;
 
   async function handleVoiceChange(voiceId: string) {
     const v = voices.find((x) => x.voice_id === voiceId);
@@ -76,7 +151,7 @@ function SettingsPage() {
       });
       const audio = new Audio(`data:${r.mime};base64,${r.audioBase64}`);
       await audio.play();
-    } catch (e) {
+    } catch {
       toast.error("Preview failed");
     } finally {
       setPreviewing(false);
@@ -101,108 +176,85 @@ function SettingsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto max-w-2xl px-6 py-8">
-        <header className="mb-8 flex items-center gap-3">
-          <button
-            onClick={() => router.history.back()}
-            className="rounded-full p-2 hover:bg-secondary"
-            aria-label="Back"
+    <div className="space-y-4">
+      <Card className="p-6">
+        <h2 className="text-lg font-semibold">Voice</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Choose how the app speaks suggestions out loud.
+        </p>
+        <div className="mt-4 flex items-center gap-3">
+          <Select
+            value={settings.voice_id}
+            onValueChange={handleVoiceChange}
+            disabled={loadingVoices}
           >
-            <ArrowLeft className="size-6" />
-          </button>
-          <h1 className="text-3xl font-semibold">Settings</h1>
-        </header>
-
-        <JamesProfileCard />
-
-        <PeopleCard />
-
-        <Card className="mt-4 p-6">
-          <h2 className="text-lg font-semibold">Voice</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Choose how the app speaks suggestions out loud.
-          </p>
-          <div className="mt-4 flex items-center gap-3">
-            <Select
-              value={settings.voice_id}
-              onValueChange={handleVoiceChange}
-              disabled={loadingVoices}
-            >
-              <SelectTrigger className="h-12 flex-1 text-base">
-                <SelectValue placeholder="Select a voice" />
-              </SelectTrigger>
-              <SelectContent>
-                {voices.map((v) => (
-                  <SelectItem key={v.voice_id} value={v.voice_id}>
-                    {v.name}
-                    {v.labels?.accent ? ` · ${v.labels.accent}` : ""}
-                    {v.labels?.gender ? ` · ${v.labels.gender}` : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              variant="secondary"
-              className="h-12"
-              onClick={previewVoice}
-              disabled={previewing}
-            >
-              <Volume2 className="size-5" />
-              {previewing ? "…" : "Preview"}
-            </Button>
-          </div>
-        </Card>
-
-        <Card className="mt-4 p-6">
-          <h2 className="text-lg font-semibold">Location</h2>
-          <div className="mt-3 flex items-center justify-between">
-            <div>
-              <Label className="text-base">Use GPS for context</Label>
-              <p className="text-sm text-muted-foreground">
-                Auto-detects places (e.g. library, café) to tailor suggestions.
-              </p>
-            </div>
-            <Switch
-              checked={settings.gps_enabled}
-              onCheckedChange={(v) =>
-                updateSettings({ gps_enabled: v }).then(() =>
-                  toast.success(v ? "GPS on" : "GPS off"),
-                )
-              }
-            />
-          </div>
-        </Card>
-
-        <Card className="mt-4 p-6">
-          <h2 className="text-lg font-semibold">Storage</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            All conversations live on this iPad. Cloud sync coming soon.
-          </p>
-          <div className="mt-4 flex items-center justify-between">
-            <Label className="text-base">Sync to Lovable Cloud</Label>
-            <Switch
-              checked={settings.cloud_sync}
-              disabled
-              onCheckedChange={(v) => updateSettings({ cloud_sync: v })}
-            />
-          </div>
+            <SelectTrigger className="h-12 flex-1 text-base">
+              <SelectValue placeholder="Select a voice" />
+            </SelectTrigger>
+            <SelectContent>
+              {voices.map((v) => (
+                <SelectItem key={v.voice_id} value={v.voice_id}>
+                  {v.name}
+                  {v.labels?.accent ? ` · ${v.labels.accent}` : ""}
+                  {v.labels?.gender ? ` · ${v.labels.gender}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button
-            variant="destructive"
-            className="mt-6 h-11"
-            onClick={clearAllData}
+            variant="secondary"
+            className="h-12"
+            onClick={previewVoice}
+            disabled={previewing}
           >
-            Clear all local data
+            <Volume2 className="size-5" />
+            {previewing ? "…" : "Preview"}
           </Button>
-        </Card>
-
-        <div className="mt-8 text-center">
-          <Link to="/" className="text-sm text-muted-foreground underline">
-            Back to home
-          </Link>
         </div>
-      </div>
-    </main>
+      </Card>
+
+      <Card className="p-6">
+        <h2 className="text-lg font-semibold">Location</h2>
+        <div className="mt-3 flex items-center justify-between">
+          <div>
+            <Label className="text-base">Use GPS for context</Label>
+            <p className="text-sm text-muted-foreground">
+              Auto-detects places (e.g. library, café) to tailor suggestions.
+            </p>
+          </div>
+          <Switch
+            checked={settings.gps_enabled}
+            onCheckedChange={(v) =>
+              updateSettings({ gps_enabled: v }).then(() =>
+                toast.success(v ? "GPS on" : "GPS off"),
+              )
+            }
+          />
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h2 className="text-lg font-semibold">Storage</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          All conversations live on this iPad. Cloud sync coming soon.
+        </p>
+        <div className="mt-4 flex items-center justify-between">
+          <Label className="text-base">Sync to Lovable Cloud</Label>
+          <Switch
+            checked={settings.cloud_sync}
+            disabled
+            onCheckedChange={(v) => updateSettings({ cloud_sync: v })}
+          />
+        </div>
+        <Button
+          variant="destructive"
+          className="mt-6 h-11"
+          onClick={clearAllData}
+        >
+          Clear all local data
+        </Button>
+      </Card>
+    </div>
   );
 }
 
@@ -248,11 +300,17 @@ function JamesProfileCard() {
         Edit anytime — changes apply to the next conversation.
       </p>
 
-      <div className="mt-5 grid gap-4">
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
         <Field label="Display name">
           <Input
             value={draft.display_name}
             onChange={(e) => set("display_name", e.target.value)}
+          />
+        </Field>
+        <Field label="Age">
+          <Input
+            value={draft.age ?? ""}
+            onChange={(e) => set("age", e.target.value)}
           />
         </Field>
         <Field
@@ -270,7 +328,7 @@ function JamesProfileCard() {
           hint="e.g. warm, dry-witted, hates small talk, deeply curious"
         >
           <Textarea
-            rows={2}
+            rows={3}
             value={draft.personality ?? ""}
             onChange={(e) => set("personality", e.target.value)}
           />
@@ -321,18 +379,20 @@ function JamesProfileCard() {
           hint="What's on his mind right now — recent events, what's coming up"
         >
           <Textarea
-            rows={3}
+            rows={4}
             value={draft.current_life_context ?? ""}
             onChange={(e) => set("current_life_context", e.target.value)}
           />
         </Field>
-        <Field label="Anything else (freeform)">
-          <Textarea
-            rows={4}
-            value={draft.freeform_notes ?? ""}
-            onChange={(e) => set("freeform_notes", e.target.value)}
-          />
-        </Field>
+        <div className="md:col-span-2">
+          <Field label="Anything else (freeform)">
+            <Textarea
+              rows={4}
+              value={draft.freeform_notes ?? ""}
+              onChange={(e) => set("freeform_notes", e.target.value)}
+            />
+          </Field>
+        </div>
       </div>
 
       <Button className="mt-5 h-11" onClick={save} disabled={saving}>
@@ -360,15 +420,33 @@ function Field({
   );
 }
 
-/* ------------------------------- People CRUD ------------------------------ */
+/* ------------------------------- People Tab ------------------------------- */
 
-function PeopleCard() {
+function PeopleTab() {
   const people = useLiveQuery(
     () => db.people.orderBy("name").toArray(),
     [],
   );
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Person | null>(null);
   const [adding, setAdding] = useState(false);
+  const [filter, setFilter] = useState("");
+
+  const filtered = useMemo(() => {
+    const list = people ?? [];
+    if (!filter.trim()) return list;
+    const q = filter.toLowerCase();
+    return list.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.relationship ?? "").toLowerCase().includes(q),
+    );
+  }, [people, filter]);
+
+  // Auto-select first person when none selected
+  useEffect(() => {
+    if (!selectedId && filtered.length > 0) setSelectedId(filtered[0].id);
+  }, [selectedId, filtered]);
 
   function startAdd() {
     setEditing({
@@ -391,76 +469,294 @@ function PeopleCard() {
     await db.people.put(p);
     setEditing(null);
     setAdding(false);
+    setSelectedId(p.id);
     toast.success("Saved");
   }
 
   async function remove(id: string) {
     if (!confirm("Remove this person?")) return;
     await db.people.delete(id);
-    if (editing?.id === id) setEditing(null);
+    if (selectedId === id) setSelectedId(null);
   }
 
   return (
-    <Card className="mt-4 p-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">People in James's life</h2>
-        <Button size="sm" variant="secondary" onClick={startAdd}>
-          <Plus className="size-4" /> Add
-        </Button>
-      </div>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Each person's interests, notes, and shared memories get fed into
-        suggestions when they're in the conversation.
-      </p>
-
-      <div className="mt-4 space-y-2">
-        {people?.length === 0 && (
-          <p className="text-sm italic text-muted-foreground">
-            No people yet. Tap "Add" to start.
-          </p>
-        )}
-        {people?.map((p) => (
-          <div
-            key={p.id}
-            className="flex items-center justify-between rounded-xl border border-border bg-secondary/30 px-4 py-3"
-          >
-            <button
-              className="flex-1 text-left"
-              onClick={() => {
-                setEditing(p);
-                setAdding(false);
-              }}
-            >
-              <div className="font-medium">{p.name}</div>
-              {p.relationship && (
-                <div className="text-xs text-muted-foreground">
-                  {p.relationship}
-                </div>
-              )}
-            </button>
-            <button
-              onClick={() => remove(p.id)}
-              className="rounded-full p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-              aria-label="Delete"
-            >
-              <Trash2 className="size-4" />
-            </button>
+    <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+      {/* Left: people list */}
+      <Card className="p-3">
+        <div className="mb-2 flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Search…"
+              className="h-9 pl-7"
+            />
           </div>
-        ))}
+          <Button size="sm" variant="secondary" onClick={startAdd}>
+            <Plus className="size-4" />
+          </Button>
+        </div>
+
+        <div className="space-y-1">
+          {filtered.length === 0 && (
+            <p className="px-2 py-4 text-sm italic text-muted-foreground">
+              {people?.length === 0
+                ? "No people yet. Tap + to add, or names will be auto-added when introduced in conversation."
+                : "No matches."}
+            </p>
+          )}
+          {filtered.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => {
+                setSelectedId(p.id);
+                setEditing(null);
+              }}
+              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition ${
+                selectedId === p.id
+                  ? "bg-primary/10 ring-1 ring-primary/40"
+                  : "hover:bg-secondary"
+              }`}
+            >
+              <div>
+                <div className="font-medium">{p.name}</div>
+                {p.relationship && (
+                  <div className="text-xs text-muted-foreground">
+                    {p.relationship}
+                  </div>
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      {/* Right: detail */}
+      <div>
+        {editing ? (
+          <PersonEditor
+            person={editing}
+            isNew={adding}
+            onCancel={() => {
+              setEditing(null);
+              setAdding(false);
+            }}
+            onSave={save}
+          />
+        ) : selectedId ? (
+          <PersonDetail
+            personId={selectedId}
+            onEdit={(p) => {
+              setEditing(p);
+              setAdding(false);
+            }}
+            onDelete={() => remove(selectedId)}
+          />
+        ) : (
+          <Card className="p-10 text-center text-muted-foreground">
+            Select a person from the list, or add a new one.
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PersonDetail({
+  personId,
+  onEdit,
+  onDelete,
+}: {
+  personId: string;
+  onEdit: (p: Person) => void;
+  onDelete: () => void;
+}) {
+  const person = useLiveQuery(() => db.people.get(personId), [personId]);
+  const stats = useLiveQuery(() => getPersonStats(personId), [personId]);
+
+  if (!person) return <Card className="p-6">Loading…</Card>;
+
+  const grouped = stats ? groupMemories(stats.recentMemories) : null;
+
+  return (
+    <Card className="p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold">{person.name}</h2>
+          {person.relationship && (
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              {person.relationship}
+            </p>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" variant="secondary" onClick={() => onEdit(person)}>
+            Edit
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onDelete}
+            aria-label="Delete"
+          >
+            <Trash2 className="size-4 text-destructive" />
+          </Button>
+        </div>
       </div>
 
-      {editing && (
-        <PersonEditor
-          person={editing}
-          isNew={adding}
-          onCancel={() => {
-            setEditing(null);
-            setAdding(false);
-          }}
-          onSave={save}
+      {/* At-a-glance metrics */}
+      <div className="mt-5 grid grid-cols-3 gap-3">
+        <Stat
+          label="Conversations"
+          value={stats ? String(stats.conversationCount) : "—"}
         />
+        <Stat
+          label="Last seen"
+          value={
+            stats?.lastSeenAt
+              ? new Date(stats.lastSeenAt).toLocaleDateString()
+              : "—"
+          }
+        />
+        <Stat
+          label="Memories"
+          value={stats ? String(stats.recentMemories.length) : "—"}
+        />
+      </div>
+
+      {/* Common locations */}
+      <Section
+        icon={<MapPin className="size-4" />}
+        title="Common locations"
+        empty="No location data yet."
+      >
+        {stats?.commonPlaces.length ? (
+          <ul className="space-y-1 text-sm">
+            {stats.commonPlaces.map((c) => (
+              <li key={c.place.id} className="flex justify-between">
+                <span>{c.place.name}</span>
+                <span className="text-muted-foreground">
+                  {c.count} chat{c.count === 1 ? "" : "s"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </Section>
+
+      {/* Interests */}
+      <Section
+        icon={<Sparkles className="size-4" />}
+        title="Interests"
+        empty="No interests recorded."
+      >
+        {person.interests?.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {person.interests.map((i) => (
+              <span
+                key={i}
+                className="rounded-full bg-secondary px-3 py-1 text-xs"
+              >
+                {i}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </Section>
+
+      {/* Notes */}
+      {person.notes && (
+        <Section title="Notes">
+          <p className="whitespace-pre-wrap text-sm">{person.notes}</p>
+        </Section>
       )}
+      {person.style_notes && (
+        <Section title="How James talks with them">
+          <p className="whitespace-pre-wrap text-sm">{person.style_notes}</p>
+        </Section>
+      )}
+
+      {/* Auto-learned memories */}
+      <Section
+        title="Key facts (auto-learned)"
+        empty="The app will collect facts after your next chats."
+      >
+        {grouped && grouped.fact.length > 0 && (
+          <MemoryList items={grouped.fact} />
+        )}
+      </Section>
+      <Section title="Preferences">
+        {grouped && grouped.preference.length > 0 ? (
+          <MemoryList items={grouped.preference} />
+        ) : null}
+      </Section>
+      <Section title="Recent events / topics">
+        {grouped && grouped.event.length > 0 ? (
+          <MemoryList items={grouped.event} />
+        ) : null}
+      </Section>
+      <Section title="Open follow-ups">
+        {stats?.followUps.length ? (
+          <ul className="list-disc space-y-1 pl-5 text-sm">
+            {stats.followUps.map((f, i) => (
+              <li key={i}>{f}</li>
+            ))}
+          </ul>
+        ) : null}
+      </Section>
     </Card>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-border bg-secondary/30 p-3">
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-1 text-xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function Section({
+  title,
+  icon,
+  children,
+  empty,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  children?: React.ReactNode;
+  empty?: string;
+}) {
+  const hasChildren =
+    children !== null && children !== undefined && children !== false;
+  return (
+    <div className="mt-5">
+      <div className="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        {icon}
+        {title}
+      </div>
+      {hasChildren ? (
+        children
+      ) : (
+        <p className="text-sm italic text-muted-foreground">
+          {empty ?? "—"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function MemoryList({ items }: { items: { id: string; text: string }[] }) {
+  return (
+    <ul className="list-disc space-y-1 pl-5 text-sm">
+      {items.map((m) => (
+        <li key={m.id}>{m.text}</li>
+      ))}
+    </ul>
   );
 }
 
@@ -480,8 +776,10 @@ function PersonEditor({
     setDraft({ ...draft, [k]: v });
 
   return (
-    <div className="mt-4 space-y-3 rounded-xl border-2 border-primary/30 bg-card p-4">
-      <h3 className="font-semibold">{isNew ? "New person" : `Edit ${person.name}`}</h3>
+    <Card className="space-y-3 border-2 border-primary/30 p-6">
+      <h3 className="text-lg font-semibold">
+        {isNew ? "New person" : `Edit ${person.name}`}
+      </h3>
       <Field label="Name">
         <Input value={draft.name} onChange={(e) => set("name", e.target.value)} />
       </Field>
@@ -505,7 +803,10 @@ function PersonEditor({
           }
         />
       </Field>
-      <Field label="Notes" hint="Anything James would want the AI to know about them">
+      <Field
+        label="Notes"
+        hint="Anything James would want the AI to know about them"
+      >
         <Textarea
           rows={3}
           value={draft.notes ?? ""}
@@ -527,6 +828,183 @@ function PersonEditor({
         <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
+      </div>
+    </Card>
+  );
+}
+
+/* ------------------------------ Locations Tab ----------------------------- */
+
+function PlacesTab() {
+  const places = useLiveQuery(
+    () => db.places.orderBy("name").toArray(),
+    [],
+  );
+  const [editing, setEditing] = useState<Place | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function startAdd() {
+    setEditing({
+      id: newId(),
+      name: "",
+      lat: 0,
+      lng: 0,
+      radius_m: 75,
+      notes: "",
+      created_at: Date.now(),
+    });
+  }
+
+  async function useCurrentLocation() {
+    if (!editing) return;
+    setBusy(true);
+    try {
+      const pos = await getCurrentPosition();
+      setEditing({
+        ...editing,
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+      });
+      toast.success("Location captured");
+    } catch {
+      toast.error("Could not read GPS");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function save(p: Place) {
+    if (!p.name.trim()) {
+      toast.error("Name is required");
+      return;
+    }
+    await db.places.put(p);
+    setEditing(null);
+    toast.success("Saved");
+  }
+
+  async function remove(id: string) {
+    if (!confirm("Remove this location?")) return;
+    await db.places.delete(id);
+    if (editing?.id === id) setEditing(null);
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+      <Card className="p-3">
+        <div className="mb-2 flex items-center justify-between px-1">
+          <h2 className="text-sm font-semibold">Saved locations</h2>
+          <Button size="sm" variant="secondary" onClick={startAdd}>
+            <Plus className="size-4" /> Add
+          </Button>
+        </div>
+        <div className="space-y-1">
+          {places?.length === 0 && (
+            <p className="px-2 py-4 text-sm italic text-muted-foreground">
+              No saved locations yet.
+            </p>
+          )}
+          {places?.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center justify-between rounded-lg px-3 py-2 hover:bg-secondary"
+            >
+              <button
+                className="flex-1 text-left"
+                onClick={() => setEditing(p)}
+              >
+                <div className="font-medium">{p.name}</div>
+                <div className="text-xs text-muted-foreground">
+                  {p.lat.toFixed(4)}, {p.lng.toFixed(4)} · {p.radius_m}m
+                </div>
+              </button>
+              <button
+                onClick={() => remove(p.id)}
+                className="rounded-full p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                aria-label="Delete"
+              >
+                <Trash2 className="size-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <div>
+        {editing ? (
+          <Card className="space-y-3 border-2 border-primary/30 p-6">
+            <h3 className="text-lg font-semibold">
+              {editing.name ? `Edit ${editing.name}` : "New location"}
+            </h3>
+            <Field label="Name" hint="e.g. Home, Library, Mum's house">
+              <Input
+                value={editing.name}
+                onChange={(e) =>
+                  setEditing({ ...editing, name: e.target.value })
+                }
+              />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Latitude">
+                <Input
+                  type="number"
+                  value={editing.lat}
+                  onChange={(e) =>
+                    setEditing({ ...editing, lat: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field label="Longitude">
+                <Input
+                  type="number"
+                  value={editing.lng}
+                  onChange={(e) =>
+                    setEditing({ ...editing, lng: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={useCurrentLocation}
+              disabled={busy}
+            >
+              <Crosshair className="size-4" />
+              {busy ? "Reading GPS…" : "Use current location"}
+            </Button>
+            <Field label="Radius (metres)">
+              <Input
+                type="number"
+                value={editing.radius_m}
+                onChange={(e) =>
+                  setEditing({
+                    ...editing,
+                    radius_m: Number(e.target.value),
+                  })
+                }
+              />
+            </Field>
+            <Field label="Notes" hint="Useful context for suggestions here">
+              <Textarea
+                rows={3}
+                value={editing.notes ?? ""}
+                onChange={(e) =>
+                  setEditing({ ...editing, notes: e.target.value })
+                }
+              />
+            </Field>
+            <div className="flex gap-2">
+              <Button onClick={() => save(editing)}>Save</Button>
+              <Button variant="ghost" onClick={() => setEditing(null)}>
+                Cancel
+              </Button>
+            </div>
+          </Card>
+        ) : (
+          <Card className="p-10 text-center text-muted-foreground">
+            Select a location to edit, or add a new one.
+          </Card>
+        )}
       </div>
     </div>
   );
