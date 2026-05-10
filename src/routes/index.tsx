@@ -14,6 +14,7 @@ import {
   Check,
   X,
   Facebook,
+  Calendar,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -28,6 +29,7 @@ import {
   getSettings,
   newId,
   type Conversation,
+  type EventItem,
   type Person,
   type Place,
   type TranscriptSegment,
@@ -142,6 +144,15 @@ function Home() {
   const personIdsRef = useRef<string[]>([]);
   const [showPeoplePicker, setShowPeoplePicker] = useState(false);
 
+  // Event (optional)
+  const [allEvents, setAllEvents] = useState<EventItem[]>([]);
+  const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
+  const selectedEventRef = useRef<EventItem | null>(null);
+  const [showEventPicker, setShowEventPicker] = useState(false);
+  useEffect(() => {
+    selectedEventRef.current = selectedEvent;
+  }, [selectedEvent]);
+
   // Transcript
   const [committed, setCommitted] = useState<TranscriptSegment[]>([]);
   const [partial, setPartial] = useState("");
@@ -218,6 +229,9 @@ function Home() {
 
       const people = await db.people.orderBy("name").toArray();
       if (!cancelled) setAllPeople(people);
+
+      const evs = await db.events.orderBy("created_at").reverse().toArray();
+      if (!cancelled) setAllEvents(evs);
 
       if (s.gps_enabled) {
         try {
