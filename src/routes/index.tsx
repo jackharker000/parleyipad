@@ -49,6 +49,14 @@ import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { autoMapSpeakers, labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { autoCreateIntroducedPeople } from "@/lib/auto-person";
 import { seedJamesIfNeeded } from "@/lib/seed";
+import {
+  VoiceCapture,
+  computeMfccMean,
+  mergeIntoCentroid,
+  recordVoiceprint,
+  bestMatch,
+} from "@/lib/voiceprint";
+import { VOICEPRINT_MATCH_THRESHOLD } from "@/lib/db";
 
 export const Route = createFileRoute("/")({
   component: Home,
@@ -184,8 +192,39 @@ function Home() {
   const [jamesLabel, setJamesLabel] = useState<string | undefined>(undefined);
   const speakerMapRef = useRef<Record<string, string>>({});
   const jamesLabelRef = useRef<string | undefined>(undefined);
+
+  // ---- On-device voice fingerprinting ----
+  const captureRef = useRef<VoiceCapture | null>(null);
+  // Per-speaker-label running MFCC centroid for the current session.
+  const livePrintsRef = useRef<
+    Map<string, { centroid: number[]; count: number }>
+  >(new Map());
+  // Persons whose voiceprint has already been saved/updated this session
+  // (so we don't write on every committed segment).
+  const persistedThisSessionRef = useRef<Set<string>>(new Set());
+  // Recognised speaker chips (label -> { personId, sim }) for UI hint.
+  const [recognised, setRecognised] = useState<
+    Record<string, { personId: string; sim: number }>
+  >({});
   useEffect(() => {
     speakerMapRef.current = speakerMap;
+  }, [speakerMap]);
+
+  // Whenever the speaker map changes, persist accumulated voiceprints for
+  // any newly-mapped person (running centroid built up during this session).
+  useEffect(() => {
+    (async () => {
+      for (const [label, personId] of Object.entries(speakerMap)) {
+        const live = livePrintsRef.current.get(label);
+        if (!live) continue;
+        // Persist a snapshot once per (session, person). We keep updating the
+        // in-memory centroid as more audio arrives and re-persist on stop.
+        if (!persistedThisSessionRef.current.has(personId)) {
+          await recordVoiceprint(personId, live.centroid);
+          persistedThisSessionRef.current.add(personId);
+        }
+      }
+    })();
   }, [speakerMap]);
   useEffect(() => {
     seedJamesIfNeeded();
@@ -219,6 +258,84 @@ function Home() {
       };
       setCommitted((prev) => [...prev, seg]);
       await db.transcript_segments.add(seg);
+
+      // -------- Voice fingerprint update --------
+      const cap = captureRef.current;
+      if (cap && d.words && d.words.length > 0) {
+        try {
+          const first = d.words[0];
+          const last = d.words[d.words.length - 1];
+          const dur = Math.max(0.4, (last.end ?? 0) - (first.start ?? 0));
+          if (dur >= 0.4) {
+            const pcm = cap.recentSlice(dur);
+            const mfcc = computeMfccMean(pcm, cap.sampleRate);
+            if (mfcc) {
+              const label = String(speakerLabel);
+              const prev = livePrintsRef.current.get(label);
+              const merged = mergeIntoCentroid(
+                prev?.centroid,
+                prev?.count ?? 0,
+                mfcc,
+              );
+              livePrintsRef.current.set(label, merged);
+
+              // Try to auto-recognise this label against stored voiceprints
+              // for known people, but only if it isn't already mapped.
+              if (!speakerMapRef.current[label]) {
+                const usedIds = new Set(Object.values(speakerMapRef.current));
+                const allPrints = await db.voiceprints.toArray();
+                const candidates = allPrints.filter(
+                  (p) => !usedIds.has(p.person_id),
+                );
+                const match = bestMatch(
+                  merged.centroid,
+                  candidates,
+                  VOICEPRINT_MATCH_THRESHOLD,
+                );
+                if (match) {
+                  const next = {
+                    ...speakerMapRef.current,
+                    [label]: match.print.person_id,
+                  };
+                  speakerMapRef.current = next;
+                  setSpeakerMap(next);
+                  setRecognised((cur) => ({
+                    ...cur,
+                    [label]: { personId: match.print.person_id, sim: match.sim },
+                  }));
+                  if (conversationIdRef.current) {
+                    db.conversations.update(conversationIdRef.current, {
+                      speaker_map: next,
+                    });
+                  }
+                  // Add to active roster if not already present
+                  if (!personIdsRef.current.includes(match.print.person_id)) {
+                    const merged2 = [
+                      ...personIdsRef.current,
+                      match.print.person_id,
+                    ];
+                    personIdsRef.current = merged2;
+                    setSelectedPersonIds(merged2);
+                    if (conversationIdRef.current) {
+                      db.conversations.update(conversationIdRef.current, {
+                        person_ids: merged2,
+                      });
+                    }
+                  }
+                  const person = await db.people.get(match.print.person_id);
+                  if (person) {
+                    toast.success(
+                      `Recognised ${person.name} (${Math.round(match.sim * 100)}% match)`,
+                    );
+                  }
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("voiceprint update failed", err);
+        }
+      }
     },
   });
 
@@ -303,6 +420,9 @@ function Home() {
       setSpeakerMap({});
       setJamesLabel(undefined);
       lastShownRef.current = [];
+      livePrintsRef.current = new Map();
+      persistedThisSessionRef.current = new Set();
+      setRecognised({});
 
       const conv: Conversation = {
         id,
@@ -318,6 +438,15 @@ function Home() {
         token,
         microphone: { echoCancellation: true, noiseSuppression: true },
       });
+      // Start parallel mic capture for voice fingerprinting (fail-soft).
+      try {
+        const cap = new VoiceCapture();
+        await cap.start();
+        captureRef.current = cap;
+      } catch (err) {
+        console.warn("voice fingerprint capture unavailable", err);
+        captureRef.current = null;
+      }
       setActive(true);
     } catch (e: any) {
       toast.error(e?.message ?? "Could not start conversation");
@@ -332,6 +461,22 @@ function Home() {
       try {
         scribe.disconnect();
       } catch {}
+      // Stop voice capture and persist final voiceprints for any mapped speakers
+      try {
+        const cap = captureRef.current;
+        captureRef.current = null;
+        if (cap) cap.stop();
+      } catch {}
+      try {
+        for (const [label, personId] of Object.entries(speakerMapRef.current)) {
+          const live = livePrintsRef.current.get(label);
+          if (live && live.count >= 2) {
+            await recordVoiceprint(personId, live.centroid);
+          }
+        }
+      } catch (err) {
+        console.warn("final voiceprint persist failed", err);
+      }
       const endedAt = Date.now();
       if (cid) {
         await db.conversations.update(cid, { ended_at: endedAt });
