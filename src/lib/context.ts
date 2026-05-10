@@ -154,8 +154,7 @@ export async function buildConversationContext(opts: {
         .map((s) => s.trim())
         .filter(Boolean),
       currentLifeContext: profile.current_life_context,
-      freeform: profile.freeform_notes,
-    },
+      freeform: freeformCombined || undefined,
     },
     people,
     place,
