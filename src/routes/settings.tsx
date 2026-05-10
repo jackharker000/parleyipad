@@ -1487,3 +1487,485 @@ function PlacesTab() {
     </div>
   );
 }
+
+/* -------------------------------- Events Tab ----------------------------- */
+
+function EventsTab() {
+  const events = useLiveQuery(
+    () => db.events.orderBy("created_at").reverse().toArray(),
+    [],
+  );
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+
+  const filtered = useMemo(() => {
+    const list = events ?? [];
+    if (!filter.trim()) return list;
+    const q = filter.toLowerCase();
+    return list.filter((e) => e.name.toLowerCase().includes(q));
+  }, [events, filter]);
+
+  useEffect(() => {
+    if (!selectedId && filtered.length > 0) setSelectedId(filtered[0].id);
+  }, [selectedId, filtered]);
+
+  async function addEvent() {
+    const ev: EventItem = {
+      id: newId(),
+      name: "New event",
+      person_ids: [],
+      key_points: [],
+      key_questions: [],
+      created_at: Date.now(),
+    };
+    await db.events.put(ev);
+    setSelectedId(ev.id);
+  }
+
+  async function remove(id: string) {
+    if (!confirm("Delete this event and its documents?")) return;
+    await db.events.delete(id);
+    const docs = await db.event_documents.where("event_id").equals(id).toArray();
+    await db.event_documents.bulkDelete(docs.map((d) => d.id));
+    if (selectedId === id) setSelectedId(null);
+  }
+
+  return (
+    <div className="grid gap-4 grid-cols-[260px_1fr] sm:grid-cols-[280px_1fr]">
+      <Card className="p-3">
+        <div className="mb-2 flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Search events…"
+              className="h-9 pl-7"
+            />
+          </div>
+          <Button size="sm" variant="secondary" onClick={addEvent}>
+            <Plus className="size-4" />
+          </Button>
+        </div>
+        <div className="space-y-1">
+          {filtered.length === 0 && (
+            <p className="px-2 py-4 text-sm italic text-muted-foreground">
+              {events?.length === 0
+                ? "No events yet. Tap + to prep for one."
+                : "No matches."}
+            </p>
+          )}
+          {filtered.map((e) => (
+            <button
+              key={e.id}
+              onClick={() => setSelectedId(e.id)}
+              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition ${
+                selectedId === e.id
+                  ? "bg-primary/10 ring-1 ring-primary/40"
+                  : "hover:bg-secondary"
+              }`}
+            >
+              <div className="min-w-0">
+                <div className="truncate font-medium">{e.name || "Untitled"}</div>
+                {e.when && (
+                  <div className="truncate text-xs text-muted-foreground">
+                    {e.when}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  remove(e.id);
+                }}
+                className="rounded-full p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                aria-label="Delete"
+              >
+                <Trash2 className="size-4" />
+              </button>
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <div>
+        {selectedId ? (
+          <EventDetail eventId={selectedId} key={selectedId} />
+        ) : (
+          <Card className="p-10 text-center text-muted-foreground">
+            Select an event from the list, or add a new one.
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EventDetail({ eventId }: { eventId: string }) {
+  const event = useLiveQuery(() => db.events.get(eventId), [eventId]);
+  const docs = useLiveQuery(
+    () => db.event_documents.where("event_id").equals(eventId).toArray(),
+    [eventId],
+  );
+  const allPeople = useLiveQuery(() => db.people.orderBy("name").toArray(), []);
+  const generateFn = useServerFn(generateEventPrep);
+  const [generating, setGenerating] = useState(false);
+  const [busyDoc, setBusyDoc] = useState(false);
+
+  if (!event) return <Card className="p-6">Loading…</Card>;
+
+  async function patch(p: Partial<EventItem>) {
+    if (!event) return;
+    await db.events.put({ ...event, ...p });
+  }
+
+  async function togglePerson(id: string) {
+    const cur = event!.person_ids ?? [];
+    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    await patch({ person_ids: next });
+  }
+
+  async function generate() {
+    if (!event) return;
+    setGenerating(true);
+    try {
+      const profile = await getJamesProfile();
+      const peopleNames = (await db.people.bulkGet(event.person_ids ?? []))
+        .filter((p): p is Person => !!p)
+        .map((p) => p.name);
+      const docSnips = (docs ?? []).slice(0, 10).map(
+        (d) => `### ${d.name}${d.note ? ` — ${d.note}` : ""}\n${d.text.slice(0, 4000)}`,
+      );
+      const r = await generateFn({
+        data: {
+          eventName: event.name || "Event",
+          when: event.when,
+          location: event.location,
+          keyInfo: event.key_info,
+          prepPrompt: event.prep_prompt,
+          peopleNames,
+          docs: docSnips,
+          existingPoints: event.key_points.map((k) => k.text),
+          existingQuestions: event.key_questions.map((k) => k.text),
+          jamesProfile: {
+            name: profile.display_name || "James",
+            background: profile.background,
+            personality: profile.personality,
+            humor: profile.humor_style,
+            communication: profile.communication_style,
+            topicsLoved: profile.topics_loved,
+            topicsAvoided: profile.topics_avoided,
+            currentLifeContext: profile.current_life_context,
+            signaturePhrases: profile.signature_phrases
+              ?.split(/\r?\n/)
+              .map((s) => s.trim())
+              .filter(Boolean),
+            freeform: profile.freeform_notes,
+          },
+        },
+      });
+      if (r.error) {
+        toast.error(r.error);
+        return;
+      }
+      const newPoints: EventPrepItem[] = r.keyPoints.map((t: string) => ({
+        id: newId(),
+        text: t,
+        selected: true,
+      }));
+      const newQs: EventPrepItem[] = r.keyQuestions.map((t: string) => ({
+        id: newId(),
+        text: t,
+        selected: true,
+      }));
+      await patch({
+        key_points: [...event.key_points, ...newPoints],
+        key_questions: [...event.key_questions, ...newQs],
+      });
+      toast.success(`Added ${newPoints.length} points · ${newQs.length} questions`);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Generation failed");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function handleFiles(files: FileList | null) {
+    if (!files?.length || !event) return;
+    setBusyDoc(true);
+    try {
+      for (const file of Array.from(files)) {
+        const isTextLike =
+          TEXT_LIKE_RE.test(file.type) || TEXT_EXT_RE.test(file.name);
+        if (!isTextLike) {
+          toast.error(`${file.name}: unsupported. Use .txt/.md/.csv/.json/etc.`);
+          continue;
+        }
+        let text = "";
+        try {
+          text = await file.text();
+        } catch {
+          toast.error(`${file.name}: could not read`);
+          continue;
+        }
+        await db.event_documents.put({
+          id: newId(),
+          event_id: event.id,
+          name: file.name,
+          mime: file.type || "text/plain",
+          size: file.size,
+          text: text.slice(0, MAX_DOC_CHARS),
+          created_at: Date.now(),
+        });
+        toast.success(`Attached ${file.name}`);
+      }
+    } finally {
+      setBusyDoc(false);
+    }
+  }
+
+  function updateItem(
+    list: "key_points" | "key_questions",
+    id: string,
+    p: Partial<EventPrepItem>,
+  ) {
+    const next = event![list].map((k) => (k.id === id ? { ...k, ...p } : k));
+    patch({ [list]: next } as Partial<EventItem>);
+  }
+  function removeItem(list: "key_points" | "key_questions", id: string) {
+    const next = event![list].filter((k) => k.id !== id);
+    patch({ [list]: next } as Partial<EventItem>);
+  }
+  function addItem(list: "key_points" | "key_questions") {
+    const next = [
+      ...event![list],
+      { id: newId(), text: "", selected: true } as EventPrepItem,
+    ];
+    patch({ [list]: next } as Partial<EventItem>);
+  }
+
+  return (
+    <Card className="p-6">
+      <div className="grid gap-4 md:grid-cols-2">
+        <Field label="Event name">
+          <Input
+            value={event.name}
+            onChange={(e) => patch({ name: e.target.value })}
+          />
+        </Field>
+        <Field label="When" hint="e.g. Tue 14 May, 10am">
+          <Input
+            value={event.when ?? ""}
+            onChange={(e) => patch({ when: e.target.value })}
+          />
+        </Field>
+        <Field label="Where">
+          <Input
+            value={event.location ?? ""}
+            onChange={(e) => patch({ location: e.target.value })}
+          />
+        </Field>
+        <div />
+        <div className="md:col-span-2">
+          <Field label="Key info" hint="Purpose, agenda, anything important">
+            <Textarea
+              rows={3}
+              value={event.key_info ?? ""}
+              onChange={(e) => patch({ key_info: e.target.value })}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <Section
+        icon={<Users className="size-4" />}
+        title="People at this event"
+        empty="No people in your list yet — add some on the People tab."
+      >
+        {allPeople?.length ? (
+          <div className="flex flex-wrap gap-2">
+            {allPeople.map((p) => {
+              const sel = (event.person_ids ?? []).includes(p.id);
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => togglePerson(p.id)}
+                  className={`flex items-center gap-1.5 rounded-full border-2 px-3 py-1 text-sm transition ${
+                    sel
+                      ? "border-primary bg-primary/10"
+                      : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary"
+                  }`}
+                >
+                  {sel && <Check className="size-3" />}
+                  {p.name}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </Section>
+
+      <Section
+        icon={<FileText className="size-4" />}
+        title="Reference documents"
+      >
+        <p className="mb-2 text-sm text-muted-foreground">
+          CVs, briefs, agendas — fed into the AI when preparing this event and
+          when it's selected on the home screen.
+        </p>
+        <label
+          className={`inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border bg-secondary px-3 text-sm font-medium hover:bg-secondary/80 ${busyDoc ? "opacity-60" : ""}`}
+        >
+          <Upload className="size-4" />
+          {busyDoc ? "Reading…" : "Attach"}
+          <input
+            type="file"
+            multiple
+            className="sr-only"
+            accept=".txt,.md,.markdown,.json,.csv,.tsv,.log,.yaml,.yml,.xml,.html,.htm,.rtf,text/*,application/json"
+            disabled={busyDoc}
+            onChange={(e) => {
+              handleFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+        </label>
+        <div className="mt-3 space-y-2">
+          {!docs?.length ? (
+            <p className="text-sm italic text-muted-foreground">
+              No documents attached.
+            </p>
+          ) : (
+            docs.map((d) => (
+              <div key={d.id} className="flex items-start gap-2 rounded-md border p-2">
+                <FileText className="mt-1 size-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{d.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {(d.size / 1024).toFixed(1)} KB · {d.text.length.toLocaleString()} chars
+                  </div>
+                  <Input
+                    className="mt-1 h-8"
+                    placeholder="Note (e.g. 'candidate CV')"
+                    defaultValue={d.note ?? ""}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v !== (d.note ?? "")) {
+                        db.event_documents.put({ ...d, note: v });
+                      }
+                    }}
+                  />
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  onClick={() => db.event_documents.delete(d.id)}
+                  aria-label={`Remove ${d.name}`}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            ))
+          )}
+        </div>
+      </Section>
+
+      <Section
+        icon={<Sparkles className="size-4" />}
+        title="AI prep"
+      >
+        <Field
+          label="Prompt for the AI"
+          hint="Steer what kinds of points/questions to generate (e.g. 'Interview a new care worker — focus on dementia experience, manual handling, weekend availability')."
+        >
+          <Textarea
+            rows={3}
+            value={event.prep_prompt ?? ""}
+            onChange={(e) => patch({ prep_prompt: e.target.value })}
+          />
+        </Field>
+        <Button className="mt-3" onClick={generate} disabled={generating}>
+          <Sparkles className="size-4" />
+          {generating ? "Generating…" : "Generate key points & questions"}
+        </Button>
+      </Section>
+
+      <PrepList
+        title="Key points to make"
+        items={event.key_points}
+        onChange={(id, p) => updateItem("key_points", id, p)}
+        onRemove={(id) => removeItem("key_points", id)}
+        onAdd={() => addItem("key_points")}
+      />
+      <PrepList
+        title="Key questions to ask"
+        items={event.key_questions}
+        onChange={(id, p) => updateItem("key_questions", id, p)}
+        onRemove={(id) => removeItem("key_questions", id)}
+        onAdd={() => addItem("key_questions")}
+      />
+    </Card>
+  );
+}
+
+function PrepList({
+  title,
+  items,
+  onChange,
+  onRemove,
+  onAdd,
+}: {
+  title: string;
+  items: EventPrepItem[];
+  onChange: (id: string, p: Partial<EventPrepItem>) => void;
+  onRemove: (id: string) => void;
+  onAdd: () => void;
+}) {
+  return (
+    <div className="mt-5">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          {title}
+        </h3>
+        <Button size="sm" variant="ghost" onClick={onAdd}>
+          <Plus className="size-4" /> Add
+        </Button>
+      </div>
+      {items.length === 0 ? (
+        <p className="text-sm italic text-muted-foreground">
+          Nothing yet — generate with AI or add your own.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {items.map((k) => (
+            <div key={k.id} className="flex items-start gap-2 rounded-md border p-2">
+              <input
+                type="checkbox"
+                checked={k.selected}
+                onChange={(e) => onChange(k.id, { selected: e.target.checked })}
+                className="mt-2 size-4"
+                aria-label="Use this in conversation"
+              />
+              <Textarea
+                rows={1}
+                className="min-h-[36px] flex-1 resize-y"
+                value={k.text}
+                onChange={(e) => onChange(k.id, { text: e.target.value, edited: true })}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0"
+                onClick={() => onRemove(k.id)}
+                aria-label="Remove"
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
