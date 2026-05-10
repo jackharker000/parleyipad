@@ -11,7 +11,9 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RecentRouteImport } from './routes/recent'
+import { Route as MessagesRouteImport } from './routes/messages'
 import { Route as FacebookRouteImport } from './routes/facebook'
+import { Route as EmailRouteImport } from './routes/email'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ConversationNewRouteImport } from './routes/conversation.new'
 
@@ -25,9 +27,19 @@ const RecentRoute = RecentRouteImport.update({
   path: '/recent',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MessagesRoute = MessagesRouteImport.update({
+  id: '/messages',
+  path: '/messages',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const FacebookRoute = FacebookRouteImport.update({
   id: '/facebook',
   path: '/facebook',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EmailRoute = EmailRouteImport.update({
+  id: '/email',
+  path: '/email',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -43,14 +55,18 @@ const ConversationNewRoute = ConversationNewRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/email': typeof EmailRoute
   '/facebook': typeof FacebookRoute
+  '/messages': typeof MessagesRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
   '/conversation/new': typeof ConversationNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/email': typeof EmailRoute
   '/facebook': typeof FacebookRoute
+  '/messages': typeof MessagesRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
   '/conversation/new': typeof ConversationNewRoute
@@ -58,20 +74,38 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/email': typeof EmailRoute
   '/facebook': typeof FacebookRoute
+  '/messages': typeof MessagesRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
   '/conversation/new': typeof ConversationNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/facebook' | '/recent' | '/settings' | '/conversation/new'
+  fullPaths:
+    | '/'
+    | '/email'
+    | '/facebook'
+    | '/messages'
+    | '/recent'
+    | '/settings'
+    | '/conversation/new'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/facebook' | '/recent' | '/settings' | '/conversation/new'
+  to:
+    | '/'
+    | '/email'
+    | '/facebook'
+    | '/messages'
+    | '/recent'
+    | '/settings'
+    | '/conversation/new'
   id:
     | '__root__'
     | '/'
+    | '/email'
     | '/facebook'
+    | '/messages'
     | '/recent'
     | '/settings'
     | '/conversation/new'
@@ -79,7 +113,9 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  EmailRoute: typeof EmailRoute
   FacebookRoute: typeof FacebookRoute
+  MessagesRoute: typeof MessagesRoute
   RecentRoute: typeof RecentRoute
   SettingsRoute: typeof SettingsRoute
   ConversationNewRoute: typeof ConversationNewRoute
@@ -101,11 +137,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RecentRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/messages': {
+      id: '/messages'
+      path: '/messages'
+      fullPath: '/messages'
+      preLoaderRoute: typeof MessagesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/facebook': {
       id: '/facebook'
       path: '/facebook'
       fullPath: '/facebook'
       preLoaderRoute: typeof FacebookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/email': {
+      id: '/email'
+      path: '/email'
+      fullPath: '/email'
+      preLoaderRoute: typeof EmailRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -127,7 +177,9 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  EmailRoute: EmailRoute,
   FacebookRoute: FacebookRoute,
+  MessagesRoute: MessagesRoute,
   RecentRoute: RecentRoute,
   SettingsRoute: SettingsRoute,
   ConversationNewRoute: ConversationNewRoute,

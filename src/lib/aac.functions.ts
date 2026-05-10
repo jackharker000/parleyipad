@@ -824,3 +824,218 @@ Generate 6-10 key points and 6-10 key questions tailored to this event.`;
       return { keyPoints: [], keyQuestions: [], error: "Parse error" };
     }
   });
+
+/* ------------------- AI: generic reply draft (FB/Email/iMessage) ---------- */
+
+const draftReplySchema = z.object({
+  platform: z.enum(["facebook", "email", "imessage"]),
+  // What James received (the email he's replying to, the comment, the text).
+  // Optional for status updates / outbound messages.
+  incoming: z.string().max(8000).optional(),
+  // What James roughly typed as a reply / what he wants to say.
+  rawText: z.string().min(1).max(4000),
+  // Free-text context (who it's from, the relationship, etc.)
+  context: z.string().max(2000).optional(),
+  // Sub-kind (e.g. fb status vs comment, email reply vs new email).
+  subType: z.string().max(40).optional(),
+  jamesProfile: jamesProfileSchema.optional(),
+  model: z.string().optional(),
+});
+
+export const draftReply = createServerFn({ method: "POST" })
+  .inputValidator((d) => draftReplySchema.parse(d))
+  .handler(async ({ data }) => {
+    const jp = data.jamesProfile;
+    const profileBlock = jp
+      ? `# About ${jp.name} (the person writing)
+${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics he loves: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics he avoids: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use his actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes about him:\n${jp.freeform}\n` : ""}`
+      : "";
+
+    const platformLabel =
+      data.platform === "email"
+        ? "an email"
+        : data.platform === "imessage"
+          ? "an iMessage / text message"
+          : "a Facebook post or comment";
+
+    const toneHint =
+      data.platform === "email"
+        ? "Email tone: complete sentences, polite, can be a few short paragraphs. Sign off as he normally would (or omit signature if his profile doesn't suggest one)."
+        : data.platform === "imessage"
+          ? "Text-message tone: short, casual, lower-case ok, contractions, can use a single emoji if it fits him. Usually 1-2 short sentences."
+          : "Facebook tone: warm, conversational, concise. Emojis sparingly only if it fits his personality.";
+
+    const system = `You are a writing assistant helping ${jp?.name ?? "James"}, a non-speaking man with cerebral palsy, write ${platformLabel}. He types with great difficulty so his input is heavily truncated and full of typos — interpret it generously. Rewrite as authentically HIM (his personality, humor, vocabulary). NEVER invent facts, opinions, names, plans, or details he did not type or that aren't in his profile. ${toneHint}`;
+
+    const incomingBlock = data.incoming?.trim()
+      ? `# What he received / is replying to\n"""\n${data.incoming.trim()}\n"""\n`
+      : "";
+
+    const user = `${profileBlock}
+${data.context ? `# Context\n${data.context}\n` : ""}${incomingBlock}
+# What James typed (rough, may have typos / be truncated)
+"${data.rawText}"
+
+Produce one polished version (the recommended one) plus 3 alternative variations with different tones (e.g. shorter / warmer / drier-witted). Return them via the tool call.`;
+
+    const target = resolveChatTarget(data.model);
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_reply",
+              parameters: {
+                type: "object",
+                properties: {
+                  recommended: { type: "string" },
+                  alternatives: {
+                    type: "array",
+                    minItems: 2,
+                    maxItems: 4,
+                    items: {
+                      type: "object",
+                      properties: {
+                        text: { type: "string" },
+                        tone: { type: "string" },
+                      },
+                      required: ["text", "tone"],
+                    },
+                  },
+                },
+                required: ["recommended", "alternatives"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_reply" } },
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("draftReply failed:", res.status, err);
+      return { recommended: data.rawText, alternatives: [], error: `AI error ${res.status}` };
+    }
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) return { recommended: data.rawText, alternatives: [], error: "No tool call returned" };
+    try {
+      const parsed = JSON.parse(argStr) as {
+        recommended: string;
+        alternatives: Array<{ text: string; tone: string }>;
+      };
+      return {
+        recommended: parsed.recommended?.trim() || data.rawText,
+        alternatives: (parsed.alternatives ?? []).map((a) => ({
+          text: (a.text ?? "").trim(),
+          tone: (a.tone ?? "").trim(),
+        })),
+        error: null,
+      };
+    } catch {
+      return { recommended: data.rawText, alternatives: [], error: "Parse error" };
+    }
+  });
+
+/* --------------- AI: extract interests / context from a draft -------------- */
+
+const extractInterestsSchema = z.object({
+  // The text we just helped him write (and optionally what he received)
+  draft: z.string().min(1).max(4000),
+  incoming: z.string().max(8000).optional(),
+  // Current profile fields, so we don't suggest things already known.
+  currentTopicsLoved: z.string().max(2000).optional(),
+  currentLifeContext: z.string().max(2000).optional(),
+  currentSignaturePhrases: z.string().max(2000).optional(),
+  jamesName: z.string().max(80).optional(),
+  model: z.string().optional(),
+});
+
+export const extractInterests = createServerFn({ method: "POST" })
+  .inputValidator((d) => extractInterestsSchema.parse(d))
+  .handler(async ({ data }) => {
+    const system = `You are a careful profile-keeper for ${data.jamesName ?? "James"}, a non-speaking AAC user. Looking at a message he just wrote (and optionally what he received), suggest 0-3 SHORT additions to his profile that would help an AI assistant respond more like him in the future. Categories: "topic_loved" (a hobby/subject he clearly cares about), "current_context" (a current life event/plan/health/family update), "signature_phrase" (a recurring expression or way of speaking). Only suggest things clearly evidenced in the text. Skip if nothing meaningful is new. Each suggestion must be under 12 words. Do NOT repeat anything already present in his current profile fields.`;
+
+    const user = `# Already in his profile (do NOT repeat)
+Topics loved: ${data.currentTopicsLoved || "(none)"}
+Current life context: ${data.currentLifeContext || "(none)"}
+Signature phrases: ${data.currentSignaturePhrases || "(none)"}
+
+${data.incoming ? `# What he received\n"""\n${data.incoming}\n"""\n` : ""}
+# What he just wrote
+"""
+${data.draft}
+"""
+
+Return 0-3 suggested profile additions.`;
+
+    const target = resolveChatTarget(data.model);
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_interests",
+              parameters: {
+                type: "object",
+                properties: {
+                  suggestions: {
+                    type: "array",
+                    maxItems: 3,
+                    items: {
+                      type: "object",
+                      properties: {
+                        kind: {
+                          type: "string",
+                          enum: ["topic_loved", "current_context", "signature_phrase"],
+                        },
+                        text: { type: "string" },
+                        why: { type: "string" },
+                      },
+                      required: ["kind", "text"],
+                    },
+                  },
+                },
+                required: ["suggestions"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_interests" } },
+      }),
+    });
+    if (!res.ok) return { suggestions: [], error: `AI error ${res.status}` };
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) return { suggestions: [], error: null };
+    try {
+      const parsed = JSON.parse(argStr) as {
+        suggestions: Array<{ kind: string; text: string; why?: string }>;
+      };
+      return {
+        suggestions: (parsed.suggestions ?? [])
+          .map((s) => ({ kind: s.kind, text: (s.text ?? "").trim(), why: s.why?.trim() }))
+          .filter((s) => s.text.length > 0),
+        error: null,
+      };
+    } catch {
+      return { suggestions: [], error: "Parse error" };
+    }
+  });

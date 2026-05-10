@@ -17,6 +17,8 @@ import {
   Calendar,
   History,
   Plus,
+  Mail,
+  MessageCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -887,6 +889,26 @@ function Home() {
         >
           <Facebook className="size-7" />
           <span className="text-sm font-medium text-foreground">Facebook</span>
+        </Link>
+
+        {/* Email helper */}
+        <Link
+          to="/email"
+          aria-label="Email helper"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-[#ea4335] transition hover:bg-secondary"
+        >
+          <Mail className="size-7" />
+          <span className="text-sm font-medium text-foreground">Email</span>
+        </Link>
+
+        {/* Messages helper */}
+        <Link
+          to="/messages"
+          aria-label="Messages helper"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-[#34c759] transition hover:bg-secondary"
+        >
+          <MessageCircle className="size-7" />
+          <span className="text-sm font-medium text-foreground">Messages</span>
         </Link>
 
         {/* Settings */}
