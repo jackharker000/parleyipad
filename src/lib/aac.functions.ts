@@ -13,6 +13,46 @@ function requireLovableApiKey(): string {
   return key;
 }
 
+function requireOpenAIApiKey(): string {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error("OPENAI_API_KEY is not configured. Add it in Settings → AI model.");
+  return key;
+}
+
+/**
+ * Resolve the chat-completions endpoint + auth + model id for a given
+ * model selector. Selectors prefixed with "openai-direct/" call the OpenAI
+ * API directly using the user-provided OPENAI_API_KEY; everything else
+ * routes through the Lovable AI Gateway.
+ */
+function resolveChatTarget(model: string | undefined): {
+  url: string;
+  headers: Record<string, string>;
+  model: string;
+} {
+  const m = model ?? "google/gemini-2.5-flash-lite";
+  if (m.startsWith("openai-direct/")) {
+    const apiKey = requireOpenAIApiKey();
+    return {
+      url: "https://api.openai.com/v1/chat/completions",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      model: m.slice("openai-direct/".length),
+    };
+  }
+  const apiKey = requireLovableApiKey();
+  return {
+    url: "https://ai.gateway.lovable.dev/v1/chat/completions",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    model: m,
+  };
+}
+
 /* ------------------------- ElevenLabs: Scribe token ------------------------- */
 
 export const createScribeToken = createServerFn({ method: "POST" }).handler(
@@ -252,8 +292,6 @@ const SUGGESTION_CATEGORIES = [
 export const generateSuggestions = createServerFn({ method: "POST" })
   .inputValidator((d) => suggestionsSchema.parse(d))
   .handler(async ({ data }) => {
-    const apiKey = requireLovableApiKey();
-
     const transcriptText = data.recentTranscript
       .slice(-20)
       .map((s) => `${s.speaker}: ${s.text}`)
@@ -298,14 +336,12 @@ ${transcriptText || "(no transcript yet — conversation just starting)"}
 ${data.alreadyShown?.length ? `# Already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
 Return 16 ranked suggestions in James's voice. Provide a wide variety so James has plenty of useful options to pick from.`;
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const target = resolveChatTarget(data.model);
+    const res = await fetch(target.url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: target.headers,
       body: JSON.stringify({
-        model: data.model ?? "google/gemini-2.5-pro",
+        model: target.model,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -321,8 +357,8 @@ Return 16 ranked suggestions in James's voice. Provide a wide variety so James h
                 properties: {
                   suggestions: {
                     type: "array",
-                     minItems: 12,
-                     maxItems: 16,
+                    minItems: 8,
+                    maxItems: 16,
                     items: {
                       type: "object",
                       properties: {
@@ -500,13 +536,12 @@ const expandSchema = z.object({
   jamesProfile: jamesProfileSchema.optional(),
   people: z.array(personCtxSchema).optional(),
   place: placeCtxSchema.optional(),
+  model: z.string().optional(),
 });
 
 export const expandUtterance = createServerFn({ method: "POST" })
   .inputValidator((d) => expandSchema.parse(d))
   .handler(async ({ data }) => {
-    const apiKey = requireLovableApiKey();
-
     const transcriptText = (data.recentTranscript ?? [])
       .slice(-12)
       .map((s) => `${s.speaker}: ${s.text}`)
@@ -531,14 +566,12 @@ James typed: "${data.rawText}"
 
 Rewrite as the spoken reply:`;
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const target = resolveChatTarget(data.model);
+    const res = await fetch(target.url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: target.headers,
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: target.model,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },

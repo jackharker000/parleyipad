@@ -94,6 +94,8 @@ export type Settings = {
   cloud_sync: boolean;
   suggestion_refresh_ms: number;
   ipad_model?: IPadModel;
+  suggestion_model?: string;
+  expand_model?: string;
 };
 
 export type IPadModel =
@@ -183,7 +185,32 @@ export const DEFAULT_SETTINGS: Settings = {
   cloud_sync: false,
   suggestion_refresh_ms: 3500,
   ipad_model: "auto",
+  suggestion_model: "google/gemini-2.5-flash-lite",
+  expand_model: "google/gemini-2.5-flash-lite",
 };
+
+export type ModelOption = {
+  id: string;
+  label: string;
+  hint: string;
+  provider: "gateway" | "openai-direct";
+};
+
+// Models served via Lovable AI Gateway (no extra key needed) plus
+// "openai-direct/*" options that use the user's own OPENAI_API_KEY.
+export const MODEL_OPTIONS: ModelOption[] = [
+  { id: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", hint: "Fastest · cheapest", provider: "gateway" },
+  { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash (preview)", hint: "Fast · high quality", provider: "gateway" },
+  { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash", hint: "Balanced", provider: "gateway" },
+  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro", hint: "Slower · most thoughtful", provider: "gateway" },
+  { id: "openai/gpt-5-nano", label: "GPT-5 Nano (gateway)", hint: "Fast OpenAI via Lovable", provider: "gateway" },
+  { id: "openai/gpt-5-mini", label: "GPT-5 Mini (gateway)", hint: "Balanced OpenAI via Lovable", provider: "gateway" },
+  { id: "openai/gpt-5", label: "GPT-5 (gateway)", hint: "Slower · best OpenAI via Lovable", provider: "gateway" },
+  { id: "openai-direct/gpt-4o-mini", label: "GPT-4o mini (your key)", hint: "Fast · uses your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-4o", label: "GPT-4o (your key)", hint: "Uses your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-4.1-mini", label: "GPT-4.1 mini (your key)", hint: "Uses your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-4.1", label: "GPT-4.1 (your key)", hint: "Uses your OpenAI key", provider: "openai-direct" },
+];
 
 export async function getSettings(): Promise<Settings> {
   const existing = await db.settings.get("singleton");

@@ -47,6 +47,7 @@ import {
   type Place,
   IPAD_PRESETS,
   type IPadModel,
+  MODEL_OPTIONS,
 } from "@/lib/db";
 import {
   listVoices,
@@ -274,6 +275,36 @@ function SystemTab() {
               )
             }
           />
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h2 className="text-lg font-semibold">AI model</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Powers suggestions and the "clarify &amp; speak" expansion. Faster
+          models give snappier suggestions; bigger models think harder but are
+          slower. "Your key" options use your own OpenAI API key.
+        </p>
+        <div className="mt-4">
+          <Select
+            value={settings.suggestion_model ?? "google/gemini-2.5-flash-lite"}
+            onValueChange={(v) =>
+              updateSettings({ suggestion_model: v, expand_model: v }).then(() =>
+                toast.success("AI model updated"),
+              )
+            }
+          >
+            <SelectTrigger className="h-12 text-base">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MODEL_OPTIONS.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.label} — <span className="text-muted-foreground">{m.hint}</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </Card>
 

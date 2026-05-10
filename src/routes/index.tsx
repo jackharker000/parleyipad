@@ -152,6 +152,7 @@ function Home() {
   } | null>(null);
   const [voiceId, setVoiceId] = useState<string>("EXAVITQu4vr4xnSDxMaL");
   const [ipadModel, setIpadModel] = useState<string>("auto");
+  const aiModelRef = useRef<string>("google/gemini-2.5-flash-lite");
 
   // Speaker map
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>({});
@@ -204,6 +205,7 @@ function Home() {
       if (cancelled) return;
       setVoiceId(s.voice_id);
       setIpadModel(s.ipad_model ?? "auto");
+      aiModelRef.current = s.suggestion_model ?? "google/gemini-2.5-flash-lite";
 
       const people = await db.people.orderBy("name").toArray();
       if (!cancelled) setAllPeople(people);
@@ -454,6 +456,7 @@ function Home() {
           place: ctx.place,
           styleProfileJson: ctx.styleProfileJson,
           alreadyShown: lastShownRef.current.slice(-20),
+          model: aiModelRef.current,
         },
       });
       if (r.suggestions?.length) {
@@ -567,6 +570,7 @@ function Home() {
           jamesProfile: ctx.jamesProfile,
           people: ctx.people,
           place: ctx.place,
+          model: aiModelRef.current,
         },
       });
       const spoken = (r.expanded || raw).trim();
