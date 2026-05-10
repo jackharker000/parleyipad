@@ -14,10 +14,12 @@ import {
   Crosshair,
   Search,
   Sparkles,
+  Map as MapIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { MapPicker, type MapPickResult } from "@/components/MapPicker";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -1114,6 +1116,7 @@ function PlacesTab() {
   );
   const [editing, setEditing] = useState<Place | null>(null);
   const [busy, setBusy] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
 
   function startAdd() {
     setEditing({
@@ -1244,6 +1247,13 @@ function PlacesTab() {
               <Crosshair className="size-4" />
               {busy ? "Reading GPS…" : "Use current location"}
             </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setMapOpen(true)}
+            >
+              <MapIcon className="size-4" />
+              Pick on map
+            </Button>
             <Field label="Radius (metres)">
               <Input
                 type="number"
@@ -1278,6 +1288,27 @@ function PlacesTab() {
           </Card>
         )}
       </div>
+      {editing && (
+        <MapPicker
+          open={mapOpen}
+          onOpenChange={setMapOpen}
+          initialLat={editing.lat}
+          initialLng={editing.lng}
+          onConfirm={({ lat, lng, name }: MapPickResult) => {
+            setEditing((cur) =>
+              cur
+                ? {
+                    ...cur,
+                    lat,
+                    lng,
+                    name: cur.name?.trim() ? cur.name : name ?? cur.name,
+                  }
+                : cur,
+            );
+            toast.success("Location set from map");
+          }}
+        />
+      )}
     </div>
   );
 }
