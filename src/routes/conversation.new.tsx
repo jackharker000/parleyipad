@@ -130,6 +130,18 @@ function LiveConversation() {
   const [voiceId, setVoiceId] = useState<string>("EXAVITQu4vr4xnSDxMaL");
   const lastShownRef = useRef<string[]>([]);
 
+  // Speaker → Person id mapping (auto + manual)
+  const [speakerMap, setSpeakerMap] = useState<Record<string, string>>({});
+  const [jamesLabel, setJamesLabel] = useState<string | undefined>(undefined);
+  const speakerMapRef = useRef<Record<string, string>>({});
+  const jamesLabelRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    speakerMapRef.current = speakerMap;
+  }, [speakerMap]);
+  useEffect(() => {
+    jamesLabelRef.current = jamesLabel;
+  }, [jamesLabel]);
+
   const tokenFn = useServerFn(createScribeToken);
   const ttsFn = useServerFn(synthesizeSpeech);
   const suggestFn = useServerFn(generateSuggestions);
@@ -242,15 +254,47 @@ function LiveConversation() {
     setShowPicker(false);
   }
 
+  // Auto-map diarized speakers to people whenever a new segment arrives
+  useEffect(() => {
+    if (showPicker || committed.length === 0) return;
+    const candidates = allPeople.filter((p) =>
+      personIdsRef.current.includes(p.id),
+    );
+    if (candidates.length === 0) return;
+    const { mapping } = autoMapSpeakers({
+      segments: committed,
+      candidates,
+      current: speakerMapRef.current,
+      jamesSpeakerLabel: jamesLabelRef.current,
+    });
+    // Only update if changed
+    const changed = Object.keys(mapping).some(
+      (k) => mapping[k] !== speakerMapRef.current[k],
+    );
+    if (changed) {
+      setSpeakerMap(mapping);
+      db.conversations.update(conversationIdRef.current, {
+        speaker_map: mapping,
+      });
+    }
+  }, [committed, allPeople, showPicker]);
+
   // Suggestion refresh loop
   const refreshSuggestions = useCallback(async () => {
     if (loadingSuggestions) return;
     setLoadingSuggestions(true);
     try {
-      const recent = committed.slice(-12).map((s) => ({
+      const peopleById = new Map(allPeople.map((p) => [p.id, p] as const));
+      const rawRecent = committed.slice(-12).map((s) => ({
         speaker: s.speaker_label,
         text: s.text,
       }));
+      const recent = labelTranscriptForPrompt(
+        rawRecent,
+        speakerMapRef.current,
+        peopleById,
+        jamesLabelRef.current,
+      );
       const ctx = await buildConversationContext({
         personIds: personIdsRef.current,
         place: placeRef.current,
@@ -295,7 +339,7 @@ function LiveConversation() {
     } finally {
       setLoadingSuggestions(false);
     }
-  }, [committed, placeName, suggestFn, loadingSuggestions]);
+  }, [committed, placeName, suggestFn, loadingSuggestions, allPeople]);
 
   // Auto-fetch on first load and after each new committed segment (debounced)
   useEffect(() => {
