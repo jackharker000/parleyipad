@@ -141,6 +141,16 @@ export type JamesProfile = {
   updated_at: number;
 };
 
+export type JamesDocument = {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  text: string; // extracted plain text (truncated)
+  note?: string; // optional user note about this document
+  created_at: number;
+};
+
 class AacDb extends Dexie {
   people!: Table<Person, string>;
   places!: Table<Place, string>;
@@ -153,6 +163,7 @@ class AacDb extends Dexie {
   settings!: Table<Settings, string>;
   style_profile!: Table<StyleProfile, string>;
   james_profile!: Table<JamesProfile, string>;
+  james_documents!: Table<JamesDocument, string>;
 
   constructor() {
     super("aac_copilot");
@@ -170,6 +181,9 @@ class AacDb extends Dexie {
     });
     this.version(2).stores({
       james_profile: "id",
+    });
+    this.version(3).stores({
+      james_documents: "id, created_at",
     });
   }
 }
