@@ -188,6 +188,18 @@ export type EventDocument = {
   created_at: number;
 };
 
+export type Voiceprint = {
+  id: string; // == person_id
+  person_id: string;
+  centroid: number[]; // mean MFCC vector (length = MFCC_COEFFS)
+  sample_count: number;
+  updated_at: number;
+};
+
+export const MFCC_COEFFS = 13;
+/** Cosine-similarity threshold above which an unknown speaker is auto-matched to a stored voiceprint. */
+export const VOICEPRINT_MATCH_THRESHOLD = 0.86;
+
 class AacDb extends Dexie {
   people!: Table<Person, string>;
   places!: Table<Place, string>;
@@ -203,6 +215,7 @@ class AacDb extends Dexie {
   james_documents!: Table<JamesDocument, string>;
   events!: Table<EventItem, string>;
   event_documents!: Table<EventDocument, string>;
+  voiceprints!: Table<Voiceprint, string>;
 
   constructor() {
     super("aac_copilot");
@@ -227,6 +240,9 @@ class AacDb extends Dexie {
     this.version(4).stores({
       events: "id, name, created_at",
       event_documents: "id, event_id, created_at",
+    });
+    this.version(5).stores({
+      voiceprints: "id, person_id, updated_at",
     });
   }
 }
