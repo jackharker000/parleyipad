@@ -2031,3 +2031,61 @@ function PrepList({
     </div>
   );
 }
+
+/** Try to parse a freeform `when` string into a Date for the calendar. */
+function parseEventDate(value: string | undefined): Date | undefined {
+  if (!value) return undefined;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
+function EventLocationField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const places = useLiveQuery(() => db.places.orderBy("name").toArray(), []);
+  const matchedPlaceId = useMemo(() => {
+    if (!places || !value) return "";
+    const m = places.find((p) => p.name === value);
+    return m?.id ?? "__custom__";
+  }, [places, value]);
+  return (
+    <Field label="Where" hint="Choose a saved location or type your own">
+      <div className="flex gap-2">
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Where is this happening?"
+          className="flex-1"
+        />
+        <Select
+          value={matchedPlaceId}
+          onValueChange={(id) => {
+            const p = places?.find((pl) => pl.id === id);
+            if (p) onChange(p.name);
+          }}
+        >
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="Saved places…" />
+          </SelectTrigger>
+          <SelectContent>
+            {(places ?? []).length === 0 ? (
+              <SelectItem value="__none__" disabled>
+                No saved locations
+              </SelectItem>
+            ) : (
+              (places ?? []).map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                </SelectItem>
+              ))
+            )}
+          </SelectContent>
+        </Select>
+      </div>
+    </Field>
+  );
+}
