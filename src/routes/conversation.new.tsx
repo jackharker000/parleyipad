@@ -70,6 +70,33 @@ function categoryClass(cat: string): string {
   }
 }
 
+function PersonChip({
+  person,
+  selected,
+  onToggle,
+}: {
+  person: Person;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className={`flex items-center gap-2 rounded-full border-2 px-4 py-2 text-base transition-colors ${
+        selected
+          ? "border-primary bg-primary/10 text-foreground"
+          : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary"
+      }`}
+    >
+      {selected && <Check className="size-4" />}
+      <span className="font-medium">{person.name}</span>
+      {person.relationship && (
+        <span className="text-xs opacity-70">{person.relationship}</span>
+      )}
+    </button>
+  );
+}
+
 function LiveConversation() {
   const router = useRouter();
   const conversationIdRef = useRef<string>(newId());
