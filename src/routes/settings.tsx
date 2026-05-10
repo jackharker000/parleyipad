@@ -1294,7 +1294,7 @@ function PlacesTab() {
           onOpenChange={setMapOpen}
           initialLat={editing.lat}
           initialLng={editing.lng}
-          onConfirm={({ lat, lng, name }) => {
+          onConfirm={({ lat, lng, name }: MapPickResult) => {
             setEditing((cur) =>
               cur
                 ? {
