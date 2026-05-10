@@ -78,6 +78,7 @@ import {
 import { getCurrentPosition } from "@/lib/geo";
 import { getPersonStats, groupMemories } from "@/lib/people-stats";
 import { deleteVoiceprint } from "@/lib/voiceprint";
+import { AccountCard } from "@/components/AccountCard";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -258,6 +259,7 @@ function SystemTab() {
 
   return (
     <div className="space-y-4">
+      <AccountCard />
       <Card className="p-6">
         <h2 className="text-lg font-semibold">Voice</h2>
         <p className="mt-1 text-sm text-muted-foreground">
