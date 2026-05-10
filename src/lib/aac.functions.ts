@@ -292,8 +292,6 @@ const SUGGESTION_CATEGORIES = [
 export const generateSuggestions = createServerFn({ method: "POST" })
   .inputValidator((d) => suggestionsSchema.parse(d))
   .handler(async ({ data }) => {
-    const apiKey = requireLovableApiKey();
-
     const transcriptText = data.recentTranscript
       .slice(-20)
       .map((s) => `${s.speaker}: ${s.text}`)
@@ -338,14 +336,12 @@ ${transcriptText || "(no transcript yet — conversation just starting)"}
 ${data.alreadyShown?.length ? `# Already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
 Return 16 ranked suggestions in James's voice. Provide a wide variety so James has plenty of useful options to pick from.`;
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const target = resolveChatTarget(data.model);
+    const res = await fetch(target.url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: target.headers,
       body: JSON.stringify({
-        model: data.model ?? "google/gemini-2.5-pro",
+        model: target.model,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -361,8 +357,8 @@ Return 16 ranked suggestions in James's voice. Provide a wide variety so James h
                 properties: {
                   suggestions: {
                     type: "array",
-                     minItems: 12,
-                     maxItems: 16,
+                    minItems: 8,
+                    maxItems: 16,
                     items: {
                       type: "object",
                       properties: {
