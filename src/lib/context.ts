@@ -96,6 +96,25 @@ export async function buildConversationContext(opts: {
   const profile = await getJamesProfile();
   const styleProfile = await db.style_profile.get("singleton");
 
+  // Reference documents attached to James's profile — fold into freeform
+  // notes so they reach the model without changing the prompt schema.
+  const docs = await db.james_documents.orderBy("created_at").toArray();
+  const PER_DOC_CHARS = 4000;
+  const TOTAL_DOC_CHARS = 16000;
+  let docsBlock = "";
+  let used = 0;
+  for (const d of docs) {
+    const remaining = TOTAL_DOC_CHARS - used;
+    if (remaining <= 200) break;
+    const slice = (d.text ?? "").slice(0, Math.min(PER_DOC_CHARS, remaining));
+    if (!slice.trim()) continue;
+    docsBlock += `\n\n## Reference document: ${d.name}${d.note ? ` — ${d.note}` : ""}\n${slice}`;
+    used += slice.length;
+  }
+  const freeformCombined = [profile.freeform_notes, docsBlock.trim() ? `Reference documents about James:${docsBlock}` : ""]
+    .filter(Boolean)
+    .join("\n\n");
+
   const peopleRows = (await db.people.bulkGet(opts.personIds)).filter(
     (p): p is Person => !!p,
   );
@@ -136,6 +155,7 @@ export async function buildConversationContext(opts: {
         .filter(Boolean),
       currentLifeContext: profile.current_life_context,
       freeform: profile.freeform_notes,
+    },
     },
     people,
     place,
