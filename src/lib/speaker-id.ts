@@ -1,20 +1,27 @@
 import type { Person, TranscriptSegment } from "./db";
 
+const JAMES_SELF_LABEL = "__james_self__";
+
 /**
  * Try to auto-map diarized speaker labels (e.g. "Speaker 2") to known Person ids.
  * Returns a NEW mapping: { [speaker_label]: person_id }.
- * Only assigns when confidence is high; never overwrites an existing mapping
- * unless `override` is true.
+ *
+ * IMPORTANT: James never speaks aloud — he only types/taps suggestions, which
+ * appear in the transcript with the synthetic label `__james_self__`. So every
+ * diarized voice label must map to a non-James person. We never assign a
+ * spoken label to James.
  */
 export function autoMapSpeakers(opts: {
   segments: TranscriptSegment[];
   candidates: Person[];
   current: Record<string, string>;
-  jamesSpeakerLabel?: string; // if known
+  /** Deprecated — James never speaks. Kept for backwards compatibility, ignored. */
+  jamesSpeakerLabel?: string;
 }): { mapping: Record<string, string>; jamesLabel?: string } {
   const mapping: Record<string, string> = { ...opts.current };
   const used = new Set(Object.values(mapping));
-  let jamesLabel = opts.jamesSpeakerLabel;
+  // James is the typist, never a diarized voice. Treat as fixed synthetic label.
+  const jamesLabel = JAMES_SELF_LABEL;
 
   // Index candidates by lowercase first name and full name
   const byFirstName = new Map<string, Person[]>();
@@ -88,9 +95,9 @@ export function autoMapSpeakers(opts: {
   }
 
   // 2. James-addresses-them: "Hey Sarah, …" then a new speaker replies
-  // Heuristic: find James's segments mentioning a candidate name; the next
-  // segment by an unmapped speaker is likely that person.
-  if (jamesLabel) {
+  // Heuristic: find James's typed segments mentioning a candidate name; the
+  // next spoken segment by an unmapped speaker is likely that person.
+  {
     const sorted = [...opts.segments].sort((a, b) => a.ts - b.ts);
     for (let i = 0; i < sorted.length; i++) {
       const cur = sorted[i];
@@ -116,14 +123,28 @@ export function autoMapSpeakers(opts: {
     }
   }
 
-  // 3. Sole-candidate prior: if exactly one unmapped non-James speaker label
-  // exists AND exactly one unused candidate remains, assign.
-  const unmappedLabels = [...bySpeaker.keys()].filter(
-    (l) => !mapping[l] && l !== jamesLabel,
-  );
+  // 3. Selected-people fallback. Since James never speaks, every diarized
+  // label must be one of the people currently in the conversation. Pair
+  // unmapped labels (in first-heard order) with unmapped candidates (in the
+  // order they were selected). This handles the common case of 1-vs-1 chats
+  // and gracefully degrades for groups.
+  const labelFirstSeen = new Map<string, number>();
+  for (const s of opts.segments) {
+    if (s.speaker_label === jamesLabel) continue;
+    if (!labelFirstSeen.has(s.speaker_label)) {
+      labelFirstSeen.set(s.speaker_label, s.ts);
+    }
+  }
+  const unmappedLabels = [...bySpeaker.keys()]
+    .filter((l) => !mapping[l] && l !== jamesLabel)
+    .sort(
+      (a, b) =>
+        (labelFirstSeen.get(a) ?? 0) - (labelFirstSeen.get(b) ?? 0),
+    );
   const unusedCandidates = opts.candidates.filter((c) => !used.has(c.id));
-  if (unmappedLabels.length === 1 && unusedCandidates.length === 1) {
-    mapping[unmappedLabels[0]] = unusedCandidates[0].id;
+  for (let i = 0; i < unmappedLabels.length && i < unusedCandidates.length; i++) {
+    mapping[unmappedLabels[i]] = unusedCandidates[i].id;
+    used.add(unusedCandidates[i].id);
   }
 
   return { mapping, jamesLabel };
