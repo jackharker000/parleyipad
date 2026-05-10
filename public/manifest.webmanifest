@@ -1,0 +1,10 @@
+{
+  "name": "AAC Copilot",
+  "short_name": "AAC",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#f6f3ec",
+  "theme_color": "#1f5b6e"
+}
