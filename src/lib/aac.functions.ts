@@ -589,3 +589,114 @@ Rewrite as the spoken reply:`;
     const cleaned = text.replace(/^["'`]+|["'`]+$/g, "").trim();
     return { expanded: cleaned || data.rawText, error: null };
   });
+
+/* ----------------------- AI: draft a Facebook post ------------------------ */
+
+const fbPostSchema = z.object({
+  rawText: z.string().min(1).max(4000),
+  postType: z.enum(["status", "comment", "reply", "message"]).optional(),
+  context: z.string().max(2000).optional(), // e.g. "replying to Matt's photo of Jack sailing"
+  jamesProfile: jamesProfileSchema.optional(),
+  model: z.string().optional(),
+});
+
+export const draftFacebookPost = createServerFn({ method: "POST" })
+  .inputValidator((d) => fbPostSchema.parse(d))
+  .handler(async ({ data }) => {
+    const jp = data.jamesProfile;
+    const profileBlock = jp
+      ? `# About ${jp.name} (the person posting)
+${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics he loves: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics he avoids: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use his actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes about him:\n${jp.freeform}\n` : ""}`
+      : "";
+
+    const postType = data.postType ?? "status";
+    const typeHint =
+      postType === "comment"
+        ? "a short Facebook comment on someone else's post"
+        : postType === "reply"
+          ? "a short Facebook reply to a comment"
+          : postType === "message"
+            ? "a Facebook Messenger message"
+            : "a Facebook status update";
+
+    const system = `You are a writing assistant helping ${jp?.name ?? "James"}, a non-speaking man with cerebral palsy, post on Facebook. He types with great difficulty so his input is heavily truncated and full of typos — interpret it generously and infer intent from context. Your job is to turn his rough typing into ${typeHint} that sounds authentically like HIM (his personality, humor, vocabulary). NEVER invent facts, opinions, names, plans, or details he did not type or that aren't in his profile. Keep it natural, warm, and concise — Facebook tone, not formal writing. Use emojis sparingly only if it fits his personality. No hashtags unless he typed them.`;
+
+    const user = `${profileBlock}
+${data.context ? `# Context for this post\n${data.context}\n` : ""}
+# What James typed (rough, may have typos / be truncated)
+"${data.rawText}"
+
+Produce one polished version (the recommended one) plus 3 alternative variations with different tones (e.g. shorter / warmer / drier-witted). Keep each under 60 words. Return them via the tool call.`;
+
+    const target = resolveChatTarget(data.model);
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_post",
+              description: "Emit a polished Facebook post and alternatives",
+              parameters: {
+                type: "object",
+                properties: {
+                  recommended: { type: "string" },
+                  alternatives: {
+                    type: "array",
+                    minItems: 2,
+                    maxItems: 4,
+                    items: {
+                      type: "object",
+                      properties: {
+                        text: { type: "string" },
+                        tone: { type: "string", description: "e.g. shorter, warmer, drier" },
+                      },
+                      required: ["text", "tone"],
+                    },
+                  },
+                },
+                required: ["recommended", "alternatives"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_post" } },
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("FB draft failed:", res.status, err);
+      return { recommended: data.rawText, alternatives: [], error: `AI error ${res.status}` };
+    }
+
+    const json = (await res.json()) as any;
+    const call = json.choices?.[0]?.message?.tool_calls?.[0];
+    const argStr = call?.function?.arguments;
+    if (!argStr) {
+      return { recommended: data.rawText, alternatives: [], error: "No tool call returned" };
+    }
+    try {
+      const parsed = JSON.parse(argStr) as {
+        recommended: string;
+        alternatives: Array<{ text: string; tone: string }>;
+      };
+      return {
+        recommended: parsed.recommended?.trim() || data.rawText,
+        alternatives: (parsed.alternatives ?? []).map((a) => ({
+          text: (a.text ?? "").trim(),
+          tone: (a.tone ?? "").trim(),
+        })),
+        error: null,
+      };
+    } catch {
+      return { recommended: data.rawText, alternatives: [], error: "Parse error" };
+    }
+  });
