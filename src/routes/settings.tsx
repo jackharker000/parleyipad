@@ -1790,18 +1790,43 @@ function EventDetail({ eventId }: { eventId: string }) {
             onChange={(e) => patch({ name: e.target.value })}
           />
         </Field>
-        <Field label="When" hint="e.g. Tue 14 May, 10am">
-          <Input
-            value={event.when ?? ""}
-            onChange={(e) => patch({ when: e.target.value })}
-          />
+        <Field label="When" hint="Pick a date or type freeform (e.g. Tue 14 May, 10am)">
+          <div className="flex gap-2">
+            <Input
+              value={event.when ?? ""}
+              onChange={(e) => patch({ when: e.target.value })}
+              placeholder="Tue 14 May, 10am"
+              className="flex-1"
+            />
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label="Pick a date"
+                >
+                  <CalendarIcon className="size-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="end">
+                <Calendar
+                  mode="single"
+                  selected={parseEventDate(event.when)}
+                  onSelect={(d) => {
+                    if (d) patch({ when: format(d, "EEE d MMM yyyy") });
+                  }}
+                  initialFocus
+                  className={cn("p-3 pointer-events-auto")}
+                />
+              </PopoverContent>
+            </Popover>
+          </div>
         </Field>
-        <Field label="Where">
-          <Input
-            value={event.location ?? ""}
-            onChange={(e) => patch({ location: e.target.value })}
-          />
-        </Field>
+        <EventLocationField
+          value={event.location ?? ""}
+          onChange={(v) => patch({ location: v })}
+        />
         <div />
         <div className="md:col-span-2">
           <Field label="Key info" hint="Purpose, agenda, anything important">
