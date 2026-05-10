@@ -443,7 +443,7 @@ function Home() {
         segments: committed,
         candidates,
         current: speakerMapRef.current,
-        jamesSpeakerLabel: jamesLabelRef.current,
+        // James never speaks aloud — every diarized voice is a non-James person.
       });
       const changed = Object.keys(mapping).some(
         (k) => mapping[k] !== speakerMapRef.current[k],
