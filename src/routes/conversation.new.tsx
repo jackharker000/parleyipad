@@ -614,6 +614,41 @@ function LiveConversation() {
         </div>
       </header>
 
+      {/* Speaker mapping bar */}
+      <SpeakerBar
+        segments={committed}
+        speakerMap={speakerMap}
+        jamesLabel={jamesLabel}
+        candidates={allPeople.filter((p) => personIdsRef.current.includes(p.id))}
+        onAssign={(label, personId) => {
+          const next = { ...speakerMap };
+          // Clear any previous assignment of this person
+          for (const k of Object.keys(next)) {
+            if (next[k] === personId) delete next[k];
+          }
+          next[label] = personId;
+          setSpeakerMap(next);
+          db.conversations.update(conversationIdRef.current, { speaker_map: next });
+        }}
+        onSetJames={(label) => {
+          setJamesLabel(label);
+          // Remove any person mapping for that label
+          if (speakerMap[label]) {
+            const next = { ...speakerMap };
+            delete next[label];
+            setSpeakerMap(next);
+            db.conversations.update(conversationIdRef.current, { speaker_map: next });
+          }
+        }}
+        onClear={(label) => {
+          const next = { ...speakerMap };
+          delete next[label];
+          setSpeakerMap(next);
+          db.conversations.update(conversationIdRef.current, { speaker_map: next });
+          if (jamesLabel === label) setJamesLabel(undefined);
+        }}
+      />
+
       {/* Transcript */}
       <section className="border-b border-border bg-card/50 px-5 py-4">
         <div className="mx-auto max-w-3xl space-y-1.5">
@@ -622,14 +657,25 @@ function LiveConversation() {
               Listening… start the conversation.
             </p>
           )}
-          {transcriptList.map((s) => (
-            <div key={s.id} className="text-base leading-snug">
-              <span className="mr-2 text-xs font-medium text-muted-foreground">
-                {s.speaker_label}
-              </span>
-              {s.text}
-            </div>
-          ))}
+          {transcriptList.map((s) => {
+            const displayName =
+              s.speaker_label === jamesLabel
+                ? "James"
+                : (() => {
+                    const pid = speakerMap[s.speaker_label];
+                    return pid
+                      ? allPeople.find((p) => p.id === pid)?.name ?? s.speaker_label
+                      : s.speaker_label;
+                  })();
+            return (
+              <div key={s.id} className="text-base leading-snug">
+                <span className="mr-2 text-xs font-medium text-muted-foreground">
+                  {displayName}
+                </span>
+                {s.text}
+              </div>
+            );
+          })}
           {partial && (
             <div className="text-base italic leading-snug text-muted-foreground">
               {partial}
