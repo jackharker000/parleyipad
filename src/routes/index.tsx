@@ -581,7 +581,8 @@ function Home() {
   }, [draft, expanding, speaking, expandFn, allPeople, committed, speak]);
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+    <ScaledShell ipadModel={ipadModel}>
+    <main className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
       {/* Top control bar — always visible, designed for landscape iPad */}
       <header className="flex shrink-0 items-stretch gap-3 border-b border-border bg-card px-3 py-3">
         {/* Start/Stop stacked buttons (small squares, top-left) */}
@@ -741,10 +742,10 @@ function Home() {
       </div>
 
       {/* Main two-column area: full width landscape */}
-      <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 lg:flex-row">
-        {/* Suggestions */}
-        <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-border bg-card/40">
-          <div className="flex items-center justify-between border-b border-border px-4 py-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
+        {/* Suggestions — 4 cols × 4 rows */}
+        <section className="flex min-h-0 flex-[3] flex-col rounded-2xl border border-border bg-card/40">
+          <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
               <Sparkles className="size-4" /> Suggestions
             </h2>
@@ -757,36 +758,36 @@ function Home() {
               {loadingSuggestions ? "Thinking…" : "Refresh"}
             </Button>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-y-auto p-3 sm:grid-cols-2">
+          <div className="grid min-h-0 flex-1 grid-cols-4 grid-rows-4 gap-1.5 overflow-hidden p-2">
             {!active && suggestions.length === 0 && (
-              <Card className="col-span-full p-5 text-sm text-muted-foreground">
+              <Card className="col-span-4 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Press the green mic button to start a conversation. Suggestions
                 will appear here.
               </Card>
             )}
             {active && suggestions.length === 0 && !loadingSuggestions && (
-              <Card className="col-span-full p-5 text-sm text-muted-foreground">
+              <Card className="col-span-4 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Listening… suggestions will appear after a few words.
               </Card>
             )}
-            {suggestions.map((s, i) => (
+            {suggestions.slice(0, 16).map((s, i) => (
               <button
                 key={`${i}-${s.text}`}
                 onClick={() => speak(s.text, { suggestion: s })}
                 disabled={speaking}
-                className={`flex min-h-[80px] items-center rounded-2xl border-2 p-4 text-left text-lg leading-snug transition-transform active:scale-[0.98] ${categoryClass(s.category)}`}
+                className={`flex h-full min-h-0 w-full items-center justify-center rounded-xl border-2 p-2 text-center text-base leading-tight transition-transform active:scale-[0.98] ${categoryClass(s.category)}`}
               >
-                <span className="flex-1">{s.text}</span>
+                <span className="line-clamp-4">{s.text}</span>
               </button>
             ))}
           </div>
           {/* Quick phrases */}
-          <div className="flex flex-wrap gap-2 border-t border-border p-3">
+          <div className="flex flex-wrap gap-1.5 border-t border-border p-2">
             {QUICK_PHRASES.map((p) => (
               <Button
                 key={p}
                 variant="secondary"
-                className="h-10 rounded-full px-4 text-sm"
+                className="h-8 rounded-full px-3 text-xs"
                 onClick={() => speak(p)}
                 disabled={speaking}
               >
@@ -796,14 +797,14 @@ function Home() {
           </div>
         </section>
 
-        {/* Transcript / Recent */}
-        <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-border bg-card/40 lg:max-w-[40%]">
-          <div className="border-b border-border px-4 py-2">
+        {/* Transcript / Recent — strip along the bottom */}
+        <section className="flex min-h-0 flex-[1] flex-col rounded-2xl border border-border bg-card/40">
+          <div className="border-b border-border px-3 py-1.5">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
               {active ? "Transcript" : "Recent conversations"}
             </h2>
           </div>
-          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3 text-sm">
             {active ? (
               <>
                 {transcriptList.length === 0 && !partial && (
@@ -823,7 +824,7 @@ function Home() {
                             : s.speaker_label;
                         })();
                   return (
-                    <div key={s.id} className="text-base leading-snug">
+                    <div key={s.id} className="leading-snug">
                       <span className="mr-2 text-xs font-medium text-muted-foreground">
                         {displayName}
                       </span>
@@ -832,7 +833,7 @@ function Home() {
                   );
                 })}
                 {partial && (
-                  <div className="text-base italic leading-snug text-muted-foreground">
+                  <div className="italic leading-snug text-muted-foreground">
                     {partial}
                   </div>
                 )}
@@ -845,12 +846,12 @@ function Home() {
                   </p>
                 )}
                 {recent.map((c) => (
-                  <Card key={c.id} className="p-3">
+                  <Card key={c.id} className="p-2">
                     <div className="text-xs text-muted-foreground">
                       {new Date(c.started_at).toLocaleString()}
                     </div>
                     {c.summary ? (
-                      <p className="mt-1 text-sm leading-snug">{c.summary}</p>
+                      <p className="mt-1 leading-snug">{c.summary}</p>
                     ) : (
                       <p className="mt-1 text-xs italic text-muted-foreground">
                         {c.ended_at ? "No summary" : "In progress…"}
@@ -939,6 +940,7 @@ function Home() {
         </div>
       )}
     </main>
+    </ScaledShell>
   );
 }
 
