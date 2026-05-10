@@ -675,7 +675,141 @@ function JamesProfileCard() {
       <Button className="mt-5 h-11" onClick={save} disabled={saving}>
         {saving ? "Saving…" : "Save profile"}
       </Button>
+
+      <JamesDocumentsSection />
     </Card>
+  );
+}
+
+/* ----------------------- James reference documents ----------------------- */
+
+const TEXT_LIKE_RE = /^(text\/|application\/(json|xml|csv|x-yaml|x-toml))/i;
+const TEXT_EXT_RE = /\.(txt|md|markdown|json|csv|tsv|log|yaml|yml|xml|html?|rtf)$/i;
+const MAX_DOC_CHARS = 60_000;
+
+function JamesDocumentsSection() {
+  const docs = useLiveQuery(
+    () => db.james_documents.orderBy("created_at").toArray(),
+    [],
+  );
+  const [busy, setBusy] = useState(false);
+
+  async function handleFiles(files: FileList | null) {
+    if (!files?.length) return;
+    setBusy(true);
+    try {
+      for (const file of Array.from(files)) {
+        const isTextLike =
+          TEXT_LIKE_RE.test(file.type) || TEXT_EXT_RE.test(file.name);
+        if (!isTextLike) {
+          toast.error(
+            `${file.name}: unsupported file type. Paste text, or upload .txt / .md / .csv / .json.`,
+          );
+          continue;
+        }
+        let text = "";
+        try {
+          text = await file.text();
+        } catch {
+          toast.error(`${file.name}: could not read file`);
+          continue;
+        }
+        const trimmed = text.slice(0, MAX_DOC_CHARS);
+        await db.james_documents.put({
+          id: newId(),
+          name: file.name,
+          mime: file.type || "text/plain",
+          size: file.size,
+          text: trimmed,
+          created_at: Date.now(),
+        });
+        toast.success(`Attached ${file.name}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    await db.james_documents.delete(id);
+  }
+
+  async function updateNote(d: JamesDocument, note: string) {
+    await db.james_documents.put({ ...d, note });
+  }
+
+  return (
+    <div className="mt-8 border-t pt-6">
+      <div className="flex items-center gap-2">
+        <FileText className="size-5" />
+        <h3 className="text-base font-semibold">Reference documents</h3>
+      </div>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Attach background docs about James — life history, medical notes,
+        favourite stories, anything the AI should know. Their contents are
+        included with every suggestion. Plain-text files only (.txt, .md, .csv,
+        .json, .yaml, .xml, .html). Each file is capped at ~60k characters.
+      </p>
+
+      <div className="mt-3">
+        <label
+          className={`inline-flex h-10 cursor-pointer items-center gap-2 rounded-md border bg-secondary px-4 text-sm font-medium hover:bg-secondary/80 ${busy ? "opacity-60" : ""}`}
+        >
+          <Upload className="size-4" />
+          {busy ? "Reading…" : "Attach documents"}
+          <input
+            type="file"
+            multiple
+            className="sr-only"
+            accept=".txt,.md,.markdown,.json,.csv,.tsv,.log,.yaml,.yml,.xml,.html,.htm,.rtf,text/*,application/json"
+            disabled={busy}
+            onChange={(e) => {
+              handleFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {!docs?.length ? (
+          <p className="text-sm text-muted-foreground">No documents attached yet.</p>
+        ) : (
+          docs.map((d) => (
+            <div key={d.id} className="rounded-md border p-3">
+              <div className="flex items-start gap-2">
+                <FileText className="mt-1 size-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium">{d.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {(d.size / 1024).toFixed(1)} KB · {d.text.length.toLocaleString()} chars used
+                    {d.text.length >= MAX_DOC_CHARS ? " (truncated)" : ""}
+                  </div>
+                  <Input
+                    className="mt-2 h-8"
+                    placeholder="Optional note (e.g. 'medical history', 'childhood stories')"
+                    defaultValue={d.note ?? ""}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v !== (d.note ?? "")) updateNote(d, v);
+                    }}
+                  />
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  onClick={() => remove(d.id)}
+                  aria-label={`Remove ${d.name}`}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
 
