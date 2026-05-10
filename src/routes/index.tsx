@@ -37,6 +37,7 @@ import {
   generateSuggestions,
   summarizeConversation,
   synthesizeSpeech,
+  expandUtterance,
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { autoMapSpeakers, labelTranscriptForPrompt } from "@/lib/speaker-id";
@@ -143,6 +144,11 @@ function Home() {
   // Speech
   const [draft, setDraft] = useState("");
   const [speaking, setSpeaking] = useState(false);
+  const [expanding, setExpanding] = useState(false);
+  const [lastExpansion, setLastExpansion] = useState<{
+    raw: string;
+    expanded: string;
+  } | null>(null);
   const [voiceId, setVoiceId] = useState<string>("EXAVITQu4vr4xnSDxMaL");
 
   // Speaker map
@@ -165,6 +171,7 @@ function Home() {
   const ttsFn = useServerFn(synthesizeSpeech);
   const suggestFn = useServerFn(generateSuggestions);
   const summarizeFn = useServerFn(summarizeConversation);
+  const expandFn = useServerFn(expandUtterance);
 
   const scribe = useScribe({
     modelId: "scribe_v2_realtime",
