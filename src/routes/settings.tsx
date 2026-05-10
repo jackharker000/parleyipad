@@ -46,7 +46,12 @@ import {
   type Person,
   type Place,
 } from "@/lib/db";
-import { listVoices, synthesizeSpeech } from "@/lib/aac.functions";
+import {
+  listVoices,
+  synthesizeSpeech,
+  designVoicePreviews,
+  saveDesignedVoice,
+} from "@/lib/aac.functions";
 import { getCurrentPosition } from "@/lib/geo";
 import { getPersonStats, groupMemories } from "@/lib/people-stats";
 
@@ -197,12 +202,20 @@ function SystemTab() {
     toast.success("All data cleared");
   }
 
+  function addCustomVoice(v: Voice) {
+    setVoices((cur) => {
+      if (cur.some((x) => x.voice_id === v.voice_id)) return cur;
+      return [v, ...cur];
+    });
+  }
+
   return (
     <div className="space-y-4">
       <Card className="p-6">
         <h2 className="text-lg font-semibold">Voice</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Choose how the app speaks suggestions out loud.
+          Choose how the app speaks suggestions out loud. Selection is
+          remembered across sessions.
         </p>
         <div className="mt-4 flex items-center gap-3">
           <Select
@@ -233,6 +246,13 @@ function SystemTab() {
             {previewing ? "…" : "Preview"}
           </Button>
         </div>
+
+        <VoiceDesignerPanel
+          onSaved={(v) => {
+            addCustomVoice(v);
+            handleVoiceChange(v.voice_id);
+          }}
+        />
       </Card>
 
       <Card className="p-6">
