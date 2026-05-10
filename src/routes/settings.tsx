@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useServerFn } from "@tanstack/react-start";
@@ -78,46 +78,36 @@ export const Route = createFileRoute("/settings")({
 type Voice = { voice_id: string; name: string; labels: Record<string, string> };
 
 function SettingsPage() {
-  const router = useRouter();
-
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-6xl px-6 py-6">
-        <header className="mb-6 flex items-center gap-3">
-          <button
-            onClick={() => router.history.back()}
-            className="rounded-full p-2 hover:bg-secondary"
-            aria-label="Back"
-          >
-            <ArrowLeft className="size-6" />
-          </button>
-          <h1 className="text-3xl font-semibold">Settings</h1>
-          <Link
-            to="/"
-            className="ml-auto text-sm text-muted-foreground underline"
-          >
-            Back to home
-          </Link>
-        </header>
-
         <Tabs defaultValue="james">
-          <TabsList className="mb-4 h-12 w-full justify-start gap-1 bg-secondary/50">
-            <TabsTrigger value="james" className="h-10 gap-2 px-4 text-base">
-              <User className="size-4" /> About James
-            </TabsTrigger>
-            <TabsTrigger value="people" className="h-10 gap-2 px-4 text-base">
-              <Users className="size-4" /> People
-            </TabsTrigger>
-            <TabsTrigger value="places" className="h-10 gap-2 px-4 text-base">
-              <MapPin className="size-4" /> Locations
-            </TabsTrigger>
-            <TabsTrigger value="events" className="h-10 gap-2 px-4 text-base">
-              <Calendar className="size-4" /> Events
-            </TabsTrigger>
-            <TabsTrigger value="system" className="h-10 gap-2 px-4 text-base">
-              <SlidersHorizontal className="size-4" /> System
-            </TabsTrigger>
-          </TabsList>
+          <div className="mb-4 flex items-center gap-3">
+            <TabsList className="h-12 flex-1 justify-start gap-1 bg-secondary/50">
+              <TabsTrigger value="james" className="h-10 gap-2 px-4 text-base">
+                <User className="size-4" /> About James
+              </TabsTrigger>
+              <TabsTrigger value="people" className="h-10 gap-2 px-4 text-base">
+                <Users className="size-4" /> People
+              </TabsTrigger>
+              <TabsTrigger value="places" className="h-10 gap-2 px-4 text-base">
+                <MapPin className="size-4" /> Locations
+              </TabsTrigger>
+              <TabsTrigger value="events" className="h-10 gap-2 px-4 text-base">
+                <Calendar className="size-4" /> Events
+              </TabsTrigger>
+              <TabsTrigger value="system" className="h-10 gap-2 px-4 text-base">
+                <SlidersHorizontal className="size-4" /> System
+              </TabsTrigger>
+            </TabsList>
+            <Link
+              to="/"
+              aria-label="Back to home"
+              className="flex h-12 items-center gap-2 rounded-xl bg-primary px-6 text-base font-semibold text-primary-foreground shadow-sm transition hover:bg-primary/90 active:scale-95"
+            >
+              <ArrowLeft className="size-5" /> Back
+            </Link>
+          </div>
 
           <TabsContent value="james">
             <JamesProfileCard />
