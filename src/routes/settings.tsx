@@ -2,12 +2,14 @@ import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useServerFn } from "@tanstack/react-start";
-import { ArrowLeft, Volume2 } from "lucide-react";
+import { ArrowLeft, Volume2, Plus, Trash2, User } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -15,7 +17,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { db, getSettings, updateSettings } from "@/lib/db";
+import {
+  db,
+  getSettings,
+  updateSettings,
+  getJamesProfile,
+  updateJamesProfile,
+  newId,
+  type JamesProfile,
+  type Person,
+} from "@/lib/db";
 import { listVoices, synthesizeSpeech } from "@/lib/aac.functions";
 
 export const Route = createFileRoute("/settings")({
@@ -84,6 +95,7 @@ function SettingsPage() {
       db.people.clear(),
       db.places.clear(),
       db.style_profile.clear(),
+      db.james_profile.clear(),
     ]);
     toast.success("All data cleared");
   }
@@ -101,6 +113,10 @@ function SettingsPage() {
           </button>
           <h1 className="text-3xl font-semibold">Settings</h1>
         </header>
+
+        <JamesProfileCard />
+
+        <PeopleCard />
 
         <Card className="p-6">
           <h2 className="text-lg font-semibold">Voice</h2>
