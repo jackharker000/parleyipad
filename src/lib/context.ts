@@ -78,7 +78,10 @@ async function followUpsForPerson(personId: string): Promise<string[]> {
   return fs.filter((f) => !f.used).slice(0, FOLLOW_UP_LIMIT).map((f) => f.text);
 }
 
-async function memoriesForPlace(placeId: string): Promise<string[]> {
+async function memoriesForPlace(
+  placeId: string,
+  presentPersonIds: Set<string>,
+): Promise<string[]> {
   const mems = await db.memories
     .where("place_id")
     .equals(placeId)
@@ -86,17 +89,27 @@ async function memoriesForPlace(placeId: string): Promise<string[]> {
     .sortBy("created_at");
   return mems
     .filter((m) => m.status !== "hidden")
+    // Privacy: skip place memories tied to a specific person who is NOT in
+    // this conversation. Generic place memories (no person_id) are kept.
+    .filter((m) => !m.person_id || presentPersonIds.has(m.person_id))
     .slice(0, RECENT_MEMORY_LIMIT)
     .map((m) => `[${m.kind}] ${m.text}`);
 }
 
-async function followUpsForPlace(placeId: string): Promise<string[]> {
+async function followUpsForPlace(
+  placeId: string,
+  presentPersonIds: Set<string>,
+): Promise<string[]> {
   const fs = await db.follow_ups
     .where("for_place_id")
     .equals(placeId)
     .reverse()
     .sortBy("created_at");
-  return fs.filter((f) => !f.used).slice(0, FOLLOW_UP_LIMIT).map((f) => f.text);
+  return fs
+    .filter((f) => !f.used)
+    .filter((f) => !f.for_person_id || presentPersonIds.has(f.for_person_id))
+    .slice(0, FOLLOW_UP_LIMIT)
+    .map((f) => f.text);
 }
 
 export async function buildConversationContext(opts: {
@@ -143,11 +156,12 @@ export async function buildConversationContext(opts: {
 
   let place: ConversationContext["place"] | undefined;
   if (opts.place) {
+    const presentIds = new Set(opts.personIds);
     place = {
       name: opts.place.name,
       notes: opts.place.notes,
-      recentMemories: await memoriesForPlace(opts.place.id),
-      followUps: await followUpsForPlace(opts.place.id),
+      recentMemories: await memoriesForPlace(opts.place.id, presentIds),
+      followUps: await followUpsForPlace(opts.place.id, presentIds),
     };
   }
 
