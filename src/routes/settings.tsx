@@ -15,6 +15,8 @@ import {
   Search,
   Sparkles,
   Map as MapIcon,
+  FileText,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -45,6 +47,7 @@ import {
   updateJamesProfile,
   newId,
   type JamesProfile,
+  type JamesDocument,
   type Person,
   type Place,
   IPAD_PRESETS,
