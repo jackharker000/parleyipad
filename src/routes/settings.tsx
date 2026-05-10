@@ -689,7 +689,7 @@ function PeopleTab() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+    <div className="grid gap-4 grid-cols-[260px_1fr] sm:grid-cols-[280px_1fr]">
       {/* Left: people list */}
       <Card className="p-3">
         <div className="mb-2 flex items-center gap-2">
