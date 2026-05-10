@@ -15,6 +15,8 @@ import {
   X,
   Facebook,
   Calendar,
+  History,
+  Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -143,6 +145,9 @@ function Home() {
   const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
   const personIdsRef = useRef<string[]>([]);
   const [showPeoplePicker, setShowPeoplePicker] = useState(false);
+  const [addingPerson, setAddingPerson] = useState(false);
+  const [newPersonName, setNewPersonName] = useState("");
+  const [newPersonRel, setNewPersonRel] = useState("");
 
   // Event (optional)
   const [allEvents, setAllEvents] = useState<EventItem[]>([]);
@@ -637,36 +642,32 @@ function Home() {
     <ScaledShell ipadModel={ipadModel}>
     <main className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
       {/* Top control bar — always visible, designed for landscape iPad */}
-      <header className="flex shrink-0 items-stretch gap-3 border-b border-border bg-card px-3 py-3">
-        {/* Start/Stop stacked buttons (small squares, top-left) */}
-        <div className="flex shrink-0 flex-col gap-2">
-          <button
-            onClick={handleStart}
-            disabled={active || stopping}
-            aria-label="Start conversation"
-            className={`flex size-14 items-center justify-center rounded-xl text-white shadow-sm transition-all active:scale-95 ${
-              active
-                ? "bg-emerald-300 ring-2 ring-emerald-400"
+      <header className="flex shrink-0 items-stretch gap-2 border-b border-border bg-card px-3 py-3">
+        {/* Combined Record / Stop button — green when idle, red when recording */}
+        <button
+          onClick={active ? handleStop : handleStart}
+          disabled={stopping}
+          aria-label={active ? "Stop conversation" : "Start conversation"}
+          className={`flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl text-white shadow-sm transition-all active:scale-95 ${
+            stopping
+              ? "bg-rose-300 ring-2 ring-rose-400"
+              : active
+                ? "bg-rose-600 hover:bg-rose-500"
                 : "bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50"
-            }`}
-          >
-            <Mic className="size-6" />
-          </button>
-          <button
-            onClick={handleStop}
-            disabled={!active || stopping}
-            aria-label="Stop conversation"
-            className={`flex size-14 items-center justify-center rounded-xl text-white shadow-sm transition-all active:scale-95 ${
-              stopping
-                ? "bg-rose-300 ring-2 ring-rose-400"
-                : !active
-                  ? "bg-rose-600/40 cursor-not-allowed"
-                  : "bg-rose-600 hover:bg-rose-500"
-            }`}
-          >
-            <Square className="size-5" />
-          </button>
-        </div>
+          }`}
+        >
+          {active ? (
+            <>
+              <Square className="size-7" />
+              <span className="text-sm font-medium">Stop</span>
+            </>
+          ) : (
+            <>
+              <Mic className="size-7" />
+              <span className="text-sm font-medium">Record</span>
+            </>
+          )}
+        </button>
 
         {/* Text entry — fills remaining width so it stays visible above the on-screen keyboard */}
         <div className="flex flex-1 flex-col gap-1">
@@ -702,66 +703,82 @@ function Home() {
               placeholder="Type roughly — AI will clarify and speak it…"
               className="h-[120px] min-h-[120px] flex-1 resize-none text-base"
             />
-            <Button
-              size="lg"
-              className="h-[120px] gap-2 rounded-2xl px-5"
-              onClick={expandAndSpeak}
-              disabled={speaking || expanding || !draft.trim()}
-            >
-              {expanding ? (
-                <Sparkles className="size-5 animate-pulse" />
-              ) : (
-                <Volume2 className="size-5" />
-              )}
-              <span className="hidden sm:inline">
-                {expanding ? "Clarifying…" : "Speak"}
-              </span>
-            </Button>
           </div>
         </div>
 
-        {/* Facebook helper + Settings links top-right */}
+        {/* Speak button — same size as Record */}
+        <button
+          onClick={expandAndSpeak}
+          disabled={speaking || expanding || !draft.trim()}
+          aria-label="Speak"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl bg-primary text-primary-foreground shadow-sm transition-all active:scale-95 hover:bg-primary/90 disabled:opacity-50"
+        >
+          {expanding ? (
+            <Sparkles className="size-7 animate-pulse" />
+          ) : (
+            <Volume2 className="size-7" />
+          )}
+          <span className="text-sm font-medium">
+            {expanding ? "Clarifying" : "Speak"}
+          </span>
+        </button>
+
+        {/* Recent conversations */}
+        <Link
+          to="/recent"
+          aria-label="Recent conversations"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-foreground transition hover:bg-secondary"
+        >
+          <History className="size-7" />
+          <span className="text-sm font-medium">Recent</span>
+        </Link>
+
+        {/* Facebook helper */}
         <Link
           to="/facebook"
           aria-label="Facebook helper"
-          className="flex size-14 shrink-0 items-center justify-center rounded-xl text-[#1877f2] hover:bg-secondary"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-[#1877f2] transition hover:bg-secondary"
         >
-          <Facebook className="size-6" />
+          <Facebook className="size-7" />
+          <span className="text-sm font-medium text-foreground">Facebook</span>
         </Link>
+
+        {/* Settings */}
         <Link
           to="/settings"
           aria-label="Settings"
-          className="flex size-14 shrink-0 items-center justify-center rounded-xl text-muted-foreground hover:bg-secondary"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-muted-foreground transition hover:bg-secondary"
         >
-          <SettingsIcon className="size-6" />
+          <SettingsIcon className="size-7" />
+          <span className="text-sm font-medium text-foreground">Settings</span>
         </Link>
       </header>
 
       {/* Status / context strip */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-card/60 px-3 py-2 text-sm text-muted-foreground">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card/60 px-3 py-4 text-base text-muted-foreground">
         <button
           onClick={() => setShowPeoplePicker(true)}
-          className="flex items-center gap-1.5 rounded-full border border-border bg-secondary/40 px-3 py-1 hover:bg-secondary"
+          className="flex items-center gap-2 rounded-full border border-border bg-secondary/40 px-5 py-3 text-base hover:bg-secondary"
         >
-          <Users className="size-4" />
+          <Users className="size-5" />
           {peopleInConvo.length === 0
             ? "Choose people"
             : peopleInConvo.map((p) => p.name).join(", ")}
         </button>
         {placeName && (
-          <span className="flex items-center gap-1">
-            <MapPin className="size-4" /> {placeName}
+          <span className="flex items-center gap-2 rounded-full border border-border bg-secondary/40 px-5 py-3">
+            <MapPin className="size-5" /> {placeName}
           </span>
         )}
         <button
           onClick={() => setShowEventPicker(true)}
-          className={`flex items-center gap-1.5 rounded-full border px-3 py-1 transition ${
+          className={`flex items-center gap-2 rounded-full border px-5 py-3 text-base transition ${
             selectedEvent
               ? "border-primary/40 bg-primary/10 text-foreground"
               : "border-border bg-secondary/40 hover:bg-secondary"
           }`}
         >
-          <Calendar className="size-4" />
+          <Calendar className="size-5" />
           {selectedEvent ? selectedEvent.name : "Event (optional)"}
         </button>
         {active && (
@@ -1001,11 +1018,99 @@ function Home() {
               )}
             </div>
             <div className="border-t border-border px-5 py-3">
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 gap-2"
+                  onClick={() => {
+                    setNewPersonName("");
+                    setNewPersonRel("");
+                    setAddingPerson(true);
+                  }}
+                >
+                  <Plus className="size-4" /> Add new person
+                </Button>
+                <Button
+                  className="flex-1"
+                  onClick={() => setShowPeoplePicker(false)}
+                >
+                  Done
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Add new person mini-modal */}
+      {addingPerson && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setAddingPerson(false)}
+        >
+          <Card
+            className="w-full max-w-md p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+              <Plus className="size-5" /> Add new person
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium">Name</label>
+                <input
+                  autoFocus
+                  value={newPersonName}
+                  onChange={(e) => setNewPersonName(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-base"
+                  placeholder="e.g. Sarah"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  Relationship (optional)
+                </label>
+                <input
+                  value={newPersonRel}
+                  onChange={(e) => setNewPersonRel(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-base"
+                  placeholder="e.g. care worker, friend"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
               <Button
-                className="w-full"
-                onClick={() => setShowPeoplePicker(false)}
+                variant="ghost"
+                onClick={() => setAddingPerson(false)}
               >
-                Done
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  const name = newPersonName.trim();
+                  if (!name) {
+                    toast.error("Name is required");
+                    return;
+                  }
+                  const p: Person = {
+                    id: newId(),
+                    name,
+                    relationship: newPersonRel.trim() || undefined,
+                    interests: [],
+                    notes: "",
+                    style_notes: "",
+                    created_at: Date.now(),
+                  };
+                  await db.people.put(p);
+                  setAllPeople((cur) =>
+                    [...cur, p].sort((a, b) => a.name.localeCompare(b.name)),
+                  );
+                  setSelectedPersonIds((cur) => [...cur, p.id]);
+                  setAddingPerson(false);
+                  toast.success(`Added ${p.name}`);
+                }}
+              >
+                Add
               </Button>
             </div>
           </Card>
