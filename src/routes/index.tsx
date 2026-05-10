@@ -15,6 +15,8 @@ import {
   X,
   Facebook,
   Calendar,
+  History,
+  Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -143,6 +145,9 @@ function Home() {
   const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
   const personIdsRef = useRef<string[]>([]);
   const [showPeoplePicker, setShowPeoplePicker] = useState(false);
+  const [addingPerson, setAddingPerson] = useState(false);
+  const [newPersonName, setNewPersonName] = useState("");
+  const [newPersonRel, setNewPersonRel] = useState("");
 
   // Event (optional)
   const [allEvents, setAllEvents] = useState<EventItem[]>([]);
