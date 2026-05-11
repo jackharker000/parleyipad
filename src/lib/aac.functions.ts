@@ -288,6 +288,9 @@ const suggestionsSchema = z.object({
   styleProfileJson: z.string().optional(),
   alreadyShown: z.array(z.string()).max(40).optional(),
   model: z.string().optional(),
+  mood: z
+    .enum(["normal", "calm", "excited", "sad", "upset", "empathetic", "amused"])
+    .optional(),
 });
 
 const SUGGESTION_CATEGORIES = [
