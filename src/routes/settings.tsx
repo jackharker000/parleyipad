@@ -1026,6 +1026,12 @@ function PersonDetail({
 }) {
   const person = useLiveQuery(() => db.people.get(personId), [personId]);
   const stats = useLiveQuery(() => getPersonStats(personId), [personId]);
+  const [openPanel, setOpenPanel] = useState<null | "conversations" | "memories">(null);
+
+  // reset panel when switching person
+  useEffect(() => {
+    setOpenPanel(null);
+  }, [personId]);
 
   if (!person) return <Card className="p-6">Loading…</Card>;
 
@@ -1059,9 +1065,13 @@ function PersonDetail({
 
       {/* At-a-glance metrics */}
       <div className="mt-5 grid grid-cols-3 gap-3">
-        <Stat
+        <StatButton
           label="Conversations"
           value={stats ? String(stats.conversationCount) : "—"}
+          active={openPanel === "conversations"}
+          onClick={() =>
+            setOpenPanel((p) => (p === "conversations" ? null : "conversations"))
+          }
         />
         <Stat
           label="Last seen"
@@ -1071,9 +1081,13 @@ function PersonDetail({
               : "—"
           }
         />
-        <Stat
+        <StatButton
           label="Memories"
           value={stats ? String(stats.recentMemories.length) : "—"}
+          active={openPanel === "memories"}
+          onClick={() =>
+            setOpenPanel((p) => (p === "memories" ? null : "memories"))
+          }
         />
       </div>
 
@@ -1160,6 +1174,13 @@ function PersonDetail({
           </ul>
         ) : null}
       </Section>
+
+      {openPanel === "conversations" && (
+        <PersonConversationsPanel personId={personId} />
+      )}
+      {openPanel === "memories" && (
+        <PersonMemoriesPanel personId={personId} />
+      )}
     </Card>
   );
 }
@@ -1171,6 +1192,143 @@ function Stat({ label, value }: { label: string; value: string }) {
         {label}
       </div>
       <div className="mt-1 text-xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function StatButton({
+  label,
+  value,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "rounded-xl border p-3 text-left transition-colors",
+        active
+          ? "border-primary bg-primary/10"
+          : "border-border bg-secondary/30 hover:bg-secondary/60",
+      )}
+    >
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-1 text-xl font-semibold">{value}</div>
+      <div className="mt-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+        {active ? "Hide list" : "Show list"}
+      </div>
+    </button>
+  );
+}
+
+function PersonConversationsPanel({ personId }: { personId: string }) {
+  const data = useLiveQuery(async () => {
+    const all = await db.conversations.orderBy("started_at").reverse().toArray();
+    const convs = all.filter((c) => c.person_ids?.includes(personId));
+    const placeIds = Array.from(
+      new Set(convs.map((c) => c.place_id).filter(Boolean) as string[]),
+    );
+    const places = await db.places.bulkGet(placeIds);
+    const placeMap = new Map(
+      places.filter(Boolean).map((p) => [p!.id, p!.name]),
+    );
+    return convs.map((c) => ({
+      ...c,
+      placeName: c.place_id ? placeMap.get(c.place_id) : undefined,
+    }));
+  }, [personId]);
+
+  return (
+    <div className="mt-6 rounded-xl border border-border bg-secondary/20 p-4">
+      <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        Conversations
+      </div>
+      {!data ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : data.length === 0 ? (
+        <p className="text-sm italic text-muted-foreground">
+          No conversations yet.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {data.map((c) => (
+            <li
+              key={c.id}
+              className="rounded-lg border border-border bg-background p-3 text-sm"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-medium">
+                  {new Date(c.started_at).toLocaleString()}
+                </div>
+                {c.placeName && (
+                  <div className="text-xs text-muted-foreground">
+                    {c.placeName}
+                  </div>
+                )}
+              </div>
+              {c.summary && (
+                <p className="mt-1 text-muted-foreground">{c.summary}</p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function PersonMemoriesPanel({ personId }: { personId: string }) {
+  const memories = useLiveQuery(
+    () =>
+      db.memories
+        .where("person_id")
+        .equals(personId)
+        .reverse()
+        .sortBy("created_at"),
+    [personId],
+  );
+  const visible = memories?.filter((m) => m.status !== "hidden") ?? [];
+
+  return (
+    <div className="mt-6 rounded-xl border border-border bg-secondary/20 p-4">
+      <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        Memories
+      </div>
+      {!memories ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : visible.length === 0 ? (
+        <p className="text-sm italic text-muted-foreground">
+          No memories yet.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {visible.map((m) => (
+            <li
+              key={m.id}
+              className="rounded-lg border border-border bg-background p-3 text-sm"
+            >
+              <div className="mb-1 flex items-center justify-between gap-3">
+                <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {m.kind}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {new Date(m.created_at).toLocaleDateString()}
+                </span>
+              </div>
+              <p>{m.text}</p>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
