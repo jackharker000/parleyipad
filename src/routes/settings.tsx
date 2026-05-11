@@ -20,6 +20,8 @@ import {
   Calendar as CalendarIcon,
   Check,
   Mic,
+  Pencil,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -60,6 +62,7 @@ import {
   type JamesProfile,
   type JamesDocument,
   type Person,
+  type PersonDocument,
   type Place,
   type EventItem,
   type EventDocument,
