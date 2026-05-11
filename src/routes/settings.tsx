@@ -1254,6 +1254,29 @@ function PersonConversationsPanel({ personId }: { personId: string }) {
     }));
   }, [personId]);
 
+  async function deleteConversation(id: string) {
+    if (!confirm("Delete this conversation and all of its transcript, memories and follow-ups?")) return;
+    await db.transaction(
+      "rw",
+      [
+        db.conversations,
+        db.transcript_segments,
+        db.suggestions_log,
+        db.manual_replies,
+        db.memories,
+        db.follow_ups,
+      ],
+      async () => {
+        await db.transcript_segments.where("conversation_id").equals(id).delete();
+        await db.suggestions_log.where("conversation_id").equals(id).delete();
+        await db.manual_replies.where("conversation_id").equals(id).delete();
+        await db.memories.where("conversation_id").equals(id).delete();
+        await db.conversations.delete(id);
+      },
+    );
+    toast.success("Conversation deleted");
+  }
+
   return (
     <div className="mt-6 rounded-xl border border-border bg-secondary/20 p-4">
       <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -1273,14 +1296,25 @@ function PersonConversationsPanel({ personId }: { personId: string }) {
               className="rounded-lg border border-border bg-background p-3 text-sm"
             >
               <div className="flex items-center justify-between gap-3">
-                <div className="font-medium">
-                  {new Date(c.started_at).toLocaleString()}
-                </div>
-                {c.placeName && (
-                  <div className="text-xs text-muted-foreground">
-                    {c.placeName}
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium">
+                    {new Date(c.started_at).toLocaleString()}
                   </div>
-                )}
+                  {c.placeName && (
+                    <div className="text-xs text-muted-foreground">
+                      {c.placeName}
+                    </div>
+                  )}
+                </div>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-8 shrink-0"
+                  onClick={() => deleteConversation(c.id)}
+                  aria-label="Delete conversation"
+                >
+                  <Trash2 className="size-4 text-destructive" />
+                </Button>
               </div>
               {c.summary && (
                 <p className="mt-1 text-muted-foreground">{c.summary}</p>
@@ -1304,12 +1338,82 @@ function PersonMemoriesPanel({ personId }: { personId: string }) {
     [personId],
   );
   const visible = memories?.filter((m) => m.status !== "hidden") ?? [];
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editKind, setEditKind] = useState<Memory["kind"]>("fact");
+  const [adding, setAdding] = useState(false);
+  const [newText, setNewText] = useState("");
+  const [newKind, setNewKind] = useState<Memory["kind"]>("fact");
+
+  async function deleteMem(id: string) {
+    if (!confirm("Delete this memory?")) return;
+    await db.memories.delete(id);
+    toast.success("Memory deleted");
+  }
+
+  function startEdit(m: Memory) {
+    setEditingId(m.id);
+    setEditText(m.text);
+    setEditKind(m.kind);
+  }
+
+  async function saveEdit(m: Memory) {
+    const text = editText.trim();
+    if (!text) {
+      toast.error("Memory text is required");
+      return;
+    }
+    await db.memories.put({ ...m, text, kind: editKind, status: "edited" });
+    setEditingId(null);
+    toast.success("Memory updated");
+  }
+
+  async function addMem() {
+    const text = newText.trim();
+    if (!text) {
+      toast.error("Memory text is required");
+      return;
+    }
+    await db.memories.put({
+      id: newId(),
+      person_id: personId,
+      conversation_id: "manual",
+      text,
+      kind: newKind,
+      status: "edited",
+      created_at: Date.now(),
+    });
+    setNewText("");
+    setNewKind("fact");
+    setAdding(false);
+    toast.success("Memory added");
+  }
 
   return (
     <div className="mt-6 rounded-xl border border-border bg-secondary/20 p-4">
-      <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Memories
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Memories
+        </div>
+        <Button size="sm" variant="secondary" onClick={() => setAdding((v) => !v)}>
+          {adding ? <X className="size-4" /> : <Plus className="size-4" />}
+          {adding ? "Cancel" : "Add memory"}
+        </Button>
       </div>
+      {adding && (
+        <div className="mb-3 space-y-2 rounded-lg border border-border bg-background p-3">
+          <Textarea
+            rows={2}
+            value={newText}
+            onChange={(e) => setNewText(e.target.value)}
+            placeholder="e.g. Loves to talk about the 1966 World Cup final"
+          />
+          <div className="flex items-center gap-2">
+            <MemoryKindSelect value={newKind} onChange={setNewKind} />
+            <Button size="sm" onClick={addMem}>Save</Button>
+          </div>
+        </div>
+      )}
       {!memories ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : visible.length === 0 ? (
@@ -1323,20 +1427,217 @@ function PersonMemoriesPanel({ personId }: { personId: string }) {
               key={m.id}
               className="rounded-lg border border-border bg-background p-3 text-sm"
             >
-              <div className="mb-1 flex items-center justify-between gap-3">
-                <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  {m.kind}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(m.created_at).toLocaleDateString()}
-                </span>
-              </div>
-              <p>{m.text}</p>
+              {editingId === m.id ? (
+                <div className="space-y-2">
+                  <Textarea
+                    rows={2}
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                  />
+                  <div className="flex items-center gap-2">
+                    <MemoryKindSelect value={editKind} onChange={setEditKind} />
+                    <Button size="sm" onClick={() => saveEdit(m)}>Save</Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setEditingId(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {m.kind}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(m.created_at).toLocaleDateString()}
+                      </span>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7"
+                        onClick={() => startEdit(m)}
+                        aria-label="Edit memory"
+                      >
+                        <Pencil className="size-3.5" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7"
+                        onClick={() => deleteMem(m.id)}
+                        aria-label="Delete memory"
+                      >
+                        <Trash2 className="size-3.5 text-destructive" />
+                      </Button>
+                    </div>
+                  </div>
+                  <p>{m.text}</p>
+                </>
+              )}
             </li>
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+function MemoryKindSelect({
+  value,
+  onChange,
+}: {
+  value: Memory["kind"];
+  onChange: (v: Memory["kind"]) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as Memory["kind"])}>
+      <SelectTrigger className="h-8 w-36">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="fact">Fact</SelectItem>
+        <SelectItem value="preference">Preference</SelectItem>
+        <SelectItem value="event">Event / topic</SelectItem>
+        <SelectItem value="todo">Follow-up</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
+
+/* --------------------- Per-person background documents -------------------- */
+
+function PersonDocumentsSection({ personId }: { personId: string }) {
+  const docs = useLiveQuery(
+    () =>
+      db.person_documents
+        .where("person_id")
+        .equals(personId)
+        .sortBy("created_at"),
+    [personId],
+  );
+  const [busy, setBusy] = useState(false);
+
+  async function handleFiles(files: FileList | null) {
+    if (!files?.length) return;
+    setBusy(true);
+    try {
+      for (const file of Array.from(files)) {
+        const isTextLike =
+          TEXT_LIKE_RE.test(file.type) || TEXT_EXT_RE.test(file.name);
+        if (!isTextLike) {
+          toast.error(
+            `${file.name}: unsupported. Use .txt / .md / .csv / .json / .yaml / .xml / .html.`,
+          );
+          continue;
+        }
+        let text = "";
+        try {
+          text = await file.text();
+        } catch {
+          toast.error(`${file.name}: could not read file`);
+          continue;
+        }
+        const trimmed = text.slice(0, MAX_DOC_CHARS);
+        await db.person_documents.put({
+          id: newId(),
+          person_id: personId,
+          name: file.name,
+          mime: file.type || "text/plain",
+          size: file.size,
+          text: trimmed,
+          created_at: Date.now(),
+        });
+        toast.success(`Attached ${file.name}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    await db.person_documents.delete(id);
+  }
+
+  async function updateNote(d: PersonDocument, note: string) {
+    await db.person_documents.put({ ...d, note });
+  }
+
+  return (
+    <Section
+      icon={<FileText className="size-4" />}
+      title="Background documents"
+    >
+      <p className="mb-2 text-sm text-muted-foreground">
+        Attach docs about this person — life history, shared memories, medical
+        notes, anything the AI should know. Plain-text files (.txt, .md, .csv,
+        .json, .yaml, .xml, .html). Each capped at ~60k characters.
+      </p>
+      <div>
+        <label
+          className={`inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border bg-secondary px-3 text-sm font-medium hover:bg-secondary/80 ${busy ? "opacity-60" : ""}`}
+        >
+          <Upload className="size-4" />
+          {busy ? "Reading…" : "Attach documents"}
+          <input
+            type="file"
+            multiple
+            className="sr-only"
+            accept=".txt,.md,.markdown,.json,.csv,.tsv,.log,.yaml,.yml,.xml,.html,.htm,.rtf,text/*,application/json"
+            disabled={busy}
+            onChange={(e) => {
+              handleFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+        </label>
+      </div>
+      <div className="mt-3 space-y-2">
+        {!docs?.length ? (
+          <p className="text-sm italic text-muted-foreground">
+            No documents attached yet.
+          </p>
+        ) : (
+          docs.map((d) => (
+            <div key={d.id} className="rounded-md border p-3">
+              <div className="flex items-start gap-2">
+                <FileText className="mt-1 size-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium">{d.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {(d.size / 1024).toFixed(1)} KB ·{" "}
+                    {d.text.length.toLocaleString()} chars used
+                    {d.text.length >= MAX_DOC_CHARS ? " (truncated)" : ""}
+                  </div>
+                  <Input
+                    className="mt-2 h-8"
+                    placeholder="Optional note (e.g. 'medical history', 'shared memories')"
+                    defaultValue={d.note ?? ""}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v !== (d.note ?? "")) updateNote(d, v);
+                    }}
+                  />
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0"
+                  onClick={() => remove(d.id)}
+                  aria-label={`Remove ${d.name}`}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </Section>
   );
 }
 
