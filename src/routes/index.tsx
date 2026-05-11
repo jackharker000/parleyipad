@@ -654,6 +654,7 @@ function Home() {
           styleProfileJson: ctx.styleProfileJson,
           alreadyShown: lastShownRef.current.slice(-20),
           model: aiModelRef.current,
+          mood: moodRef.current,
         },
       });
       if (r.suggestions?.length) {
