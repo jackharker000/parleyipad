@@ -306,7 +306,7 @@ export const generateSuggestions = createServerFn({ method: "POST" })
   .inputValidator((d) => suggestionsSchema.parse(d))
   .handler(async ({ data }) => {
     const transcriptText = data.recentTranscript
-      .slice(-20)
+      .slice(-8)
       .map((s) => `${s.speaker}: ${s.text}`)
       .join("\n");
 
