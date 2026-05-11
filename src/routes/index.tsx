@@ -64,6 +64,17 @@ export const Route = createFileRoute("/")({
 
 type Suggestion = { text: string; category: string; why?: string };
 
+const MOODS = [
+  { id: "normal", label: "Normal", color: "bg-secondary text-secondary-foreground" },
+  { id: "calm", label: "Calm", color: "bg-sky-500 text-white" },
+  { id: "excited", label: "Excited", color: "bg-amber-500 text-white" },
+  { id: "sad", label: "Sad", color: "bg-blue-700 text-white" },
+  { id: "upset", label: "Upset", color: "bg-red-600 text-white" },
+  { id: "empathetic", label: "Empathetic", color: "bg-emerald-600 text-white" },
+  { id: "amused", label: "Amused", color: "bg-fuchsia-600 text-white" },
+] as const;
+type MoodId = (typeof MOODS)[number]["id"];
+
 // Synthetic speaker label used for things James speaks via TTS, so they get
 // recorded into the transcript and folded into future suggestion prompts.
 const JAMES_SELF_LABEL = "__james_self__";
@@ -174,6 +185,11 @@ function Home() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const lastShownRef = useRef<string[]>([]);
+  const [mood, setMood] = useState<MoodId>("normal");
+  const moodRef = useRef<MoodId>("normal");
+  useEffect(() => {
+    moodRef.current = mood;
+  }, [mood]);
 
   // Speech
   const [draft, setDraft] = useState("");
@@ -638,6 +654,7 @@ function Home() {
           styleProfileJson: ctx.styleProfileJson,
           alreadyShown: lastShownRef.current.slice(-20),
           model: aiModelRef.current,
+          mood: moodRef.current,
         },
       });
       if (r.suggestions?.length) {
@@ -677,7 +694,7 @@ function Home() {
     }, 600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [committed.length, active]);
+  }, [committed.length, active, mood]);
 
   // Speak via TTS
   const speak = useCallback(
@@ -1029,6 +1046,30 @@ function Home() {
                 {p}
               </Button>
             ))}
+          </div>
+          {/* Mood selector — biases suggestions toward this emotional tone */}
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-border p-2">
+            <span className="mr-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Mood
+            </span>
+            {MOODS.map((m) => {
+              const selected = mood === m.id;
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setMood(m.id)}
+                  aria-pressed={selected}
+                  className={`rounded-full border-2 px-3 py-1.5 text-sm font-medium transition ${
+                    selected
+                      ? `${m.color} border-transparent shadow`
+                      : "border-border bg-background text-muted-foreground hover:bg-secondary"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              );
+            })}
           </div>
         </section>
 
