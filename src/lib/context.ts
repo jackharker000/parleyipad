@@ -147,7 +147,7 @@ export async function buildConversationContext(opts: {
       name: p.name,
       relationship: p.relationship,
       interests: p.interests,
-      notes: p.notes,
+      notes: await notesWithDocsForPerson(p.id, p.notes),
       style_notes: p.style_notes,
       recentMemories: await memoriesForPerson(p.id),
       followUps: await followUpsForPerson(p.id),
