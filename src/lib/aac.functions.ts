@@ -346,6 +346,18 @@ Strongly bias suggestions toward making these key points and asking these key qu
       ? `# Learned style profile (JSON)\n${data.styleProfileJson}\n`
       : "";
 
+    const moodGuidance: Record<string, string> = {
+      normal: "",
+      calm: "James's current mood: CALM and relaxed. Suggestions should sound measured, gentle, unhurried, and grounded. Avoid exclamation marks or high-energy phrasing.",
+      excited: "James's current mood: EXCITED and energetic. Suggestions should feel enthusiastic, upbeat, and animated. Use lively language and the occasional exclamation where natural, but still in his real voice.",
+      sad: "James's current mood: SAD or low. Suggestions should be quieter, more reflective, sometimes wistful. It's okay to acknowledge feelings, give shorter answers, or politely deflect.",
+      upset: "James's current mood: UPSET, frustrated or annoyed. Suggestions can be more blunt, firm, or short. He may want to push back, set a limit, or end a topic. Stay respectful but don't sugarcoat.",
+      empathetic: "James's current mood: EMPATHETIC. He wants to support the other person. Suggestions should validate feelings, ask caring follow-up questions, and offer warmth before any opinions.",
+      amused: "James's current mood: AMUSED and playful. Lean into his humor and signature phrases. Light teasing, jokes, and playful comebacks are welcome where they fit his style.",
+    };
+    const moodBlock =
+      data.mood && data.mood !== "normal" ? `# Mood\n${moodGuidance[data.mood]}\n` : "";
+
     const presentNames = (data.people ?? []).map((p) => p.name);
     const presentList = presentNames.length ? presentNames.join(", ") : "(only James)";
     const system = `You are an AAC (Augmentative and Alternative Communication) copilot. You generate reply options for ${jp?.name ?? "James"}, a non-speaking user, to TAP and speak aloud in real time. Suggestions must sound like HIM — not generic. Use his personality, humor, signature phrases, and shared history with the people present.
@@ -364,6 +376,7 @@ ${peopleBlock}
 ${placeBlock}
 ${eventBlock}
 ${styleBlock}
+${moodBlock}
 # Live conversation so far
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
