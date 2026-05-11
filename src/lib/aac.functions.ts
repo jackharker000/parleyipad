@@ -83,7 +83,7 @@ export const synthesizeSpeech = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const apiKey = requireElevenLabsApiKey();
     const res = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${data.voiceId}?output_format=mp3_44100_128`,
+      `https://api.elevenlabs.io/v1/text-to-speech/${data.voiceId}?output_format=mp3_22050_32`,
       {
         method: "POST",
         headers: {
