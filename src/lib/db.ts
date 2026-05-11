@@ -294,10 +294,11 @@ export const MODEL_OPTIONS: ModelOption[] = [
   { id: "openai/gpt-5-nano", label: "GPT-5 Nano (gateway)", hint: "Fast OpenAI via Lovable", provider: "gateway" },
   { id: "openai/gpt-5-mini", label: "GPT-5 Mini (gateway)", hint: "Balanced OpenAI via Lovable", provider: "gateway" },
   { id: "openai/gpt-5", label: "GPT-5 (gateway)", hint: "Slower · best OpenAI via Lovable", provider: "gateway" },
-  { id: "openai-direct/gpt-4o-mini", label: "GPT-4o mini (your key)", hint: "Fast · uses your OpenAI key", provider: "openai-direct" },
-  { id: "openai-direct/gpt-4o", label: "GPT-4o (your key)", hint: "Uses your OpenAI key", provider: "openai-direct" },
-  { id: "openai-direct/gpt-4.1-mini", label: "GPT-4.1 mini (your key)", hint: "Uses your OpenAI key", provider: "openai-direct" },
-  { id: "openai-direct/gpt-4.1", label: "GPT-4.1 (your key)", hint: "Uses your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5", label: "GPT-5 (your key)", hint: "Max power · uses your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5-mini", label: "GPT-5 mini (your key)", hint: "Fast · balanced · your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5-nano", label: "GPT-5 nano (your key)", hint: "Fastest · cheapest · your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-4o", label: "GPT-4o (your key)", hint: "Legacy · uses your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-4o-mini", label: "GPT-4o mini (your key)", hint: "Legacy · fast · your OpenAI key", provider: "openai-direct" },
 ];
 
 export async function getSettings(): Promise<Settings> {
