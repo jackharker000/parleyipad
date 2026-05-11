@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RecentRouteImport } from './routes/recent'
 import { Route as MessagesRouteImport } from './routes/messages'
+import { Route as HelpersRouteImport } from './routes/helpers'
 import { Route as FacebookRouteImport } from './routes/facebook'
 import { Route as EmailRouteImport } from './routes/email'
 import { Route as IndexRouteImport } from './routes/index'
@@ -30,6 +31,11 @@ const RecentRoute = RecentRouteImport.update({
 const MessagesRoute = MessagesRouteImport.update({
   id: '/messages',
   path: '/messages',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HelpersRoute = HelpersRouteImport.update({
+  id: '/helpers',
+  path: '/helpers',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FacebookRoute = FacebookRouteImport.update({
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/email': typeof EmailRoute
   '/facebook': typeof FacebookRoute
+  '/helpers': typeof HelpersRoute
   '/messages': typeof MessagesRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/email': typeof EmailRoute
   '/facebook': typeof FacebookRoute
+  '/helpers': typeof HelpersRoute
   '/messages': typeof MessagesRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/email': typeof EmailRoute
   '/facebook': typeof FacebookRoute
+  '/helpers': typeof HelpersRoute
   '/messages': typeof MessagesRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
@@ -87,6 +96,7 @@ export interface FileRouteTypes {
     | '/'
     | '/email'
     | '/facebook'
+    | '/helpers'
     | '/messages'
     | '/recent'
     | '/settings'
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/'
     | '/email'
     | '/facebook'
+    | '/helpers'
     | '/messages'
     | '/recent'
     | '/settings'
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/email'
     | '/facebook'
+    | '/helpers'
     | '/messages'
     | '/recent'
     | '/settings'
@@ -115,6 +127,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   EmailRoute: typeof EmailRoute
   FacebookRoute: typeof FacebookRoute
+  HelpersRoute: typeof HelpersRoute
   MessagesRoute: typeof MessagesRoute
   RecentRoute: typeof RecentRoute
   SettingsRoute: typeof SettingsRoute
@@ -142,6 +155,13 @@ declare module '@tanstack/react-router' {
       path: '/messages'
       fullPath: '/messages'
       preLoaderRoute: typeof MessagesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/helpers': {
+      id: '/helpers'
+      path: '/helpers'
+      fullPath: '/helpers'
+      preLoaderRoute: typeof HelpersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/facebook': {
@@ -179,6 +199,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   EmailRoute: EmailRoute,
   FacebookRoute: FacebookRoute,
+  HelpersRoute: HelpersRoute,
   MessagesRoute: MessagesRoute,
   RecentRoute: RecentRoute,
   SettingsRoute: SettingsRoute,
@@ -187,3 +208,13 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
