@@ -624,12 +624,18 @@ function Home() {
   }, [committed, allPeople, active]);
 
   // Auto-fetch suggestions
+  // Tracks the (transcriptLen + mood) signature of the last AI call so we
+  // skip redundant refreshes when nothing relevant has changed.
+  const lastSuggestKeyRef = useRef<string>("");
   const refreshSuggestions = useCallback(async () => {
     if (loadingSuggestions || !active) return;
+    const key = `${committed.length}:${moodRef.current}`;
+    if (key === lastSuggestKeyRef.current) return;
+    lastSuggestKeyRef.current = key;
     setLoadingSuggestions(true);
     try {
       const peopleById = new Map(allPeople.map((p) => [p.id, p] as const));
-      const rawRecent = committed.slice(-12).map((s) => ({
+      const rawRecent = committed.slice(-8).map((s) => ({
         speaker: s.speaker_label,
         text: s.text,
       }));
@@ -691,7 +697,7 @@ function Home() {
     if (!active) return;
     const t = setTimeout(() => {
       refreshSuggestions();
-    }, 600);
+    }, 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committed.length, active, mood]);
