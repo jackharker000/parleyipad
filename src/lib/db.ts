@@ -287,14 +287,14 @@ export type ModelOption = {
 // Models served via Lovable AI Gateway (no extra key needed) plus
 // "openai-direct/*" options that use the user's own OPENAI_API_KEY.
 export const MODEL_OPTIONS: ModelOption[] = [
-  { id: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", hint: "Fastest · cheapest", provider: "gateway" },
-  { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash (preview)", hint: "Fast · high quality", provider: "gateway" },
-  { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash", hint: "Balanced", provider: "gateway" },
-  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro", hint: "Slower · most thoughtful", provider: "gateway" },
-  { id: "openai/gpt-5-nano", label: "GPT-5 Nano (gateway)", hint: "Fast OpenAI via Lovable", provider: "gateway" },
-  { id: "openai/gpt-5-mini", label: "GPT-5 Mini (gateway)", hint: "Balanced OpenAI via Lovable", provider: "gateway" },
-  { id: "openai/gpt-5", label: "GPT-5 (gateway)", hint: "Slower · best OpenAI via Lovable", provider: "gateway" },
-  { id: "openai-direct/gpt-5", label: "GPT-5 (your key)", hint: "Max power · uses your OpenAI key", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5.5-pro", label: "GPT-5.5 Pro (your key)", hint: "Premium · deepest reasoning", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5.5", label: "GPT-5.5 (your key)", hint: "Most capable · state of the art", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5.4-pro", label: "GPT-5.4 Pro (your key)", hint: "Premium reasoning", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5.4", label: "GPT-5.4 (your key)", hint: "Advanced reasoning · code", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5.4-mini", label: "GPT-5.4 mini (your key)", hint: "Faster · balanced 5.4", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5.4-nano", label: "GPT-5.4 nano (your key)", hint: "Fastest · cheapest 5.4", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5.2", label: "GPT-5.2 (your key)", hint: "Enhanced reasoning", provider: "openai-direct" },
+  { id: "openai-direct/gpt-5", label: "GPT-5 (your key)", hint: "Powerful all-rounder", provider: "openai-direct" },
   { id: "openai-direct/gpt-5-mini", label: "GPT-5 mini (your key)", hint: "Fast · balanced · your OpenAI key", provider: "openai-direct" },
   { id: "openai-direct/gpt-5-nano", label: "GPT-5 nano (your key)", hint: "Fastest · cheapest · your OpenAI key", provider: "openai-direct" },
   { id: "openai-direct/gpt-4o", label: "GPT-4o (your key)", hint: "Legacy · uses your OpenAI key", provider: "openai-direct" },
