@@ -64,6 +64,17 @@ export const Route = createFileRoute("/")({
 
 type Suggestion = { text: string; category: string; why?: string };
 
+const MOODS = [
+  { id: "normal", label: "Normal", color: "bg-secondary text-secondary-foreground" },
+  { id: "calm", label: "Calm", color: "bg-sky-500 text-white" },
+  { id: "excited", label: "Excited", color: "bg-amber-500 text-white" },
+  { id: "sad", label: "Sad", color: "bg-blue-700 text-white" },
+  { id: "upset", label: "Upset", color: "bg-red-600 text-white" },
+  { id: "empathetic", label: "Empathetic", color: "bg-emerald-600 text-white" },
+  { id: "amused", label: "Amused", color: "bg-fuchsia-600 text-white" },
+] as const;
+type MoodId = (typeof MOODS)[number]["id"];
+
 // Synthetic speaker label used for things James speaks via TTS, so they get
 // recorded into the transcript and folded into future suggestion prompts.
 const JAMES_SELF_LABEL = "__james_self__";
@@ -174,6 +185,11 @@ function Home() {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const lastShownRef = useRef<string[]>([]);
+  const [mood, setMood] = useState<MoodId>("normal");
+  const moodRef = useRef<MoodId>("normal");
+  useEffect(() => {
+    moodRef.current = mood;
+  }, [mood]);
 
   // Speech
   const [draft, setDraft] = useState("");
