@@ -391,16 +391,12 @@ function SystemTab() {
       <Card className="p-6">
         <h2 className="text-lg font-semibold">Storage</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          All conversations live on this iPad. Cloud sync coming soon.
+          Your data lives on this iPad and is automatically backed up to your
+          Lovable Cloud account whenever it changes. Sign in with the same
+          email on another device to restore everything there. Use{" "}
+          <span className="font-medium text-foreground">Back up now</span> at
+          the top of this tab to force an immediate sync.
         </p>
-        <div className="mt-4 flex items-center justify-between">
-          <Label className="text-base">Sync to Lovable Cloud</Label>
-          <Switch
-            checked={settings.cloud_sync}
-            disabled
-            onCheckedChange={(v) => updateSettings({ cloud_sync: v })}
-          />
-        </div>
         <Button
           variant="destructive"
           className="mt-6 h-11"
