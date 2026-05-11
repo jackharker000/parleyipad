@@ -78,6 +78,31 @@ async function followUpsForPerson(personId: string): Promise<string[]> {
   return fs.filter((f) => !f.used).slice(0, FOLLOW_UP_LIMIT).map((f) => f.text);
 }
 
+const PERSON_DOC_PER = 3000;
+const PERSON_DOC_TOTAL = 9000;
+async function notesWithDocsForPerson(
+  personId: string,
+  baseNotes: string | undefined,
+): Promise<string | undefined> {
+  const docs = await db.person_documents
+    .where("person_id")
+    .equals(personId)
+    .toArray();
+  if (!docs.length) return baseNotes;
+  let block = "";
+  let used = 0;
+  for (const d of docs) {
+    const remaining = PERSON_DOC_TOTAL - used;
+    if (remaining <= 200) break;
+    const slice = (d.text ?? "").slice(0, Math.min(PERSON_DOC_PER, remaining));
+    if (!slice.trim()) continue;
+    block += `\n\n## Document: ${d.name}${d.note ? ` — ${d.note}` : ""}\n${slice}`;
+    used += slice.length;
+  }
+  if (!block.trim()) return baseNotes;
+  return [baseNotes ?? "", `Background documents:${block}`].filter(Boolean).join("\n\n");
+}
+
 async function memoriesForPlace(
   placeId: string,
   presentPersonIds: Set<string>,
@@ -147,7 +172,7 @@ export async function buildConversationContext(opts: {
       name: p.name,
       relationship: p.relationship,
       interests: p.interests,
-      notes: p.notes,
+      notes: await notesWithDocsForPerson(p.id, p.notes),
       style_notes: p.style_notes,
       recentMemories: await memoriesForPerson(p.id),
       followUps: await followUpsForPerson(p.id),

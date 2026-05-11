@@ -196,6 +196,17 @@ export type Voiceprint = {
   updated_at: number;
 };
 
+export type PersonDocument = {
+  id: string;
+  person_id: string;
+  name: string;
+  mime: string;
+  size: number;
+  text: string; // extracted plain text (truncated)
+  note?: string;
+  created_at: number;
+};
+
 export const MFCC_COEFFS = 13;
 /** Cosine-similarity threshold above which an unknown speaker is auto-matched to a stored voiceprint. */
 export const VOICEPRINT_MATCH_THRESHOLD = 0.86;
@@ -216,6 +227,7 @@ class AacDb extends Dexie {
   events!: Table<EventItem, string>;
   event_documents!: Table<EventDocument, string>;
   voiceprints!: Table<Voiceprint, string>;
+  person_documents!: Table<PersonDocument, string>;
 
   constructor() {
     super("aac_copilot");
@@ -243,6 +255,9 @@ class AacDb extends Dexie {
     });
     this.version(5).stores({
       voiceprints: "id, person_id, updated_at",
+    });
+    this.version(6).stores({
+      person_documents: "id, person_id, created_at",
     });
   }
 }

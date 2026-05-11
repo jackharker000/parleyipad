@@ -26,6 +26,7 @@ const TABLES = [
   "events",
   "event_documents",
   "voiceprints",
+  "person_documents",
 ] as const;
 
 type TableName = (typeof TABLES)[number];
