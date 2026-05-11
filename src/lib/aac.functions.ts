@@ -379,7 +379,7 @@ ${moodBlock}
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
 ${data.alreadyShown?.length ? `# Already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
-Return 16 ranked suggestions in James's voice. Provide a wide variety so James has plenty of useful options to pick from.`;
+Return 10 ranked suggestions in James's voice. Provide a wide variety so James has plenty of useful options to pick from.`;
 
     const target = resolveChatTarget(data.model);
     const res = await fetch(target.url, {
