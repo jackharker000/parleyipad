@@ -879,34 +879,14 @@ function Home() {
           <span className="text-sm font-medium">Recent</span>
         </Link>
 
-        {/* Facebook helper */}
+        {/* Reply helpers — Messages / Email / Facebook combined */}
         <Link
-          to="/facebook"
-          aria-label="Facebook helper"
-          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-[#1877f2] transition hover:bg-secondary"
+          to="/helpers"
+          aria-label="Reply helpers for Messages, Email and Facebook"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-foreground transition hover:bg-secondary"
         >
-          <Facebook className="size-7" />
-          <span className="text-sm font-medium text-foreground">Facebook</span>
-        </Link>
-
-        {/* Email helper */}
-        <Link
-          to="/email"
-          aria-label="Email helper"
-          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-[#ea4335] transition hover:bg-secondary"
-        >
-          <Mail className="size-7" />
-          <span className="text-sm font-medium text-foreground">Email</span>
-        </Link>
-
-        {/* Messages helper */}
-        <Link
-          to="/messages"
-          aria-label="Messages helper"
-          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-[#34c759] transition hover:bg-secondary"
-        >
-          <MessageCircle className="size-7" />
-          <span className="text-sm font-medium text-foreground">Messages</span>
+          <Reply className="size-7" />
+          <span className="text-sm font-medium">Helpers</span>
         </Link>
 
         {/* Settings */}
