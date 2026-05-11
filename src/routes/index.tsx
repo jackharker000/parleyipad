@@ -500,6 +500,7 @@ function Home() {
               transcript,
               placeName: placeName ?? undefined,
               peopleNames,
+              model: aiModelRef.current,
             },
           });
           await db.conversations.update(cid, {
