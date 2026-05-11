@@ -402,8 +402,8 @@ Return 16 ranked suggestions in James's voice. Provide a wide variety so James h
                 properties: {
                   suggestions: {
                     type: "array",
-                    minItems: 8,
-                    maxItems: 16,
+                    minItems: 6,
+                    maxItems: 10,
                     items: {
                       type: "object",
                       properties: {
