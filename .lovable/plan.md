@@ -1,71 +1,56 @@
-## Goal
+## Short answer
 
-Make the app feel snappier on James's iPad without removing anything he uses. Keep the mood buttons exactly as they are — they only steer suggestions, not the voice.
+Yes — splitting models by job is a real win here. Right now one Settings choice (`suggestion_model`) drives both the latency-critical path (live suggestions, expand-to-sentence) **and** the quality-critical path (post-conversation summary, memory extraction, event prep, reply drafts). Those two jobs have opposite needs.
 
-## Important clarification
+## What's happening today
 
-You picked "Mood-driven TTS modulation" as the thing to remove. Heads-up: **that feature isn't actually wired up today**. The TTS call uses fixed voice settings (stability 0.5, style 0.3) for every utterance, regardless of mood. So there is nothing to rip out on the voice side — mood already only drives the AI suggestions. That's good news: the cleanup below is pure win, no feature loss.
+Live, latency-critical (called many times per minute):
+- `generateSuggestions` — refreshed as James and others speak
+- `expandUtterance` — every time James taps a chip
 
-If you actually meant the **on-device speaker fingerprinting** (the MFCC analysis that recognises who's talking), tell me and I'll fold its removal in — that one is a real CPU cost.
+Background / one-shot, quality-critical (called once per conversation or on demand):
+- `summarizeConversation` — narrative + highlights + memory candidates + follow-ups
+- `extractInterests` — durable profile/memory updates
+- `generateEventPrep` — pre-conversation briefing
+- `draftReply`, `draftFacebookPost` — longer-form writing
 
-## What this plan changes
+All of these read `aiModelRef.current`, which is just `settings.suggestion_model`. Default is `gemini-2.5-flash-lite` for everything. `summarizeConversation` is the only one with a hardcoded fallback to `gemini-2.5-flash` if no model is passed — but the client always passes the lite one, so the fallback never fires.
 
-### 1. Speed up the suggestion loop (biggest win)
+Net effect: either James gets slow suggestions (if you pick a smart model) or shallow memory/summaries (if you pick a fast one). You can't have both.
 
-Every new transcript segment currently fires a fresh AI call after 600 ms. In a lively conversation that's a call every couple of seconds, each one sending the full profile, people, place, event, style JSON, and asking for **16** suggestions.
+## Proposed split
 
-- Increase debounce from 600 ms → **1500 ms** so a burst of speech only triggers one call.
-- Drop suggestion count from **16 → 10** (still plenty of variety, ~35% smaller response, faster to render).
-- Cache the assembled context (`jamesProfile`, `people`, `place`, `event`, `styleProfileJson`) per conversation and only rebuild it when the people/place/event selection changes — right now we rebuild from IndexedDB on every refresh.
-- Trim recent transcript window from last 12 → last 8 segments in the prompt.
-- Skip the AI call entirely when nothing has changed since the last call (same transcript length + same mood).
+Two named tiers, stored as separate settings, each with a sensible default:
 
-### 2. Lighten the TTS path
+| Tier | Used by | Default | Why |
+|---|---|---|---|
+| **Fast** (`fast_model`) | `generateSuggestions`, `expandUtterance` | `google/gemini-3-flash-preview` (or keep `2.5-flash-lite`) | Sub-second response, runs constantly, short outputs |
+| **Smart** (`smart_model`) | `summarizeConversation`, `extractInterests`, `generateEventPrep`, `draftReply`, `draftFacebookPost` | `google/gemini-2.5-pro` (or `gpt-5-mini`) | Runs once, longer context, nuance matters for memory + writing quality |
 
-- Switch model from `eleven_turbo_v2_5` to the same model but request `mp3_22050_32` instead of `mp3_44100_128` for the spoken-aloud path. Audio is for the room, not headphones — much smaller payload, faster first-audio.
-- Remove the unused `style: 0.3` and `use_speaker_boost: true` overrides (defaults are fine and the request body shrinks).
+### Settings UI
 
-### 3. Reduce IndexedDB write pressure
+Replace the single "AI model" dropdown with two:
+- **Live suggestions model** (Fast tier) — with a one-line "what this affects" caption
+- **Memory & analysis model** (Smart tier) — same caption pattern
 
-- Bulk-insert suggestion logs is fine, but currently every committed transcript segment also triggers a `conversations.update(speaker_map)` write. Batch those — only persist `speaker_map` on Stop or when a new label first appears.
-- Stop persisting voiceprints mid-session; only persist on Stop (already mostly done — remove the per-segment "first time" persist).
+Keep the existing model catalogue; just bind each dropdown to its own setting. Migrate existing users by seeding `fast_model = suggestion_model` and `smart_model = "google/gemini-2.5-pro"` on first load.
 
-### 4. Lazy-load heavy routes
+### Wiring
 
-The home page currently pulls in everything because the router eagerly imports all routes. Convert these to dynamic chunks so the home page boots faster:
+- `src/lib/db.ts` — add `fast_model` + `smart_model` to default settings (and the type), keep `suggestion_model`/`expand_model` for one release as fallbacks during migration.
+- `src/routes/index.tsx` — replace `aiModelRef` with `fastModelRef` + `smartModelRef`; suggestion + expand calls send `fast`, summarize/interests/event-prep/reply calls send `smart`.
+- `src/lib/aac.functions.ts` — no logic change needed; functions already accept a `model` param. Only update the hardcoded fallback in `summarizeConversation` to be irrelevant once the client always passes one.
+- `src/routes/settings.tsx` — split the dropdown into two controls.
 
-- `/settings` (2,554 lines — biggest file in the app)
-- `/helpers` and its DraftHelper
-- `/recent`, `/conversation/new`
+## Other improvements unlocked by the split
 
-TanStack Router supports route-level code splitting via `createFileRoute(...).lazy()` — no behaviour change, just smaller initial JS.
+1. **Reasoning effort on the smart tier only.** For `summarizeConversation` and `extractInterests`, pass `reasoning: { effort: "low" }` (or `"medium"`) when the smart model supports it. Gives sharper memories without slowing James's live experience.
+2. **Larger transcript window for analysis.** Today the live path uses the last 8 utterances (kept short for speed). The smart-tier summary can safely take the full transcript — it already does, but we can also feed more prior-conversation context for `generateEventPrep`.
+3. **Parallelize post-conversation work.** `summarizeConversation` and `extractInterests` can run in parallel (`Promise.all`) on conversation end, instead of sequentially. With two different model tiers this matters less for latency but reduces total wall-clock time for "Save & finish."
+4. **Skip smart calls when nothing changed.** Add a guard: if the transcript is < ~3 utterances or unchanged since last summary, skip the smart-model call entirely. Cuts cost without affecting quality.
 
-### 5. Remove dead weight
+## Recommendation
 
-- Strip unused imports in `src/routes/index.tsx` (audit `Reply`, `History`, `Calendar`, etc. — several lucide icons are imported but unused after recent edits).
-- Remove the `setRecognised` state hook on the home page — it's set but never read (the destructured first slot is `,`).
-- Drop `MIC_SESSION_KEY` early-return path's redundant Permissions API try/catch when `sessionStorage` already says granted.
+Worth doing. The split is a ~1-file-per-area change, and it directly addresses the trade-off you're describing: keep James's tapping experience snappy on a Flash-tier model, while letting the post-conversation memory/profile work use a Pro-tier model where the extra second or two is invisible to him.
 
-### 6. Default to a faster suggestion model
-
-Current default is `google/gemini-2.5-flash-lite`, which is already fast. Leave the user's chosen model alone, but for **first-launch** users set the default to `google/gemini-2.5-flash-lite` explicitly (today the fallback only kicks in if settings is missing) so nobody silently lands on a slower premium model.
-
-## What this plan does NOT change
-
-- Mood buttons stay exactly as they are (UI + suggestion steering).
-- Voice fingerprinting / speaker recognition stays (you didn't ask to remove it — but say the word and I will).
-- No schema changes, no auth changes, no feature removals.
-
-## Files touched
-
-- `src/routes/index.tsx` — debounce, context cache, dead imports, write batching
-- `src/lib/aac.functions.ts` — suggestion count 16→10, transcript window 12→8, TTS bitrate, settings cleanup
-- `src/router.tsx` and route files — lazy chunks for `/settings`, `/helpers`, `/recent`, `/conversation/new`
-- `src/lib/db.ts` — default model fallback (small)
-
-## Expected impact
-
-- Home page first paint: noticeably faster (settings.tsx alone is ~40% of the bundle today).
-- Time-to-suggestion after a sentence: similar single-call latency, but **far fewer** redundant calls in a busy conversation = lower iPad CPU + lower AI cost.
-- TTS time-to-first-audio: ~30–40% smaller download.
-- No visible UI change beyond fewer "thinking" flickers in the suggestions panel.
+Want me to implement this as described, or adjust the defaults / UI first?
