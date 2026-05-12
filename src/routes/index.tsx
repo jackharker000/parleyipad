@@ -509,16 +509,49 @@ function Home() {
         scribe.disconnect();
       } catch {}
       // Stop voice capture and persist final voiceprints for any mapped speakers
+      const cap = captureRef.current;
+      captureRef.current = null;
       try {
-        const cap = captureRef.current;
-        captureRef.current = null;
         if (cap) cap.stop();
       } catch {}
       try {
-        for (const [label, personId] of Object.entries(speakerMapRef.current)) {
+        const liveEntries = [...livePrintsRef.current.entries()];
+        const mapped = speakerMapRef.current;
+        let persistedAny = false;
+        for (const [label, personId] of Object.entries(mapped)) {
           const live = livePrintsRef.current.get(label);
           if (live && live.count >= 1) {
             await recordVoiceprint(personId, live.centroid);
+            persistedAny = true;
+          }
+        }
+        // Fallback: if speaker labels never got mapped to people but exactly
+        // one non-James person was in the roster, attribute every captured
+        // (non-James) voice frame to them. This is the common 1:1 case where
+        // the diarizer produces a "Speaker 1" label that auto-mapping didn't
+        // resolve before the session ended.
+        if (!persistedAny && liveEntries.length > 0) {
+          const others = personIdsRef.current; // James is not in this list
+          if (others.length === 1) {
+            const personId = others[0];
+            // Merge all label centroids weighted by their sample counts.
+            let combined: { centroid: number[]; count: number } | null = null;
+            for (const [, live] of liveEntries) {
+              const merged = mergeIntoCentroid(
+                combined?.centroid,
+                combined?.count ?? 0,
+                live.centroid,
+                live.count,
+              );
+              combined = merged;
+            }
+            if (combined && combined.count >= 1) {
+              await recordVoiceprint(personId, combined.centroid);
+              console.debug("[voiceprint] fallback persisted for sole person", {
+                personId,
+                samples: combined.count,
+              });
+            }
           }
         }
       } catch (err) {

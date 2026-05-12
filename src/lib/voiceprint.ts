@@ -77,6 +77,26 @@ export class VoiceCapture {
     sink.gain.value = 0;
     this.processor.connect(sink);
     sink.connect(ctx.destination);
+    // iOS Safari (and Chrome under autoplay policies) starts the AudioContext
+    // in "suspended" state. Without resuming, ScriptProcessor.onaudioprocess
+    // never fires, the buffer stays empty, and no voiceprints are ever
+    // captured. This is the #1 reason fingerprints don't appear.
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch (e) {
+        console.warn("[voiceprint] AudioContext.resume failed", e);
+      }
+    }
+    console.debug("[voiceprint] capture ready", {
+      sampleRate: this.sampleRate,
+      ctxState: ctx.state,
+    });
+  }
+
+  /** True if the capture has accumulated any audio samples. */
+  get hasAudio(): boolean {
+    return this.bufferLen > 0;
   }
 
   /** Concatenated mono PCM of everything currently buffered. */
