@@ -46,7 +46,10 @@ export function DraftHelper(props: {
   const [interestSuggestions, setInterestSuggestions] = useState<InterestSuggestion[]>([]);
 
   useEffect(() => {
-    getSettings().then((s) => setModel(s.suggestion_model ?? s.expand_model));
+    // Drafts and interest extraction are quality-critical, not latency-critical.
+    getSettings().then((s) =>
+      setModel(s.smart_model ?? s.suggestion_model ?? s.expand_model),
+    );
   }, []);
 
   async function handleDraft() {
