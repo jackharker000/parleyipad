@@ -208,8 +208,11 @@ export type PersonDocument = {
 };
 
 export const MFCC_COEFFS = 13;
-/** Cosine-similarity threshold above which an unknown speaker is auto-matched to a stored voiceprint. */
-export const VOICEPRINT_MATCH_THRESHOLD = 0.86;
+/** Cosine-similarity threshold above which an unknown speaker is auto-matched to a stored voiceprint.
+ *  MFCC means across short utterances from the same speaker typically land in
+ *  the 0.78–0.92 range, so 0.86 was too strict and almost never triggered.
+ *  0.80 catches genuine matches while still filtering most strangers. */
+export const VOICEPRINT_MATCH_THRESHOLD = 0.8;
 
 class AacDb extends Dexie {
   people!: Table<Person, string>;

@@ -282,10 +282,20 @@ function Home() {
         try {
           const first = d.words[0];
           const last = d.words[d.words.length - 1];
-          const dur = Math.max(0.4, (last.end ?? 0) - (first.start ?? 0));
-          if (dur >= 0.4) {
-            const pcm = cap.recentSlice(dur);
+          const spoken = (last.end ?? 0) - (first.start ?? 0);
+          // Need at least ~0.6s of speech for a stable MFCC mean. Pull a
+          // generous window with extra pad to absorb scribe commit lag
+          // (commits typically arrive 0.3–1s after the words finish).
+          const dur = Math.max(1.2, spoken);
+          if (spoken >= 0.6) {
+            const pcm = cap.recentSlice(dur, 1.0);
             const mfcc = computeMfccMean(pcm, cap.sampleRate);
+            if (!mfcc) {
+              console.debug("[voiceprint] mfcc skipped (too quiet/short)", {
+                spoken,
+                samples: pcm.length,
+              });
+            }
             if (mfcc) {
               const label = String(speakerLabel);
               const prev = livePrintsRef.current.get(label);
@@ -295,6 +305,11 @@ function Home() {
                 mfcc,
               );
               livePrintsRef.current.set(label, merged);
+              console.debug("[voiceprint] sample", {
+                label,
+                count: merged.count,
+                spoken: spoken.toFixed(2),
+              });
 
               // Try to auto-recognise this label against stored voiceprints
               // for known people, but only if it isn't already mapped.
@@ -309,6 +324,12 @@ function Home() {
                   candidates,
                   VOICEPRINT_MATCH_THRESHOLD,
                 );
+                console.debug("[voiceprint] match attempt", {
+                  label,
+                  candidateCount: candidates.length,
+                  bestSim: match?.sim,
+                  threshold: VOICEPRINT_MATCH_THRESHOLD,
+                });
                 if (match) {
                   const next = {
                     ...speakerMapRef.current,
@@ -460,8 +481,14 @@ function Home() {
         const cap = new VoiceCapture();
         await cap.start();
         captureRef.current = cap;
+        console.debug("[voiceprint] capture started", {
+          sampleRate: cap.sampleRate,
+        });
       } catch (err) {
         console.warn("voice fingerprint capture unavailable", err);
+        toast.warning(
+          "Voice recognition unavailable — speakers won't be auto-identified.",
+        );
         captureRef.current = null;
       }
       setActive(true);
@@ -487,7 +514,7 @@ function Home() {
       try {
         for (const [label, personId] of Object.entries(speakerMapRef.current)) {
           const live = livePrintsRef.current.get(label);
-          if (live && live.count >= 2) {
+          if (live && live.count >= 1) {
             await recordVoiceprint(personId, live.centroid);
           }
         }
