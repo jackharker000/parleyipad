@@ -481,8 +481,14 @@ function Home() {
         const cap = new VoiceCapture();
         await cap.start();
         captureRef.current = cap;
+        console.debug("[voiceprint] capture started", {
+          sampleRate: cap.sampleRate,
+        });
       } catch (err) {
         console.warn("voice fingerprint capture unavailable", err);
+        toast.warning(
+          "Voice recognition unavailable — speakers won't be auto-identified.",
+        );
         captureRef.current = null;
       }
       setActive(true);
