@@ -282,6 +282,8 @@ export const DEFAULT_SETTINGS: Settings = {
   ipad_model: "auto",
   suggestion_model: "google/gemini-2.5-flash-lite",
   expand_model: "google/gemini-2.5-flash-lite",
+  fast_model: "google/gemini-2.5-flash-lite",
+  smart_model: "google/gemini-2.5-pro",
 };
 
 export type ModelOption = {
