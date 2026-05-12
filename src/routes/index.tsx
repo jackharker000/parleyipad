@@ -1124,7 +1124,7 @@ function Home() {
                 const displayName =
                   s.speaker_label === jamesLabel ||
                   s.speaker_label === JAMES_SELF_LABEL
-                    ? "James"
+                    ? "Me"
                     : (() => {
                         const pid = speakerMap[s.speaker_label];
                         return pid
