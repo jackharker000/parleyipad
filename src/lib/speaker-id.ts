@@ -1,4 +1,5 @@
 import type { Person, TranscriptSegment } from "./db";
+import { extractIntroducedNames } from "./auto-person";
 
 const JAMES_SELF_LABEL = "__james_self__";
 
@@ -46,51 +47,37 @@ export function autoMapSpeakers(opts: {
     return undefined; // ambiguous — skip
   }
 
-  // 1. Self-introduction patterns inside any speaker's lines
-  const selfIntroRegexes = [
-    /\bi['’]?m\s+([A-Z][a-zA-Z'-]+)\b/,
-    /\bi am\s+([A-Z][a-zA-Z'-]+)\b/i,
-    /\bit['’]?s\s+([A-Z][a-zA-Z'-]+)\b/,
-    /\bthis is\s+([A-Z][a-zA-Z'-]+)\b/i,
-    /\b([A-Z][a-zA-Z'-]+)\s+here\b/,
-    /\bmy name is\s+([A-Z][a-zA-Z'-]+)\b/i,
-    /\bcall me\s+([A-Z][a-zA-Z'-]+)\b/i,
-  ];
+  // 1. Self-introduction patterns inside any speaker's lines.
+  // Reuse the same hardened extractor as auto-person creation so the two
+  // stay in sync (same stoplist, same normalisation, same confidence order).
+  const intros = extractIntroducedNames(
+    opts.segments.map((s) => ({ text: s.text, speaker_label: s.speaker_label })),
+  );
+  for (const { name, speaker_label: label } of intros) {
+    if (label === jamesLabel || mapping[label]) continue;
+    const person = nameToPerson(name);
+    if (person && !used.has(person.id)) {
+      mapping[label] = person.id;
+      used.add(person.id);
+    }
+  }
 
+  // Bare-name reply fallback ("Sarah." in <= 3 words) for unmapped speakers.
   for (const [label, segs] of bySpeaker) {
-    if (mapping[label]) continue;
+    if (mapping[label] || label === jamesLabel) continue;
     for (const seg of segs) {
-      let matchedName: string | undefined;
-      for (const rx of selfIntroRegexes) {
-        const m = seg.text.match(rx);
-        if (m?.[1]) {
-          matchedName = m[1];
+      const words = seg.text.trim().replace(/[.!?,]/g, "").split(/\s+/);
+      if (words.length > 3) continue;
+      for (const w of words) {
+        if (!/^[A-Z][a-zA-Z'-]+$/.test(w)) continue;
+        const p = nameToPerson(w);
+        if (p && !used.has(p.id)) {
+          mapping[label] = p.id;
+          used.add(p.id);
           break;
         }
       }
-      // Bare name reply (just "Sarah" or "Sarah." in <= 3 words)
-      if (!matchedName) {
-        const words = seg.text.trim().replace(/[.!?]/g, "").split(/\s+/);
-        if (words.length <= 3) {
-          for (const w of words) {
-            if (/^[A-Z][a-zA-Z'-]+$/.test(w)) {
-              const p = nameToPerson(w);
-              if (p) {
-                matchedName = w;
-                break;
-              }
-            }
-          }
-        }
-      }
-      if (matchedName) {
-        const person = nameToPerson(matchedName);
-        if (person && !used.has(person.id)) {
-          mapping[label] = person.id;
-          used.add(person.id);
-          break;
-        }
-      }
+      if (mapping[label]) break;
     }
   }
 
