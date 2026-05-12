@@ -2174,6 +2174,7 @@ function EventDetail({ eventId }: { eventId: string }) {
     setGenerating(true);
     try {
       const profile = await getJamesProfile();
+      const s = await getSettings();
       const peopleNames = (await db.people.bulkGet(event.person_ids ?? []))
         .filter((p): p is Person => !!p)
         .map((p) => p.name);
