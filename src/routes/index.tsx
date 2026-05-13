@@ -217,6 +217,9 @@ function Home() {
   const livePrintsRef = useRef<
     Map<string, { centroid: number[]; count: number }>
   >(new Map());
+  // Monotonic counter for locally-assigned "Speaker N" labels when Scribe
+  // doesn't reliably diarize. Reset at session start.
+  const speakerCounterRef = useRef<number>(0);
   // Persons whose voiceprint has already been saved/updated this session
   // (so we don't write on every committed segment).
   const persistedThisSessionRef = useRef<Set<string>>(new Set());
