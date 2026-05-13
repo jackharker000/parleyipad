@@ -110,28 +110,20 @@ export function autoMapSpeakers(opts: {
     }
   }
 
-  // 3. Selected-people fallback. Since James never speaks, every diarized
-  // label must be one of the people currently in the conversation. Pair
-  // unmapped labels (in first-heard order) with unmapped candidates (in the
-  // order they were selected). This handles the common case of 1-vs-1 chats
-  // and gracefully degrades for groups.
-  const labelFirstSeen = new Map<string, number>();
-  for (const s of opts.segments) {
-    if (s.speaker_label === jamesLabel) continue;
-    if (!labelFirstSeen.has(s.speaker_label)) {
-      labelFirstSeen.set(s.speaker_label, s.ts);
-    }
-  }
-  const unmappedLabels = [...bySpeaker.keys()]
-    .filter((l) => !mapping[l] && l !== jamesLabel)
-    .sort(
-      (a, b) =>
-        (labelFirstSeen.get(a) ?? 0) - (labelFirstSeen.get(b) ?? 0),
-    );
+  // 3. Trivial 1:1 fallback. ONLY when there is exactly one diarized
+  // speaker and exactly one unmapped candidate person, pair them. We
+  // deliberately do not pair multiple unknown "Speaker N" labels onto
+  // whoever is currently selected — that previously caused a 3-person
+  // recording at the user's known home to get attributed entirely to
+  // them. Unknown speakers stay as "Speaker N" and become real People
+  // (with voiceprints) when the recording stops.
+  const unmappedLabels = [...bySpeaker.keys()].filter(
+    (l) => !mapping[l] && l !== jamesLabel,
+  );
   const unusedCandidates = opts.candidates.filter((c) => !used.has(c.id));
-  for (let i = 0; i < unmappedLabels.length && i < unusedCandidates.length; i++) {
-    mapping[unmappedLabels[i]] = unusedCandidates[i].id;
-    used.add(unusedCandidates[i].id);
+  if (unmappedLabels.length === 1 && unusedCandidates.length === 1) {
+    mapping[unmappedLabels[0]] = unusedCandidates[0].id;
+    used.add(unusedCandidates[0].id);
   }
 
   return { mapping, jamesLabel };
