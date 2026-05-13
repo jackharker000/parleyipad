@@ -588,9 +588,7 @@ function Home() {
           arr.push(s);
           segsByLabel.set(s.speaker_label, arr);
         }
-        const introduced = (await import("@/lib/auto-person")).extractIntroducedNames(
-          allSegs,
-        );
+        const introduced = extractIntroducedNames(allSegs);
         const introByLabel = new Map<string, string>();
         for (const it of introduced) introByLabel.set(it.speaker_label, it.name);
 
