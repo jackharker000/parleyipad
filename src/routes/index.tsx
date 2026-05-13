@@ -47,7 +47,7 @@ import {
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { autoMapSpeakers, labelTranscriptForPrompt } from "@/lib/speaker-id";
-import { autoCreateIntroducedPeople } from "@/lib/auto-person";
+import { autoCreateIntroducedPeople, extractIntroducedNames } from "@/lib/auto-person";
 import { seedJamesIfNeeded } from "@/lib/seed";
 import {
   VoiceCapture,
