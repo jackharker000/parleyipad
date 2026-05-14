@@ -201,54 +201,30 @@ function Home() {
   const smartModelRef = useRef<string>("google/gemini-2.5-pro");
 
   // Speaker map
+  // `speakerMap` only ever contains CONFIRMED entries (label -> personId).
+  // Unknown / suggested-but-unconfirmed labels stay as "Speaker N".
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>({});
-  const [jamesLabel, setJamesLabel] = useState<string | undefined>(undefined);
   const speakerMapRef = useRef<Record<string, string>>({});
   const jamesLabelRef = useRef<string | undefined>(undefined);
 
   // ---- On-device voice fingerprinting ----
   const captureRef = useRef<VoiceCapture | null>(null);
-  // Per-speaker-label running MFCC centroid for the current session.
-  const livePrintsRef = useRef<
-    Map<string, { centroid: number[]; count: number }>
-  >(new Map());
-  // Monotonic counter for locally-assigned "Speaker N" labels when Scribe
-  // doesn't reliably diarize. Reset at session start.
-  const speakerCounterRef = useRef<number>(0);
-  // Persons whose voiceprint has already been saved/updated this session
-  // (so we don't write on every committed segment).
-  const persistedThisSessionRef = useRef<Set<string>>(new Set());
-  // Recognised speaker chips (label -> { personId, sim }) for future UI hint.
-  // Currently we only surface recognition via toast notifications.
-  const recognisedRef = useRef<
-    Record<string, { personId: string; sim: number }>
-  >({});
+  // Single source of truth for diarization this session.
+  const diarizerRef = useRef<Diarizer>(new Diarizer(0.82));
+  // Cluster status (suggested / confirmed) keyed by diarizer label.
+  const [clusterStatus, setClusterStatus] = useState<Record<string, ClusterStatus>>({});
+  const clusterStatusRef = useRef<Record<string, ClusterStatus>>({});
+  useEffect(() => {
+    clusterStatusRef.current = clusterStatus;
+  }, [clusterStatus]);
+  // Force re-render when diarizer counts/clusters change.
+  const [, setClusterTick] = useState(0);
   useEffect(() => {
     speakerMapRef.current = speakerMap;
-  }, [speakerMap]);
-
-  // Whenever the speaker map changes, persist accumulated voiceprints for
-  // any newly-mapped person (running centroid built up during this session).
-  useEffect(() => {
-    (async () => {
-      for (const [label, personId] of Object.entries(speakerMap)) {
-        const live = livePrintsRef.current.get(label);
-        if (!live) continue;
-        // Persist a snapshot once per (session, person). We keep updating the
-        // in-memory centroid as more audio arrives and re-persist on stop.
-        if (!persistedThisSessionRef.current.has(personId)) {
-          await recordVoiceprint(personId, live.centroid);
-          persistedThisSessionRef.current.add(personId);
-        }
-      }
-    })();
   }, [speakerMap]);
   useEffect(() => {
     seedJamesIfNeeded();
   }, []);
-  useEffect(() => {
-    jamesLabelRef.current = jamesLabel;
-  }, [jamesLabel]);
 
   // Server fns
   const tokenFn = useServerFn(createScribeToken);
