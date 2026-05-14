@@ -143,7 +143,8 @@ function ClusterCard({
   }, [cluster.status.kind === "unknown" && cluster.status.suggestedName]);
 
   if (cluster.status.kind === "confirmed") {
-    const person = people.find((p) => p.id === cluster.status.personId);
+    const status = cluster.status;
+    const person = people.find((p) => p.id === status.personId);
     return (
       <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-sm">
         <div className="flex items-center gap-1.5">
@@ -158,14 +159,15 @@ function ClusterCard({
   }
 
   if (cluster.status.kind === "suggested") {
-    const person = people.find((p) => p.id === cluster.status.personId);
+    const status = cluster.status;
+    const person = people.find((p) => p.id === status.personId);
     return (
       <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-2 text-sm">
         <div className="flex items-center gap-1.5">
           <Mic2 className="size-4 text-amber-700" />
           <span className="font-medium">{cluster.label}</span>
           <span className="ml-auto text-[10px] text-muted-foreground">
-            {Math.round(cluster.status.sim * 100)}% · {cluster.count}
+            {Math.round(status.sim * 100)}% · {cluster.count}
           </span>
         </div>
         <p className="mt-1 text-xs">
@@ -173,10 +175,7 @@ function ClusterCard({
         </p>
         <div className="mt-1.5 flex gap-1.5">
           <button
-            onClick={() =>
-              cluster.status.kind === "suggested" &&
-              onConfirmKnown(cluster.label, cluster.status.personId)
-            }
+            onClick={() => onConfirmKnown(cluster.label, status.personId)}
             className="flex-1 rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-500"
           >
             Confirm
