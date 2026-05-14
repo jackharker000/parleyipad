@@ -1,4 +1,4 @@
-import { db, newId, type Person, type TranscriptSegment } from "./db";
+import type { Person } from "./db";
 
 // Ordered by confidence — strongest, least-ambiguous patterns first.
 // All case-insensitive; we normalise the captured name afterwards.
@@ -120,38 +120,5 @@ export function extractIntroducedNames(
   return out;
 }
 
-/**
- * Auto-create Person rows for any introduced names not already in the DB.
- * Returns the full list of new people created.
- */
-export async function autoCreateIntroducedPeople(
-  segments: TranscriptSegment[],
-  existing: Person[],
-  opts?: { placeId?: string },
-): Promise<Person[]> {
-  const introduced = extractIntroducedNames(segments);
-  if (introduced.length === 0) return [];
-  const haveByFirst = new Set(
-    existing.map((p) => p.name.trim().split(/\s+/)[0].toLowerCase()),
-  );
-  const created: Person[] = [];
-  for (const { name } of introduced) {
-    const key = name.toLowerCase();
-    if (haveByFirst.has(key)) continue;
-    haveByFirst.add(key);
-    const p: Person = {
-      id: newId(),
-      name,
-      relationship: "",
-      interests: [],
-      notes: opts?.placeId
-        ? `Auto-added — first met during a conversation.`
-        : "Auto-added from conversation.",
-      style_notes: "",
-      created_at: Date.now(),
-    };
-    await db.people.put(p);
-    created.push(p);
-  }
-  return created;
-}
+// Re-export retained type for convenience.
+export type { Person };

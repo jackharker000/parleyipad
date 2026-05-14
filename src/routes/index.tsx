@@ -22,11 +22,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
   db,
   getSettings,
   newId,
@@ -46,18 +41,18 @@ import {
   expandUtterance,
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
-import { autoMapSpeakers, labelTranscriptForPrompt } from "@/lib/speaker-id";
-import { autoCreateIntroducedPeople, extractIntroducedNames } from "@/lib/auto-person";
+import { labelTranscriptForPrompt } from "@/lib/speaker-id";
+import { extractIntroducedNames } from "@/lib/auto-person";
 import { seedJamesIfNeeded } from "@/lib/seed";
 import {
   VoiceCapture,
   computeMfccMean,
-  mergeIntoCentroid,
   recordVoiceprint,
   bestMatch,
-  cosineSim,
+  Diarizer,
 } from "@/lib/voiceprint";
 import { VOICEPRINT_MATCH_THRESHOLD } from "@/lib/db";
+import { SpeakerPanel, type ClusterRow, type ClusterStatus } from "@/components/SpeakerPanel";
 
 export const Route = createFileRoute("/")({
   component: Home,
@@ -206,54 +201,30 @@ function Home() {
   const smartModelRef = useRef<string>("google/gemini-2.5-pro");
 
   // Speaker map
+  // `speakerMap` only ever contains CONFIRMED entries (label -> personId).
+  // Unknown / suggested-but-unconfirmed labels stay as "Speaker N".
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>({});
-  const [jamesLabel, setJamesLabel] = useState<string | undefined>(undefined);
   const speakerMapRef = useRef<Record<string, string>>({});
   const jamesLabelRef = useRef<string | undefined>(undefined);
 
   // ---- On-device voice fingerprinting ----
   const captureRef = useRef<VoiceCapture | null>(null);
-  // Per-speaker-label running MFCC centroid for the current session.
-  const livePrintsRef = useRef<
-    Map<string, { centroid: number[]; count: number }>
-  >(new Map());
-  // Monotonic counter for locally-assigned "Speaker N" labels when Scribe
-  // doesn't reliably diarize. Reset at session start.
-  const speakerCounterRef = useRef<number>(0);
-  // Persons whose voiceprint has already been saved/updated this session
-  // (so we don't write on every committed segment).
-  const persistedThisSessionRef = useRef<Set<string>>(new Set());
-  // Recognised speaker chips (label -> { personId, sim }) for future UI hint.
-  // Currently we only surface recognition via toast notifications.
-  const recognisedRef = useRef<
-    Record<string, { personId: string; sim: number }>
-  >({});
+  // Single source of truth for diarization this session.
+  const diarizerRef = useRef<Diarizer>(new Diarizer(0.82));
+  // Cluster status (suggested / confirmed) keyed by diarizer label.
+  const [clusterStatus, setClusterStatus] = useState<Record<string, ClusterStatus>>({});
+  const clusterStatusRef = useRef<Record<string, ClusterStatus>>({});
+  useEffect(() => {
+    clusterStatusRef.current = clusterStatus;
+  }, [clusterStatus]);
+  // Force re-render when diarizer counts/clusters change.
+  const [, setClusterTick] = useState(0);
   useEffect(() => {
     speakerMapRef.current = speakerMap;
-  }, [speakerMap]);
-
-  // Whenever the speaker map changes, persist accumulated voiceprints for
-  // any newly-mapped person (running centroid built up during this session).
-  useEffect(() => {
-    (async () => {
-      for (const [label, personId] of Object.entries(speakerMap)) {
-        const live = livePrintsRef.current.get(label);
-        if (!live) continue;
-        // Persist a snapshot once per (session, person). We keep updating the
-        // in-memory centroid as more audio arrives and re-persist on stop.
-        if (!persistedThisSessionRef.current.has(personId)) {
-          await recordVoiceprint(personId, live.centroid);
-          persistedThisSessionRef.current.add(personId);
-        }
-      }
-    })();
   }, [speakerMap]);
   useEffect(() => {
     seedJamesIfNeeded();
   }, []);
-  useEffect(() => {
-    jamesLabelRef.current = jamesLabel;
-  }, [jamesLabel]);
 
   // Server fns
   const tokenFn = useServerFn(createScribeToken);
@@ -293,45 +264,29 @@ function Home() {
       }
 
       // -------- Pick a canonical speaker label for this segment.
-      // Priority:
-      //   1. Scribe-provided speaker_id (when realtime diarization fires).
-      //   2. Local MFCC clustering: nearest live cluster (cosine ≥ merge
-      //      threshold) joins it, else open a new "Speaker N" cluster.
-      //   3. If MFCC unavailable, reuse the previous label rather than
-      //      defaulting everything to "Speaker 1".
-      const CLUSTER_MERGE_SIM = 0.78;
-      const scribeSpkId =
-        d.words?.[0]?.speaker_id ?? (d as any).speaker_id ?? null;
+      // Single source of truth: the local Diarizer. We deliberately ignore
+      // Scribe's speaker_id — in our tests it produced one label for whole
+      // multi-speaker recordings, which then poisoned downstream mapping.
+      // Utterances that were too quiet/short to MFCC stick to the previous
+      // label so we don't invent ghost clusters from "uh huh".
       let speakerLabel: string;
-      if (scribeSpkId) {
-        speakerLabel = `Scribe-${scribeSpkId}`;
-      } else if (mfcc) {
-        let bestLabel: string | null = null;
-        let bestSim = -1;
-        for (const [label, cluster] of livePrintsRef.current.entries()) {
-          const sim = cosineSim(mfcc, cluster.centroid);
-          if (sim > bestSim) {
-            bestSim = sim;
-            bestLabel = label;
-          }
-        }
-        if (bestLabel && bestSim >= CLUSTER_MERGE_SIM) {
-          speakerLabel = bestLabel;
-        } else {
-          speakerCounterRef.current += 1;
-          speakerLabel = `Speaker ${speakerCounterRef.current}`;
-        }
-        console.debug("[diarize]", {
-          chosen: speakerLabel,
-          bestSim: bestSim.toFixed(3),
-          clusters: livePrintsRef.current.size,
-        });
+      let assignSim = -1;
+      let assignNew = false;
+      if (mfcc) {
+        const r = diarizerRef.current.assign(mfcc);
+        speakerLabel = r.label;
+        assignSim = r.sim;
+        assignNew = r.isNew;
       } else {
         const lastSeg = committed[committed.length - 1];
-        speakerLabel =
-          lastSeg?.speaker_label ??
-          `Speaker ${++speakerCounterRef.current}`;
+        speakerLabel = lastSeg?.speaker_label ?? "Speaker ?";
       }
+      console.debug("[diarize]", {
+        chosen: speakerLabel,
+        sim: assignSim.toFixed(3),
+        isNew: assignNew,
+        clusters: diarizerRef.current.clusters().length,
+      });
 
       const seg: TranscriptSegment = {
         id: newId(),
@@ -343,82 +298,56 @@ function Home() {
       setCommitted((prev) => [...prev, seg]);
       await db.transcript_segments.add(seg);
 
-      // -------- Voice fingerprint update --------
-      if (mfcc) {
-        try {
-          const label = speakerLabel;
-          const prev = livePrintsRef.current.get(label);
-          const merged = mergeIntoCentroid(
-            prev?.centroid,
-            prev?.count ?? 0,
-            mfcc,
+      // -------- Recognition pass (suggestion only — never auto-confirms).
+      // For brand-new clusters, or any cluster still in `unknown` state, try
+      // to match this cluster's running centroid against saved voiceprints.
+      // Confirmed clusters keep their identity. Already-suggested clusters
+      // keep their previous suggestion (stable until James acts on it).
+      try {
+        const cluster = diarizerRef.current.get(speakerLabel);
+        const status = clusterStatusRef.current[speakerLabel];
+        if (cluster && (!status || status.kind === "unknown")) {
+          // Build candidates: stored prints minus already-confirmed people.
+          const confirmedIds = new Set(
+            Object.values(speakerMapRef.current),
           );
-          livePrintsRef.current.set(label, merged);
-          console.debug("[voiceprint] sample", {
-            label,
-            count: merged.count,
-            spoken: spoken.toFixed(2),
-          });
-
-          // Try to auto-recognise this label against stored voiceprints
-          // for known people, but only if it isn't already mapped.
-          if (!speakerMapRef.current[label]) {
-            const usedIds = new Set(Object.values(speakerMapRef.current));
-            const allPrints = await db.voiceprints.toArray();
-            const candidates = allPrints.filter(
-              (p) => !usedIds.has(p.person_id),
-            );
-            const match = bestMatch(
-              merged.centroid,
-              candidates,
-              VOICEPRINT_MATCH_THRESHOLD,
-            );
-            console.debug("[voiceprint] match attempt", {
-              label,
-              candidateCount: candidates.length,
-              bestSim: match?.sim,
-              threshold: VOICEPRINT_MATCH_THRESHOLD,
-            });
-            if (match) {
-              const next = {
-                ...speakerMapRef.current,
-                [label]: match.print.person_id,
-              };
-              speakerMapRef.current = next;
-              setSpeakerMap(next);
-              recognisedRef.current = {
-                ...recognisedRef.current,
-                [label]: { personId: match.print.person_id, sim: match.sim },
-              };
-              if (conversationIdRef.current) {
-                db.conversations.update(conversationIdRef.current, {
-                  speaker_map: next,
-                });
-              }
-              if (!personIdsRef.current.includes(match.print.person_id)) {
-                const merged2 = [
-                  ...personIdsRef.current,
-                  match.print.person_id,
-                ];
-                personIdsRef.current = merged2;
-                setSelectedPersonIds(merged2);
-                if (conversationIdRef.current) {
-                  db.conversations.update(conversationIdRef.current, {
-                    person_ids: merged2,
-                  });
-                }
-              }
-              const person = await db.people.get(match.print.person_id);
-              if (person) {
-                toast.success(
-                  `Recognised ${person.name} (${Math.round(match.sim * 100)}% match)`,
-                );
-              }
-            }
+          const allPrints = await db.voiceprints.toArray();
+          const candidates = allPrints.filter(
+            (p) => !confirmedIds.has(p.person_id),
+          );
+          const match = bestMatch(
+            cluster.centroid,
+            candidates,
+            VOICEPRINT_MATCH_THRESHOLD,
+          );
+          // Look for a self-introduction in this segment as a hint.
+          const introHere = extractIntroducedNames([
+            { text, speaker_label: speakerLabel },
+          ])[0]?.name;
+          let nextStatus: ClusterStatus | undefined;
+          if (match) {
+            nextStatus = {
+              kind: "suggested",
+              personId: match.print.person_id,
+              sim: match.sim,
+            };
+          } else if (!status) {
+            nextStatus = { kind: "unknown", suggestedName: introHere };
+          } else if (introHere && !status.suggestedName) {
+            nextStatus = { kind: "unknown", suggestedName: introHere };
           }
-        } catch (err) {
-          console.warn("voiceprint update failed", err);
+          if (nextStatus) {
+            const next = {
+              ...clusterStatusRef.current,
+              [speakerLabel]: nextStatus,
+            };
+            clusterStatusRef.current = next;
+            setClusterStatus(next);
+          }
         }
+        setClusterTick((n) => n + 1);
+      } catch (err) {
+        console.warn("voiceprint match failed", err);
       }
     },
   });
@@ -504,12 +433,10 @@ function Home() {
       setPartial("");
       setSuggestions([]);
       setSpeakerMap({});
-      setJamesLabel(undefined);
       lastShownRef.current = [];
-      livePrintsRef.current = new Map();
-      persistedThisSessionRef.current = new Set();
-      recognisedRef.current = {};
-      speakerCounterRef.current = 0;
+      diarizerRef.current.reset();
+      setClusterStatus({});
+      clusterStatusRef.current = {};
 
       const conv: Conversation = {
         id,
@@ -560,90 +487,14 @@ function Home() {
       try {
         if (cap) cap.stop();
       } catch {}
+      // Re-persist confirmed voiceprints with the latest centroids (we may
+      // have collected many more samples since the user pressed Confirm).
       try {
-        const liveEntries = [...livePrintsRef.current.entries()];
-        const mapped = speakerMapRef.current;
-        // 1. Persist voiceprints for already-mapped speakers (the strong case).
-        for (const [label, personId] of Object.entries(mapped)) {
-          const live = livePrintsRef.current.get(label);
-          if (live && live.count >= 1) {
-            await recordVoiceprint(personId, live.centroid);
+        for (const [label, personId] of Object.entries(speakerMapRef.current)) {
+          const cluster = diarizerRef.current.get(label);
+          if (cluster && cluster.count >= 1) {
+            await recordVoiceprint(personId, cluster.centroid);
           }
-        }
-        // 2. For every live cluster that is STILL unmapped at session end,
-        // create a placeholder Person ("Guest …") and persist its voiceprint.
-        // This guarantees every distinct voice we heard ends up with a saved
-        // fingerprint and a row in the People list — the user can rename it
-        // afterwards. We require a minimum sample count to avoid persisting
-        // single noisy bursts.
-        const allSegs = cid
-          ? await db.transcript_segments
-              .where("conversation_id")
-              .equals(cid)
-              .toArray()
-          : [];
-        const segsByLabel = new Map<string, TranscriptSegment[]>();
-        for (const s of allSegs) {
-          const arr = segsByLabel.get(s.speaker_label) ?? [];
-          arr.push(s);
-          segsByLabel.set(s.speaker_label, arr);
-        }
-        const introduced = extractIntroducedNames(allSegs);
-        const introByLabel = new Map<string, string>();
-        for (const it of introduced) introByLabel.set(it.speaker_label, it.name);
-
-        const mappedPersonIds = new Set(Object.values(mapped));
-        const placeLabel = placeName ? ` at ${placeName}` : "";
-        const stamp = new Date().toLocaleString(undefined, {
-          month: "short",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        let guestIdx = 0;
-        const newRoster = [...personIdsRef.current];
-        const newSpeakerMap = { ...mapped };
-        for (const [label, live] of liveEntries) {
-          if (mapped[label]) continue; // already mapped above
-          if (live.count < 2) continue; // too little audio to persist
-          // Skip clusters that are clearly James himself (by jamesLabel)
-          if (label === jamesLabelRef.current) continue;
-          guestIdx += 1;
-          const introName = introByLabel.get(label);
-          const personName =
-            introName ?? `Guest ${stamp}${guestIdx > 1 ? ` (${guestIdx})` : ""}`;
-          const newPerson: Person = {
-            id: newId(),
-            name: personName,
-            relationship: "",
-            interests: [],
-            notes: introName
-              ? `Auto-added — first met during a conversation${placeLabel}.`
-              : `Auto-added from a recorded conversation${placeLabel}. Rename me.`,
-            style_notes: "",
-            created_at: Date.now(),
-          };
-          await db.people.add(newPerson);
-          await recordVoiceprint(newPerson.id, live.centroid);
-          newSpeakerMap[label] = newPerson.id;
-          if (!newRoster.includes(newPerson.id) && !mappedPersonIds.has(newPerson.id)) {
-            newRoster.push(newPerson.id);
-          }
-          console.debug("[voiceprint] placeholder person created", {
-            label,
-            personId: newPerson.id,
-            name: personName,
-            samples: live.count,
-          });
-        }
-        if (cid && (newRoster.length !== personIdsRef.current.length ||
-          Object.keys(newSpeakerMap).length !== Object.keys(mapped).length)) {
-          personIdsRef.current = newRoster;
-          speakerMapRef.current = newSpeakerMap;
-          await db.conversations.update(cid, {
-            person_ids: newRoster,
-            speaker_map: newSpeakerMap,
-          });
         }
       } catch (err) {
         console.warn("final voiceprint persist failed", err);
@@ -722,60 +573,7 @@ function Home() {
     }
   }, [active, stopping, scribe, summarizeFn, placeName]);
 
-  // Auto speaker mapping
-  useEffect(() => {
-    if (!active || committed.length === 0) return;
-    let cancelled = false;
-    (async () => {
-      // 1. Auto-create Person rows for anyone who introduces themselves
-      const created = await autoCreateIntroducedPeople(
-        committed,
-        allPeople,
-        { placeId: placeIdRef.current },
-      );
-      let working = allPeople;
-      if (created.length > 0 && !cancelled) {
-        working = [...allPeople, ...created];
-        setAllPeople(working);
-        // Add new arrivals to active conversation roster
-        const newIds = created.map((p) => p.id);
-        const merged = Array.from(
-          new Set([...personIdsRef.current, ...newIds]),
-        );
-        personIdsRef.current = merged;
-        setSelectedPersonIds(merged);
-        if (conversationIdRef.current) {
-          await db.conversations.update(conversationIdRef.current, {
-            person_ids: merged,
-          });
-        }
-        for (const p of created) toast.success(`Met ${p.name} — added to people`);
-      }
-
-      const candidates = working.filter((p) =>
-        personIdsRef.current.includes(p.id),
-      );
-      if (candidates.length === 0) return;
-      const { mapping } = autoMapSpeakers({
-        segments: committed,
-        candidates,
-        current: speakerMapRef.current,
-        // James never speaks aloud — every diarized voice is a non-James person.
-      });
-      const changed = Object.keys(mapping).some(
-        (k) => mapping[k] !== speakerMapRef.current[k],
-      );
-      if (changed && conversationIdRef.current && !cancelled) {
-        setSpeakerMap(mapping);
-        db.conversations.update(conversationIdRef.current, {
-          speaker_map: mapping,
-        });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [committed, allPeople, active]);
+  // (No auto-mapping effect: speakers are confirmed only via the SpeakerPanel.)
 
   // Auto-fetch suggestions
   // Tracks the (transcriptLen + mood) signature of the last AI call so we
@@ -913,11 +711,104 @@ function Home() {
     [ttsFn, voiceId],
   );
 
-  const transcriptList = useMemo(() => committed.slice(-12), [committed]);
   const peopleInConvo = useMemo(
     () => allPeople.filter((p) => selectedPersonIds.includes(p.id)),
     [allPeople, selectedPersonIds],
   );
+
+  // Build cluster rows from the diarizer + cluster-status state for the SpeakerPanel.
+  const clusterRows = useMemo<ClusterRow[]>(() => {
+    const rows: ClusterRow[] = [];
+    for (const c of diarizerRef.current.clusters()) {
+      const status = clusterStatus[c.label] ?? { kind: "unknown" as const };
+      rows.push({ label: c.label, count: c.count, status });
+    }
+    // Stable sort by numeric portion of "Speaker N"
+    rows.sort((a, b) => {
+      const na = Number(a.label.replace(/\D/g, "")) || 0;
+      const nb = Number(b.label.replace(/\D/g, "")) || 0;
+      return na - nb;
+    });
+    return rows;
+    // committed length triggers re-render via setClusterTick already
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clusterStatus, committed.length]);
+
+  // ---- Speaker confirmation handlers ----
+  const confirmKnownSpeaker = useCallback(
+    async (label: string, personId: string) => {
+      const cluster = diarizerRef.current.get(label);
+      if (cluster) await recordVoiceprint(personId, cluster.centroid);
+      // Update speakerMap (only confirmed entries) and conversation roster.
+      const nextMap = { ...speakerMapRef.current };
+      // Remove any prior label for this person
+      for (const k of Object.keys(nextMap))
+        if (nextMap[k] === personId) delete nextMap[k];
+      nextMap[label] = personId;
+      speakerMapRef.current = nextMap;
+      setSpeakerMap(nextMap);
+      const nextStatus = {
+        ...clusterStatusRef.current,
+        [label]: { kind: "confirmed" as const, personId },
+      };
+      clusterStatusRef.current = nextStatus;
+      setClusterStatus(nextStatus);
+      if (!personIdsRef.current.includes(personId)) {
+        const merged = [...personIdsRef.current, personId];
+        personIdsRef.current = merged;
+        setSelectedPersonIds(merged);
+      }
+      if (conversationIdRef.current) {
+        await db.conversations.update(conversationIdRef.current, {
+          speaker_map: nextMap,
+          person_ids: personIdsRef.current,
+        });
+      }
+      const p = await db.people.get(personId);
+      if (p) toast.success(`Confirmed ${p.name}`);
+    },
+    [],
+  );
+
+  const rejectSuggestion = useCallback((label: string) => {
+    const next = {
+      ...clusterStatusRef.current,
+      [label]: { kind: "unknown" as const },
+    };
+    clusterStatusRef.current = next;
+    setClusterStatus(next);
+  }, []);
+
+  const confirmNewSpeaker = useCallback(
+    async (label: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      // Re-use existing person if name (first-name) matches
+      const existing = allPeople.find(
+        (p) => p.name.toLowerCase() === trimmed.toLowerCase(),
+      );
+      let personId: string;
+      if (existing) {
+        personId = existing.id;
+      } else {
+        const p: Person = {
+          id: newId(),
+          name: trimmed,
+          relationship: "",
+          interests: [],
+          notes: placeName ? `Met during a conversation at ${placeName}.` : "",
+          style_notes: "",
+          created_at: Date.now(),
+        };
+        await db.people.add(p);
+        setAllPeople((cur) => [...cur, p].sort((a, b) => a.name.localeCompare(b.name)));
+        personId = p.id;
+      }
+      await confirmKnownSpeaker(label, personId);
+    },
+    [allPeople, placeName, confirmKnownSpeaker],
+  );
+
 
   // Expand James's truncated typing via LLM, then speak the expanded version
   const expandAndSpeak = useCallback(async () => {
@@ -1111,52 +1002,12 @@ function Home() {
             Recording
           </span>
         )}
-        <SpeakerBar
-          segments={committed}
-          speakerMap={speakerMap}
-          jamesLabel={jamesLabel}
-          candidates={peopleInConvo}
-          onAssign={(label, personId) => {
-            const next = { ...speakerMap };
-            for (const k of Object.keys(next)) {
-              if (next[k] === personId) delete next[k];
-            }
-            next[label] = personId;
-            setSpeakerMap(next);
-            if (conversationIdRef.current)
-              db.conversations.update(conversationIdRef.current, {
-                speaker_map: next,
-              });
-          }}
-          onSetJames={(label) => {
-            setJamesLabel(label);
-            if (speakerMap[label]) {
-              const next = { ...speakerMap };
-              delete next[label];
-              setSpeakerMap(next);
-              if (conversationIdRef.current)
-                db.conversations.update(conversationIdRef.current, {
-                  speaker_map: next,
-                });
-            }
-          }}
-          onClear={(label) => {
-            const next = { ...speakerMap };
-            delete next[label];
-            setSpeakerMap(next);
-            if (conversationIdRef.current)
-              db.conversations.update(conversationIdRef.current, {
-                speaker_map: next,
-              });
-            if (jamesLabel === label) setJamesLabel(undefined);
-          }}
-        />
       </div>
 
-      {/* Main two-column area: full width landscape */}
-      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
-        {/* Suggestions — 4 cols × 4 rows */}
-        <section className="flex min-h-0 flex-[3] flex-col rounded-2xl border border-border bg-card/40">
+      {/* Main two-column area: suggestions (80%) + speaker panel (20%) */}
+      <div className="flex min-h-0 flex-1 gap-2 p-2">
+        {/* Suggestions — 3 cols × 4 rows, 80% width */}
+        <section className="flex min-h-0 w-4/5 flex-col rounded-2xl border border-border bg-card/40">
           <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
               <Sparkles className="size-4" /> Suggestions
@@ -1170,19 +1021,19 @@ function Home() {
               {loadingSuggestions ? "Thinking…" : "Refresh"}
             </Button>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-4 grid-rows-4 gap-1.5 overflow-hidden p-2">
+          <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-4 gap-1.5 overflow-hidden p-2">
             {!active && suggestions.length === 0 && (
-              <Card className="col-span-4 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
+              <Card className="col-span-3 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Press the green mic button to start a conversation. Suggestions
                 will appear here.
               </Card>
             )}
             {active && suggestions.length === 0 && !loadingSuggestions && (
-              <Card className="col-span-4 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
+              <Card className="col-span-3 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Listening… suggestions will appear after a few words.
               </Card>
             )}
-            {suggestions.slice(0, 16).map((s, i) => (
+            {suggestions.slice(0, 12).map((s, i) => (
               <button
                 key={`${i}-${s.text}`}
                 onClick={() => speak(s.text, { suggestion: s })}
@@ -1233,49 +1084,19 @@ function Home() {
           </div>
         </section>
 
-        {/* Transcript — only shown during an active conversation */}
-        {active && (
-          <section className="flex min-h-0 flex-[1] flex-col rounded-2xl border border-border bg-card/40">
-            <div className="border-b border-border px-3 py-1.5">
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                Transcript
-              </h2>
-            </div>
-            <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3 text-sm">
-              {transcriptList.length === 0 && !partial && (
-                <p className="text-sm italic text-muted-foreground">
-                  Listening…
-                </p>
-              )}
-              {transcriptList.map((s) => {
-                const displayName =
-                  s.speaker_label === jamesLabel ||
-                  s.speaker_label === JAMES_SELF_LABEL
-                    ? "Me"
-                    : (() => {
-                        const pid = speakerMap[s.speaker_label];
-                        return pid
-                          ? (allPeople.find((p) => p.id === pid)?.name ??
-                              s.speaker_label)
-                          : s.speaker_label;
-                      })();
-                return (
-                  <div key={s.id} className="leading-snug">
-                    <span className="mr-2 text-xs font-medium text-muted-foreground">
-                      {displayName}
-                    </span>
-                    {s.text}
-                  </div>
-                );
-              })}
-              {partial && (
-                <div className="italic leading-snug text-muted-foreground">
-                  {partial}
-                </div>
-              )}
-            </div>
-          </section>
-        )}
+        {/* Speaker panel — 20% width */}
+        <div className="flex min-h-0 w-1/5 flex-col">
+          <SpeakerPanel
+            segments={committed}
+            partial={partial}
+            clusters={clusterRows}
+            people={allPeople}
+            onConfirmKnown={confirmKnownSpeaker}
+            onRejectSuggestion={rejectSuggestion}
+            onConfirmNew={confirmNewSpeaker}
+            onAskName={() => speak("Sorry, who am I speaking with?")}
+          />
+        </div>
       </div>
 
       {/* People picker modal */}
@@ -1524,8 +1345,6 @@ function Home() {
   );
 }
 
-/* --------------------------- Speaker mapping bar -------------------------- */
-
 function ScaledShell({
   ipadModel,
   children,
@@ -1572,81 +1391,3 @@ function ScaledShell({
   );
 }
 
-function SpeakerBar({
-  segments,
-  speakerMap,
-  jamesLabel,
-  candidates,
-  onAssign,
-  onSetJames,
-  onClear,
-}: {
-  segments: TranscriptSegment[];
-  speakerMap: Record<string, string>;
-  jamesLabel?: string;
-  candidates: Person[];
-  onAssign: (label: string, personId: string) => void;
-  onSetJames: (label: string) => void;
-  onClear: (label: string) => void;
-}) {
-  const labels = useMemo(() => {
-    const seen = new Set<string>();
-    for (const s of segments) seen.add(s.speaker_label);
-    return [...seen];
-  }, [segments]);
-
-  if (labels.length === 0) return null;
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {labels.map((label) => {
-        const isJames = label === jamesLabel;
-        const pid = speakerMap[label];
-        const person = pid ? candidates.find((p) => p.id === pid) : undefined;
-        const displayName = isJames ? "James" : (person?.name ?? label);
-        const assigned = isJames || !!person;
-        return (
-          <Popover key={label}>
-            <PopoverTrigger asChild>
-              <button
-                className={`flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-colors ${
-                  assigned
-                    ? "border-primary/40 bg-primary/10 text-foreground"
-                    : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary"
-                }`}
-              >
-                <span className="font-medium">{displayName}</span>
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-56 p-2">
-              <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Who is "{label}"?
-              </div>
-              {candidates.map((p) => {
-                const used = speakerMap[label] === p.id;
-                return (
-                  <button
-                    key={p.id}
-                    onClick={() => onAssign(label, p.id)}
-                    className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm hover:bg-secondary"
-                  >
-                    <span>{p.name}</span>
-                    {used && <Check className="size-4" />}
-                  </button>
-                );
-              })}
-              {(jamesLabel === label || speakerMap[label]) && (
-                <button
-                  onClick={() => onClear(label)}
-                  className="mt-1 w-full rounded-md px-2 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
-                >
-                  Clear
-                </button>
-              )}
-            </PopoverContent>
-          </Popover>
-        );
-      })}
-    </div>
-  );
-}

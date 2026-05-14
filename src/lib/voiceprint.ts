@@ -238,3 +238,65 @@ export function bestMatch(
   if (best && best.sim >= threshold) return best;
   return null;
 }
+
+/**
+ * Tiny on-device diarizer.
+ *
+ * Owns the live MFCC clusters for the current session. For each new utterance
+ * the caller computes a mean MFCC vector and asks `assign(mfcc)`; the diarizer
+ * either merges it into the nearest existing cluster (cosine sim ≥
+ * `mergeThreshold`) or opens a fresh "Speaker N" cluster. There is exactly one
+ * source of truth for "who's talking now" — no Scribe-vs-MFCC tie-breaking.
+ */
+export type Cluster = { label: string; centroid: number[]; count: number };
+
+export class Diarizer {
+  private clustersMap = new Map<string, { centroid: number[]; count: number }>();
+  private counter = 0;
+  constructor(public mergeThreshold = 0.82) {}
+
+  reset() {
+    this.clustersMap.clear();
+    this.counter = 0;
+  }
+
+  /** Assign an MFCC mean to a cluster (existing or new). Returns the label. */
+  assign(mfcc: number[]): { label: string; sim: number; isNew: boolean } {
+    let bestLabel: string | null = null;
+    let bestSim = -1;
+    for (const [label, cluster] of this.clustersMap.entries()) {
+      const sim = cosineSim(mfcc, cluster.centroid);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestLabel = label;
+      }
+    }
+    let label: string;
+    let isNew = false;
+    if (bestLabel && bestSim >= this.mergeThreshold) {
+      label = bestLabel;
+    } else {
+      this.counter += 1;
+      label = `Speaker ${this.counter}`;
+      isNew = true;
+    }
+    const prev = this.clustersMap.get(label);
+    const merged = mergeIntoCentroid(prev?.centroid, prev?.count ?? 0, mfcc);
+    this.clustersMap.set(label, merged);
+    return { label, sim: bestSim, isNew };
+  }
+
+  /** Snapshot of all live clusters. */
+  clusters(): Cluster[] {
+    return [...this.clustersMap.entries()].map(([label, c]) => ({
+      label,
+      centroid: c.centroid,
+      count: c.count,
+    }));
+  }
+
+  get(label: string): Cluster | undefined {
+    const c = this.clustersMap.get(label);
+    return c ? { label, centroid: c.centroid, count: c.count } : undefined;
+  }
+}
