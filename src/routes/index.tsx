@@ -1252,8 +1252,6 @@ function Home() {
   );
 }
 
-/* --------------------------- Speaker mapping bar -------------------------- */
-
 function ScaledShell({
   ipadModel,
   children,
