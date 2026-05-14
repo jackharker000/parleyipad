@@ -264,45 +264,29 @@ function Home() {
       }
 
       // -------- Pick a canonical speaker label for this segment.
-      // Priority:
-      //   1. Scribe-provided speaker_id (when realtime diarization fires).
-      //   2. Local MFCC clustering: nearest live cluster (cosine ≥ merge
-      //      threshold) joins it, else open a new "Speaker N" cluster.
-      //   3. If MFCC unavailable, reuse the previous label rather than
-      //      defaulting everything to "Speaker 1".
-      const CLUSTER_MERGE_SIM = 0.78;
-      const scribeSpkId =
-        d.words?.[0]?.speaker_id ?? (d as any).speaker_id ?? null;
+      // Single source of truth: the local Diarizer. We deliberately ignore
+      // Scribe's speaker_id — in our tests it produced one label for whole
+      // multi-speaker recordings, which then poisoned downstream mapping.
+      // Utterances that were too quiet/short to MFCC stick to the previous
+      // label so we don't invent ghost clusters from "uh huh".
       let speakerLabel: string;
-      if (scribeSpkId) {
-        speakerLabel = `Scribe-${scribeSpkId}`;
-      } else if (mfcc) {
-        let bestLabel: string | null = null;
-        let bestSim = -1;
-        for (const [label, cluster] of livePrintsRef.current.entries()) {
-          const sim = cosineSim(mfcc, cluster.centroid);
-          if (sim > bestSim) {
-            bestSim = sim;
-            bestLabel = label;
-          }
-        }
-        if (bestLabel && bestSim >= CLUSTER_MERGE_SIM) {
-          speakerLabel = bestLabel;
-        } else {
-          speakerCounterRef.current += 1;
-          speakerLabel = `Speaker ${speakerCounterRef.current}`;
-        }
-        console.debug("[diarize]", {
-          chosen: speakerLabel,
-          bestSim: bestSim.toFixed(3),
-          clusters: livePrintsRef.current.size,
-        });
+      let assignSim = -1;
+      let assignNew = false;
+      if (mfcc) {
+        const r = diarizerRef.current.assign(mfcc);
+        speakerLabel = r.label;
+        assignSim = r.sim;
+        assignNew = r.isNew;
       } else {
         const lastSeg = committed[committed.length - 1];
-        speakerLabel =
-          lastSeg?.speaker_label ??
-          `Speaker ${++speakerCounterRef.current}`;
+        speakerLabel = lastSeg?.speaker_label ?? "Speaker ?";
       }
+      console.debug("[diarize]", {
+        chosen: speakerLabel,
+        sim: assignSim.toFixed(3),
+        isNew: assignNew,
+        clusters: diarizerRef.current.clusters().length,
+      });
 
       const seg: TranscriptSegment = {
         id: newId(),
@@ -314,82 +298,56 @@ function Home() {
       setCommitted((prev) => [...prev, seg]);
       await db.transcript_segments.add(seg);
 
-      // -------- Voice fingerprint update --------
-      if (mfcc) {
-        try {
-          const label = speakerLabel;
-          const prev = livePrintsRef.current.get(label);
-          const merged = mergeIntoCentroid(
-            prev?.centroid,
-            prev?.count ?? 0,
-            mfcc,
+      // -------- Recognition pass (suggestion only — never auto-confirms).
+      // For brand-new clusters, or any cluster still in `unknown` state, try
+      // to match this cluster's running centroid against saved voiceprints.
+      // Confirmed clusters keep their identity. Already-suggested clusters
+      // keep their previous suggestion (stable until James acts on it).
+      try {
+        const cluster = diarizerRef.current.get(speakerLabel);
+        const status = clusterStatusRef.current[speakerLabel];
+        if (cluster && (!status || status.kind === "unknown")) {
+          // Build candidates: stored prints minus already-confirmed people.
+          const confirmedIds = new Set(
+            Object.values(speakerMapRef.current),
           );
-          livePrintsRef.current.set(label, merged);
-          console.debug("[voiceprint] sample", {
-            label,
-            count: merged.count,
-            spoken: spoken.toFixed(2),
-          });
-
-          // Try to auto-recognise this label against stored voiceprints
-          // for known people, but only if it isn't already mapped.
-          if (!speakerMapRef.current[label]) {
-            const usedIds = new Set(Object.values(speakerMapRef.current));
-            const allPrints = await db.voiceprints.toArray();
-            const candidates = allPrints.filter(
-              (p) => !usedIds.has(p.person_id),
-            );
-            const match = bestMatch(
-              merged.centroid,
-              candidates,
-              VOICEPRINT_MATCH_THRESHOLD,
-            );
-            console.debug("[voiceprint] match attempt", {
-              label,
-              candidateCount: candidates.length,
-              bestSim: match?.sim,
-              threshold: VOICEPRINT_MATCH_THRESHOLD,
-            });
-            if (match) {
-              const next = {
-                ...speakerMapRef.current,
-                [label]: match.print.person_id,
-              };
-              speakerMapRef.current = next;
-              setSpeakerMap(next);
-              recognisedRef.current = {
-                ...recognisedRef.current,
-                [label]: { personId: match.print.person_id, sim: match.sim },
-              };
-              if (conversationIdRef.current) {
-                db.conversations.update(conversationIdRef.current, {
-                  speaker_map: next,
-                });
-              }
-              if (!personIdsRef.current.includes(match.print.person_id)) {
-                const merged2 = [
-                  ...personIdsRef.current,
-                  match.print.person_id,
-                ];
-                personIdsRef.current = merged2;
-                setSelectedPersonIds(merged2);
-                if (conversationIdRef.current) {
-                  db.conversations.update(conversationIdRef.current, {
-                    person_ids: merged2,
-                  });
-                }
-              }
-              const person = await db.people.get(match.print.person_id);
-              if (person) {
-                toast.success(
-                  `Recognised ${person.name} (${Math.round(match.sim * 100)}% match)`,
-                );
-              }
-            }
+          const allPrints = await db.voiceprints.toArray();
+          const candidates = allPrints.filter(
+            (p) => !confirmedIds.has(p.person_id),
+          );
+          const match = bestMatch(
+            cluster.centroid,
+            candidates,
+            VOICEPRINT_MATCH_THRESHOLD,
+          );
+          // Look for a self-introduction in this segment as a hint.
+          const introHere = extractIntroducedNames([
+            { text, speaker_label: speakerLabel },
+          ])[0]?.name;
+          let nextStatus: ClusterStatus | undefined;
+          if (match) {
+            nextStatus = {
+              kind: "suggested",
+              personId: match.print.person_id,
+              sim: match.sim,
+            };
+          } else if (!status) {
+            nextStatus = { kind: "unknown", suggestedName: introHere };
+          } else if (introHere && !status.suggestedName) {
+            nextStatus = { kind: "unknown", suggestedName: introHere };
           }
-        } catch (err) {
-          console.warn("voiceprint update failed", err);
+          if (nextStatus) {
+            const next = {
+              ...clusterStatusRef.current,
+              [speakerLabel]: nextStatus,
+            };
+            clusterStatusRef.current = next;
+            setClusterStatus(next);
+          }
         }
+        setClusterTick((n) => n + 1);
+      } catch (err) {
+        console.warn("voiceprint match failed", err);
       }
     },
   });
