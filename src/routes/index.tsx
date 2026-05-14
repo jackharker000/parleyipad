@@ -909,52 +909,12 @@ function Home() {
             Recording
           </span>
         )}
-        <SpeakerBar
-          segments={committed}
-          speakerMap={speakerMap}
-          jamesLabel={jamesLabel}
-          candidates={peopleInConvo}
-          onAssign={(label, personId) => {
-            const next = { ...speakerMap };
-            for (const k of Object.keys(next)) {
-              if (next[k] === personId) delete next[k];
-            }
-            next[label] = personId;
-            setSpeakerMap(next);
-            if (conversationIdRef.current)
-              db.conversations.update(conversationIdRef.current, {
-                speaker_map: next,
-              });
-          }}
-          onSetJames={(label) => {
-            setJamesLabel(label);
-            if (speakerMap[label]) {
-              const next = { ...speakerMap };
-              delete next[label];
-              setSpeakerMap(next);
-              if (conversationIdRef.current)
-                db.conversations.update(conversationIdRef.current, {
-                  speaker_map: next,
-                });
-            }
-          }}
-          onClear={(label) => {
-            const next = { ...speakerMap };
-            delete next[label];
-            setSpeakerMap(next);
-            if (conversationIdRef.current)
-              db.conversations.update(conversationIdRef.current, {
-                speaker_map: next,
-              });
-            if (jamesLabel === label) setJamesLabel(undefined);
-          }}
-        />
       </div>
 
-      {/* Main two-column area: full width landscape */}
-      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
-        {/* Suggestions — 4 cols × 4 rows */}
-        <section className="flex min-h-0 flex-[3] flex-col rounded-2xl border border-border bg-card/40">
+      {/* Main two-column area: suggestions (80%) + speaker panel (20%) */}
+      <div className="flex min-h-0 flex-1 gap-2 p-2">
+        {/* Suggestions — 3 cols × 4 rows, 80% width */}
+        <section className="flex min-h-0 w-4/5 flex-col rounded-2xl border border-border bg-card/40">
           <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
               <Sparkles className="size-4" /> Suggestions
@@ -968,19 +928,19 @@ function Home() {
               {loadingSuggestions ? "Thinking…" : "Refresh"}
             </Button>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-4 grid-rows-4 gap-1.5 overflow-hidden p-2">
+          <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-4 gap-1.5 overflow-hidden p-2">
             {!active && suggestions.length === 0 && (
-              <Card className="col-span-4 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
+              <Card className="col-span-3 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Press the green mic button to start a conversation. Suggestions
                 will appear here.
               </Card>
             )}
             {active && suggestions.length === 0 && !loadingSuggestions && (
-              <Card className="col-span-4 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
+              <Card className="col-span-3 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Listening… suggestions will appear after a few words.
               </Card>
             )}
-            {suggestions.slice(0, 16).map((s, i) => (
+            {suggestions.slice(0, 12).map((s, i) => (
               <button
                 key={`${i}-${s.text}`}
                 onClick={() => speak(s.text, { suggestion: s })}
@@ -1031,49 +991,19 @@ function Home() {
           </div>
         </section>
 
-        {/* Transcript — only shown during an active conversation */}
-        {active && (
-          <section className="flex min-h-0 flex-[1] flex-col rounded-2xl border border-border bg-card/40">
-            <div className="border-b border-border px-3 py-1.5">
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                Transcript
-              </h2>
-            </div>
-            <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3 text-sm">
-              {transcriptList.length === 0 && !partial && (
-                <p className="text-sm italic text-muted-foreground">
-                  Listening…
-                </p>
-              )}
-              {transcriptList.map((s) => {
-                const displayName =
-                  s.speaker_label === jamesLabel ||
-                  s.speaker_label === JAMES_SELF_LABEL
-                    ? "Me"
-                    : (() => {
-                        const pid = speakerMap[s.speaker_label];
-                        return pid
-                          ? (allPeople.find((p) => p.id === pid)?.name ??
-                              s.speaker_label)
-                          : s.speaker_label;
-                      })();
-                return (
-                  <div key={s.id} className="leading-snug">
-                    <span className="mr-2 text-xs font-medium text-muted-foreground">
-                      {displayName}
-                    </span>
-                    {s.text}
-                  </div>
-                );
-              })}
-              {partial && (
-                <div className="italic leading-snug text-muted-foreground">
-                  {partial}
-                </div>
-              )}
-            </div>
-          </section>
-        )}
+        {/* Speaker panel — 20% width */}
+        <div className="flex min-h-0 w-1/5 flex-col">
+          <SpeakerPanel
+            segments={committed}
+            partial={partial}
+            clusters={clusterRows}
+            people={allPeople}
+            onConfirmKnown={confirmKnownSpeaker}
+            onRejectSuggestion={rejectSuggestion}
+            onConfirmNew={confirmNewSpeaker}
+            onAskName={() => speak("Sorry, who am I speaking with?")}
+          />
+        </div>
       </div>
 
       {/* People picker modal */}
