@@ -83,6 +83,19 @@ const QUICK_PHRASES = [
   "Sorry, who am I speaking with?",
 ];
 
+/** Append a suggestion chip onto a cluster status, de-duped by name. */
+function mergeSuggestion(
+  status: ClusterStatus,
+  chip: SuggestedName,
+): ClusterStatus {
+  if (status.kind === "confirmed") return status;
+  const cur = status.suggestions ?? [];
+  if (cur.some((s) => s.name.toLowerCase() === chip.name.toLowerCase())) {
+    return status;
+  }
+  return { ...status, suggestions: [...cur, chip] } as ClusterStatus;
+}
+
 function categoryClass(cat: string): string {
   switch (cat) {
     case "answer":
@@ -1170,7 +1183,8 @@ function Home() {
             onConfirmKnown={confirmKnownSpeaker}
             onRejectSuggestion={rejectSuggestion}
             onConfirmNew={confirmNewSpeaker}
-            onAskName={() => speak("Sorry, who am I speaking with?")}
+            onAskName={askSpeakerName}
+            onClearConfirmed={clearConfirmedSpeaker}
           />
         </div>
       </div>
