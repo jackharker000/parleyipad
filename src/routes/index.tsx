@@ -291,11 +291,47 @@ function Home() {
       let speakerLabel: string;
       let assignSim = -1;
       let assignNew = false;
+      let introOverride = false;
       if (mfcc) {
-        const r = diarizerRef.current.assign(mfcc);
+        // Textual override: if the speaker introduces themselves with a name
+        // that conflicts with the cluster their MFCC would merge into, force
+        // a fresh cluster. Two adult voices on the same mic often share
+        // enough MFCC similarity to be mis-merged; the textual self-intro is
+        // a far stronger signal of "different speaker".
+        const introducedName = extractIntroducedNames([
+          { text, speaker_label: "" },
+        ])[0]?.name;
+        let forceNew = false;
+        if (introducedName) {
+          const preview = diarizerRef.current.peek(mfcc);
+          if (preview.label && preview.wouldMerge) {
+            const previewStatus = clusterStatusRef.current[preview.label];
+            // Find who that cluster is currently attributed to (confirmed
+            // or stored-voiceprint-suggested) — they're our reference identity.
+            let attributedName: string | undefined;
+            if (previewStatus?.kind === "confirmed") {
+              attributedName = allPeople.find((p) => p.id === previewStatus.personId)?.name;
+            } else if (previewStatus?.kind === "suggested") {
+              attributedName = allPeople.find((p) => p.id === previewStatus.personId)?.name;
+            }
+            if (attributedName && attributedName.toLowerCase() !== introducedName.toLowerCase()) {
+              forceNew = true;
+              console.debug("[diarize] self-intro override → forcing new cluster", {
+                introducedName,
+                wouldHaveMergedInto: preview.label,
+                attributedTo: attributedName,
+                sim: preview.sim.toFixed(3),
+              });
+            }
+          }
+        }
+        const r = forceNew
+          ? diarizerRef.current.assignNew(mfcc)
+          : diarizerRef.current.assign(mfcc);
         speakerLabel = r.label;
         assignSim = r.sim;
         assignNew = r.isNew;
+        introOverride = forceNew;
       } else {
         const lastSeg = committed[committed.length - 1];
         speakerLabel = lastSeg?.speaker_label ?? "Speaker ?";
@@ -304,6 +340,7 @@ function Home() {
         chosen: speakerLabel,
         sim: assignSim.toFixed(3),
         isNew: assignNew,
+        introOverride,
         clusters: diarizerRef.current.clusters().length,
       });
 

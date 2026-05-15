@@ -279,14 +279,8 @@ export class Diarizer {
     let label: string;
     let isNew = false;
     if (bestLabel) {
-      const prev = this.clustersMap.get(bestLabel)!;
-      // Adaptive threshold: tight clusters (low spread) accept merges more
-      // readily; broad clusters (high spread) require stronger similarity.
-      // spread ∈ [0, 0.2] → threshold ∈ [0.76, 0.88]
-      const adaptiveThreshold = Math.min(0.88, Math.max(0.76,
-        0.76 + (prev.spread / 0.2) * 0.12,
-      ));
-      if (bestSim >= adaptiveThreshold) {
+      const threshold = this.thresholdFor(bestLabel);
+      if (bestSim >= threshold) {
         label = bestLabel;
       } else {
         this.counter += 1;
@@ -298,16 +292,57 @@ export class Diarizer {
       label = `Speaker ${this.counter}`;
       isNew = true;
     }
+    this.mergeUtterance(label, mfcc);
+    return { label, sim: bestSim, isNew };
+  }
+
+  /** Preview which cluster an MFCC would be assigned to, without mutating state. */
+  peek(mfcc: number[]): { label: string | null; sim: number; wouldMerge: boolean } {
+    let bestLabel: string | null = null;
+    let bestSim = -1;
+    for (const [label, cluster] of this.clustersMap.entries()) {
+      const sim = cosineSim(mfcc, cluster.centroid);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestLabel = label;
+      }
+    }
+    if (!bestLabel) return { label: null, sim: -1, wouldMerge: false };
+    const threshold = this.thresholdFor(bestLabel);
+    return { label: bestLabel, sim: bestSim, wouldMerge: bestSim >= threshold };
+  }
+
+  /** Force-create a new cluster seeded by this MFCC. Use when textual evidence
+   *  (e.g. self-introduction) strongly suggests a different speaker even if
+   *  the MFCC superficially resembles an existing cluster. */
+  assignNew(mfcc: number[]): { label: string; sim: number; isNew: true } {
+    this.counter += 1;
+    const label = `Speaker ${this.counter}`;
+    this.clustersMap.set(label, { centroid: mfcc.slice(), count: 1, spread: 0 });
+    return { label, sim: 1, isNew: true };
+  }
+
+  /** Compute the adaptive merge threshold for a given cluster.
+   *  - With <3 samples we use the conservative baseline (0.82 by default) —
+   *    spread isn't meaningful yet, so don't relax.
+   *  - With ≥3 samples we relax for tight clusters and tighten for broad ones,
+   *    but always stay within [0.78, 0.88]. */
+  private thresholdFor(label: string): number {
+    const c = this.clustersMap.get(label);
+    if (!c || c.count < 3) return this.mergeThreshold;
+    const adjusted = this.mergeThreshold + (c.spread - 0.08) * 0.6;
+    return Math.min(0.88, Math.max(0.78, adjusted));
+  }
+
+  private mergeUtterance(label: string, mfcc: number[]) {
     const prev = this.clustersMap.get(label);
     const merged = mergeIntoCentroid(prev?.centroid, prev?.count ?? 0, mfcc);
-    // Update running mean of intra-cluster dissimilarity to track spread.
     const simToCentroid = prev ? cosineSim(mfcc, prev.centroid) : 1.0;
     const prevCount = prev?.count ?? 0;
     const newSpread = prevCount > 0
       ? ((prev!.spread * prevCount) + (1 - simToCentroid)) / (prevCount + 1)
       : 0;
     this.clustersMap.set(label, { centroid: merged.centroid, count: merged.count, spread: newSpread });
-    return { label, sim: bestSim, isNew };
   }
 
   /** Snapshot of all live clusters. */
