@@ -82,7 +82,6 @@ import {
 } from "@/lib/aac.functions";
 import { getCurrentPosition } from "@/lib/geo";
 import { getPersonStats, groupMemories } from "@/lib/people-stats";
-import { deleteVoiceprint } from "@/lib/voiceprint";
 import { AccountCard } from "@/components/AccountCard";
 
 export const Route = createFileRoute("/settings")({
