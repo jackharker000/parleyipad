@@ -63,35 +63,42 @@
 
 :root {
   --radius: 1rem;
-  /* Calm, warm, iPad-first AAC palette: deep teal primary, warm parchment bg */
-  --background: oklch(0.985 0.008 90);
-  --foreground: oklch(0.21 0.03 230);
+  /* Parley — Slate & Sun palette:
+   *   Slate  #222428  · ink, primary, foreground
+   *   Cream  #EEECE6  · paper background
+   *   Beige  #DCDAD3  · secondary / muted surface
+   *   Sun    #E8A23A  · accent, focus ring, highlight
+   *   Stone  #74757A  · muted foreground
+   */
+  --background: oklch(0.943 0.008 85);
+  --foreground: oklch(0.245 0.008 255);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.03 230);
+  --card-foreground: oklch(0.245 0.008 255);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.03 230);
-  --primary: oklch(0.48 0.11 200);
-  --primary-foreground: oklch(0.99 0.01 90);
-  --secondary: oklch(0.95 0.02 90);
-  --secondary-foreground: oklch(0.25 0.03 230);
-  --muted: oklch(0.95 0.015 90);
-  --muted-foreground: oklch(0.5 0.02 230);
-  --accent: oklch(0.82 0.13 75);
-  --accent-foreground: oklch(0.21 0.03 230);
-  --destructive: oklch(0.6 0.2 25);
-  --destructive-foreground: oklch(0.99 0.01 90);
-  --border: oklch(0.9 0.015 230);
-  --input: oklch(0.9 0.015 230);
-  --ring: oklch(0.55 0.11 200);
-  /* Suggestion category accents */
-  --cat-answer: oklch(0.7 0.13 200);
-  --cat-question: oklch(0.78 0.13 75);
+  --popover-foreground: oklch(0.245 0.008 255);
+  --primary: oklch(0.245 0.008 255);
+  --primary-foreground: oklch(0.943 0.008 85);
+  --secondary: oklch(0.878 0.008 90);
+  --secondary-foreground: oklch(0.245 0.008 255);
+  --muted: oklch(0.878 0.008 90);
+  --muted-foreground: oklch(0.52 0.005 260);
+  --accent: oklch(0.745 0.14 70);
+  --accent-foreground: oklch(0.245 0.008 255);
+  --destructive: oklch(0.58 0.2 28);
+  --destructive-foreground: oklch(0.943 0.008 85);
+  --border: oklch(0.85 0.008 85);
+  --input: oklch(0.85 0.008 85);
+  --ring: oklch(0.745 0.14 70);
+  /* Suggestion category accents — kept visually distinct,
+     harmonised with the Slate & Sun palette. */
+  --cat-answer: oklch(0.7 0.1 235);
+  --cat-question: oklch(0.745 0.14 70);
   --cat-followup: oklch(0.7 0.12 145);
   --cat-planned: oklch(0.7 0.16 305);
-  --cat-quick: oklch(0.78 0.04 230);
+  --cat-quick: oklch(0.82 0.01 260);
   --cat-humor: oklch(0.78 0.14 45);
   --cat-clarify: oklch(0.72 0.1 250);
-  --cat-moment: oklch(0.85 0.03 230);
+  --cat-moment: oklch(0.86 0.02 85);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -108,25 +115,26 @@
 }
 
 .dark {
-  --background: oklch(0.129 0.042 264.695);
-  --foreground: oklch(0.984 0.003 247.858);
-  --card: oklch(0.208 0.042 265.755);
-  --card-foreground: oklch(0.984 0.003 247.858);
-  --popover: oklch(0.208 0.042 265.755);
-  --popover-foreground: oklch(0.984 0.003 247.858);
-  --primary: oklch(0.929 0.013 255.508);
-  --primary-foreground: oklch(0.208 0.042 265.755);
-  --secondary: oklch(0.279 0.041 260.031);
-  --secondary-foreground: oklch(0.984 0.003 247.858);
-  --muted: oklch(0.279 0.041 260.031);
-  --muted-foreground: oklch(0.704 0.04 256.788);
-  --accent: oklch(0.279 0.041 260.031);
-  --accent-foreground: oklch(0.984 0.003 247.858);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.984 0.003 247.858);
-  --border: oklch(1 0 0 / 10%);
+  /* Parley dark — slate paper, sun accent. */
+  --background: oklch(0.22 0.008 255);
+  --foreground: oklch(0.943 0.008 85);
+  --card: oklch(0.27 0.008 255);
+  --card-foreground: oklch(0.943 0.008 85);
+  --popover: oklch(0.27 0.008 255);
+  --popover-foreground: oklch(0.943 0.008 85);
+  --primary: oklch(0.943 0.008 85);
+  --primary-foreground: oklch(0.245 0.008 255);
+  --secondary: oklch(0.32 0.01 255);
+  --secondary-foreground: oklch(0.943 0.008 85);
+  --muted: oklch(0.32 0.01 255);
+  --muted-foreground: oklch(0.72 0.01 255);
+  --accent: oklch(0.745 0.14 70);
+  --accent-foreground: oklch(0.245 0.008 255);
+  --destructive: oklch(0.6 0.2 25);
+  --destructive-foreground: oklch(0.943 0.008 85);
+  --border: oklch(1 0 0 / 12%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.551 0.027 264.364);
+  --ring: oklch(0.745 0.14 70);
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);

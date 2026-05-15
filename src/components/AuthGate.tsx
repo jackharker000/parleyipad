@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Sparkles, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { ParleyLogo } from "@/components/ParleyLogo";
 import { pullForUser, clearLocal } from "@/lib/cloud-sync";
 
 /**
@@ -117,11 +118,9 @@ function AuthScreen() {
     <main className="flex min-h-screen items-center justify-center bg-background px-4">
       <Card className="w-full max-w-md p-6">
         <div className="mb-5 flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Sparkles className="size-5" />
-          </div>
+          <ParleyLogo className="size-10 shrink-0" />
           <div>
-            <h1 className="text-lg font-semibold">AAC Copilot</h1>
+            <h1 className="text-lg font-semibold tracking-tight">Parley</h1>
             <p className="text-sm text-muted-foreground">
               Sign in to sync across all your devices
             </p>

@@ -74,31 +74,29 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "AAC Copilot" },
+      { title: "Parley" },
       {
         name: "description",
         content:
-          "A calm, iPad-first AAC copilot that listens, suggests replies, and remembers — built for James.",
+          "Parley — a calm, iPad-first AAC reply copilot that listens, suggests replies, and remembers. Built for James.",
       },
-      { name: "author", content: "Lovable" },
+      { name: "theme-color", content: "#222428" },
       { name: "apple-mobile-web-app-capable", content: "yes" },
       { name: "mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-status-bar-style", content: "default" },
-      { name: "apple-mobile-web-app-title", content: "AAC Copilot" },
-      { property: "og:title", content: "AAC Copilot" },
+      { name: "apple-mobile-web-app-title", content: "Parley" },
+      { property: "og:title", content: "Parley" },
       {
         property: "og:description",
-        content: "A calm AAC copilot for James.",
+        content: "A calm, iPad-first AAC reply copilot — listens, suggests, remembers.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@Lovable" },
-      { name: "twitter:title", content: "AAC Copilot" },
-      { name: "description", content: "Learning text prediction assistant" },
-      { property: "og:description", content: "Learning text prediction assistant" },
-      { name: "twitter:description", content: "Learning text prediction assistant" },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/f7f42cda-6aff-4754-b9bb-1f6ecd033e0a/id-preview-527d8068--a9375bca-9a75-43db-898a-7e41475b035b.lovable.app-1778389248099.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/f7f42cda-6aff-4754-b9bb-1f6ecd033e0a/id-preview-527d8068--a9375bca-9a75-43db-898a-7e41475b035b.lovable.app-1778389248099.png" },
+      { name: "twitter:title", content: "Parley" },
+      {
+        name: "twitter:description",
+        content: "A calm, iPad-first AAC reply copilot — listens, suggests, remembers.",
+      },
     ],
     links: [
       {

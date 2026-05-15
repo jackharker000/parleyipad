@@ -29,7 +29,7 @@ export const Route = createFileRoute("/helpers")({
   component: HelpersPage,
   head: () => ({
     meta: [
-      { title: "Reply helpers — AAC" },
+      { title: "Reply helpers — Parley" },
       {
         name: "description",
         content:

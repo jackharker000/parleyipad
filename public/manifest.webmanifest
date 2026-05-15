@@ -1,10 +1,10 @@
 {
-  "name": "AAC Copilot",
-  "short_name": "AAC",
+  "name": "Parley",
+  "short_name": "Parley",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "landscape",
-  "background_color": "#f6f3ec",
-  "theme_color": "#1f5b6e"
+  "background_color": "#EEECE6",
+  "theme_color": "#222428"
 }
