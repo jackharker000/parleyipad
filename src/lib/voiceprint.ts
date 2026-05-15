@@ -11,6 +11,7 @@
  */
 import Meyda from "meyda";
 import { db, MFCC_COEFFS, type Voiceprint } from "./db";
+export type { Voiceprint };
 
 const FRAME = 512;
 
@@ -270,7 +271,11 @@ export async function deleteVoiceprint(personId: string) {
   await db.voiceprints.delete(personId);
 }
 
-/** Find best matching person from a candidate set, or null. */
+/** Find best matching person from a candidate set, or null.
+ *
+ *  When a Voiceprint has `sub_centroids` (multi-modal voice — e.g. calm vs
+ *  animated, in-person vs phone), the effective similarity to that person is
+ *  the maximum across its centroid and every sub-centroid. */
 export function bestMatch(
   vector: number[],
   prints: Voiceprint[],
@@ -281,11 +286,234 @@ export function bestMatch(
   for (const p of prints) {
     if (p.centroid.length !== vector.length) continue;
     if (excludedPersonIds?.has(p.person_id)) continue;
-    const sim = cosineSim(vector, p.centroid);
+    let sim = cosineSim(vector, p.centroid);
+    if (p.sub_centroids?.length) {
+      for (const sub of p.sub_centroids) {
+        if (sub.centroid.length !== vector.length) continue;
+        const subSim = cosineSim(vector, sub.centroid);
+        if (subSim > sim) sim = subSim;
+      }
+    }
     if (!best || sim > best.sim) best = { print: p, sim };
   }
   if (best && best.sim >= threshold) return best;
   return null;
+}
+
+/* --------------------- Offline (post-conversation) rebuild ---------------- */
+
+export type RebuildOutcome = {
+  personId: string;
+  newCentroid: number[];
+  newSampleCount: number;
+  subCentroids: Array<{ label: string; centroid: number[]; count: number }>;
+  confidence: number;
+  /** True when the new centroid drifted significantly from the existing one;
+   *  we ABORT the write to avoid corrupting the print. */
+  changedSignificantly: boolean;
+  /** True when no rewrite happened (skipped or aborted). */
+  aborted: boolean;
+};
+
+const MIN_CONTRIBUTIONS_TO_REBUILD = 5;
+const MIN_CONTRIBUTIONS_TO_SPLIT = 8;
+const SAFETY_GUARD_THRESHOLD = 0.7;
+const SUB_CENTROID_SPLIT_GAIN = 0.05;
+
+/**
+ * Recompute a person's stored voiceprint from the durable contribution log.
+ * Optionally splits into a primary/secondary sub-centroid when 2-means
+ * detects meaningfully tighter modes than a single mean.
+ *
+ * Safety guard: if the new mean centroid drifted below cosine sim 0.7 vs
+ * the current stored centroid we abort — this typically means we've absorbed
+ * mislabelled contributions and overwriting would make things worse.
+ */
+export async function rebuildVoiceprintFromContributions(
+  personId: string,
+): Promise<RebuildOutcome> {
+  const contributions = await db.voiceprint_contributions
+    .where("person_id")
+    .equals(personId)
+    .toArray();
+  const valid = contributions.filter((c) => Array.isArray(c.mfcc) && c.mfcc.length === MFCC_COEFFS);
+  const existing = await db.voiceprints.get(personId);
+
+  const aborted = (): RebuildOutcome => ({
+    personId,
+    newCentroid: existing?.centroid ?? [],
+    newSampleCount: existing?.sample_count ?? 0,
+    subCentroids: existing?.sub_centroids ?? [],
+    confidence: existing?.confidence ?? 0,
+    changedSignificantly: false,
+    aborted: true,
+  });
+
+  if (valid.length < MIN_CONTRIBUTIONS_TO_REBUILD) {
+    return aborted();
+  }
+
+  // Compute new centroid as mean of all MFCCs.
+  const dim = MFCC_COEFFS;
+  const sum = new Array(dim).fill(0);
+  for (const c of valid) {
+    for (let i = 0; i < dim; i++) sum[i] += c.mfcc[i];
+  }
+  const newCentroid = sum.map((v) => v / valid.length);
+
+  // Intra-cluster mean cosine sim → confidence (floor 0.5, ceiling 1.0).
+  let totalSim = 0;
+  for (const c of valid) totalSim += cosineSim(c.mfcc, newCentroid);
+  const rawConfidence = totalSim / valid.length;
+  const confidence = Math.max(0.5, Math.min(1, rawConfidence));
+
+  // Safety guard: if new centroid drifts too far from the existing one we
+  // refuse to overwrite. Rebuilds should refine, not flip, a known print.
+  if (existing && existing.centroid.length === dim) {
+    const driftSim = cosineSim(existing.centroid, newCentroid);
+    if (driftSim < SAFETY_GUARD_THRESHOLD) {
+      console.warn(
+        `[voiceprint] rebuild aborted for ${personId}: new centroid drifted to cosine ${driftSim.toFixed(
+          3,
+        )} (< ${SAFETY_GUARD_THRESHOLD}).`,
+      );
+      return {
+        ...aborted(),
+        newCentroid,
+        confidence,
+        changedSignificantly: true,
+      };
+    }
+  }
+
+  // 2-means split (cosine k-means, k=2, 5 iterations) — only when we have
+  // enough contributions to draw a meaningful conclusion.
+  const subCentroids: Array<{
+    label: string;
+    centroid: number[];
+    count: number;
+  }> = [];
+  if (valid.length >= MIN_CONTRIBUTIONS_TO_SPLIT) {
+    // Farthest-pair init: take the first sample and the one most distant from it.
+    const a = valid[0].mfcc.slice();
+    let bIdx = 0;
+    let worstSim = 1;
+    for (let i = 1; i < valid.length; i++) {
+      const s = cosineSim(a, valid[i].mfcc);
+      if (s < worstSim) {
+        worstSim = s;
+        bIdx = i;
+      }
+    }
+    let c0 = a;
+    let c1 = valid[bIdx].mfcc.slice();
+    const assign = new Array<number>(valid.length).fill(0);
+    for (let iter = 0; iter < 5; iter++) {
+      for (let i = 0; i < valid.length; i++) {
+        const s0 = cosineSim(valid[i].mfcc, c0);
+        const s1 = cosineSim(valid[i].mfcc, c1);
+        assign[i] = s0 >= s1 ? 0 : 1;
+      }
+      const sum0 = new Array(dim).fill(0);
+      const sum1 = new Array(dim).fill(0);
+      let n0 = 0;
+      let n1 = 0;
+      for (let i = 0; i < valid.length; i++) {
+        if (assign[i] === 0) {
+          for (let j = 0; j < dim; j++) sum0[j] += valid[i].mfcc[j];
+          n0++;
+        } else {
+          for (let j = 0; j < dim; j++) sum1[j] += valid[i].mfcc[j];
+          n1++;
+        }
+      }
+      if (n0 > 0) c0 = sum0.map((v) => v / n0);
+      if (n1 > 0) c1 = sum1.map((v) => v / n1);
+    }
+    let n0 = 0,
+      n1 = 0;
+    let intra0 = 0,
+      intra1 = 0;
+    for (let i = 0; i < valid.length; i++) {
+      if (assign[i] === 0) {
+        intra0 += cosineSim(valid[i].mfcc, c0);
+        n0++;
+      } else {
+        intra1 += cosineSim(valid[i].mfcc, c1);
+        n1++;
+      }
+    }
+    const mean0 = n0 > 0 ? intra0 / n0 : 0;
+    const mean1 = n1 > 0 ? intra1 / n1 : 0;
+    const overall = rawConfidence;
+    const primaryIsZero = n0 >= n1;
+    const primaryMean = primaryIsZero ? mean0 : mean1;
+    const primaryCentroid = primaryIsZero ? c0 : c1;
+    const primaryCount = primaryIsZero ? n0 : n1;
+    const secondaryMean = primaryIsZero ? mean1 : mean0;
+    const secondaryCentroid = primaryIsZero ? c1 : c0;
+    const secondaryCount = primaryIsZero ? n1 : n0;
+    if (
+      primaryMean - overall >= SUB_CENTROID_SPLIT_GAIN &&
+      secondaryCount > 0 &&
+      secondaryMean > 0
+    ) {
+      subCentroids.push({
+        label: "primary",
+        centroid: primaryCentroid,
+        count: primaryCount,
+      });
+      subCentroids.push({
+        label: "secondary",
+        centroid: secondaryCentroid,
+        count: secondaryCount,
+      });
+    } else {
+      subCentroids.push({
+        label: "primary",
+        centroid: newCentroid,
+        count: valid.length,
+      });
+    }
+  } else {
+    subCentroids.push({
+      label: "primary",
+      centroid: newCentroid,
+      count: valid.length,
+    });
+  }
+
+  const updated: Voiceprint = {
+    id: personId,
+    person_id: personId,
+    centroid: newCentroid,
+    sample_count: valid.length,
+    updated_at: Date.now(),
+    sub_centroids: subCentroids,
+    confidence,
+    last_rebuilt_at: Date.now(),
+  };
+  await db.voiceprints.put(updated);
+
+  // Propagate the cohesion score to the Person record so it's queryable.
+  try {
+    const person = await db.people.get(personId);
+    if (person) {
+      await db.people.update(personId, { voiceprint_confidence: confidence });
+    }
+  } catch {
+    // Person row may have been deleted concurrently; centroid update still useful.
+  }
+
+  return {
+    personId,
+    newCentroid,
+    newSampleCount: valid.length,
+    subCentroids,
+    confidence,
+    changedSignificantly: false,
+    aborted: false,
+  };
 }
 
 /**

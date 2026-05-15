@@ -55,21 +55,19 @@ function resolveChatTarget(model: string | undefined): {
 
 /* ------------------------- ElevenLabs: Scribe token ------------------------- */
 
-export const createScribeToken = createServerFn({ method: "POST" }).handler(
-  async () => {
-    const apiKey = requireElevenLabsApiKey();
-    const res = await fetch(
-      "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
-      { method: "POST", headers: { "xi-api-key": apiKey } },
-    );
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(err || `Token request failed: ${res.status}`);
-    }
-    const data = (await res.json()) as { token: string };
-    return { token: data.token };
-  },
-);
+export const createScribeToken = createServerFn({ method: "POST" }).handler(async () => {
+  const apiKey = requireElevenLabsApiKey();
+  const res = await fetch("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe", {
+    method: "POST",
+    headers: { "xi-api-key": apiKey },
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err || `Token request failed: ${res.status}`);
+  }
+  const data = (await res.json()) as { token: string };
+  return { token: data.token };
+});
 
 /* --------------------------------- TTS ------------------------------------- */
 
@@ -112,44 +110,42 @@ export const synthesizeSpeech = createServerFn({ method: "POST" })
 
 /* --------------------------- ElevenLabs: voices ---------------------------- */
 
-export const listVoices = createServerFn({ method: "GET" }).handler(
-  async () => {
-    const apiKey = requireElevenLabsApiKey();
-    const res = await fetch("https://api.elevenlabs.io/v2/voices?page_size=50", {
-      headers: { "xi-api-key": apiKey },
-    });
-    if (!res.ok) {
-      // Fallback to a curated list if account has no Voices:Read
-      return {
-        voices: [
-          { voice_id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", labels: {} },
-          { voice_id: "JBFqnCBsd6RMkjVDRZzb", name: "George", labels: {} },
-          { voice_id: "TX3LPaxmHKxFdv7VOQHJ", name: "Liam", labels: {} },
-          { voice_id: "Xb7hH8MSUJpSbSDYk0k2", name: "Alice", labels: {} },
-          { voice_id: "iP95p4xoKVk53GoZ742B", name: "Chris", labels: {} },
-          { voice_id: "nPczCjzI2devNBz1zQrb", name: "Brian", labels: {} },
-          { voice_id: "pFZP5JQG7iQjIQuC4Bku", name: "Lily", labels: {} },
-          { voice_id: "FGY2WhTYpPnrIDTdsKH5", name: "Laura", labels: {} },
-        ],
-      };
-    }
-    const data = (await res.json()) as {
-      voices: Array<{
-        voice_id: string;
-        name: string;
-        labels?: Record<string, string>;
-        category?: string;
-      }>;
-    };
+export const listVoices = createServerFn({ method: "GET" }).handler(async () => {
+  const apiKey = requireElevenLabsApiKey();
+  const res = await fetch("https://api.elevenlabs.io/v2/voices?page_size=50", {
+    headers: { "xi-api-key": apiKey },
+  });
+  if (!res.ok) {
+    // Fallback to a curated list if account has no Voices:Read
     return {
-      voices: data.voices.map((v) => ({
-        voice_id: v.voice_id,
-        name: v.name,
-        labels: v.labels ?? {},
-      })),
+      voices: [
+        { voice_id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", labels: {} },
+        { voice_id: "JBFqnCBsd6RMkjVDRZzb", name: "George", labels: {} },
+        { voice_id: "TX3LPaxmHKxFdv7VOQHJ", name: "Liam", labels: {} },
+        { voice_id: "Xb7hH8MSUJpSbSDYk0k2", name: "Alice", labels: {} },
+        { voice_id: "iP95p4xoKVk53GoZ742B", name: "Chris", labels: {} },
+        { voice_id: "nPczCjzI2devNBz1zQrb", name: "Brian", labels: {} },
+        { voice_id: "pFZP5JQG7iQjIQuC4Bku", name: "Lily", labels: {} },
+        { voice_id: "FGY2WhTYpPnrIDTdsKH5", name: "Laura", labels: {} },
+      ],
     };
-  },
-);
+  }
+  const data = (await res.json()) as {
+    voices: Array<{
+      voice_id: string;
+      name: string;
+      labels?: Record<string, string>;
+      category?: string;
+    }>;
+  };
+  return {
+    voices: data.voices.map((v) => ({
+      voice_id: v.voice_id,
+      name: v.name,
+      labels: v.labels ?? {},
+    })),
+  };
+});
 
 /* --------------------- ElevenLabs: Voice Design (TTV) ---------------------- */
 
@@ -304,9 +300,7 @@ const styleEvidenceSchema = z.object({
 });
 
 const suggestionsSchema = z.object({
-  recentTranscript: z
-    .array(z.object({ speaker: z.string(), text: z.string() }))
-    .max(40),
+  recentTranscript: z.array(z.object({ speaker: z.string(), text: z.string() })).max(40),
   jamesProfile: jamesProfileSchema.optional(),
   people: z.array(personCtxSchema).optional(),
   place: placeCtxSchema.optional(),
@@ -351,12 +345,12 @@ ${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Pers
     const peopleBlock = data.people?.length
       ? `# People in this conversation
 ${data.people
-          .map(
-            (p) =>
-              `## ${p.name}${p.relationship ? ` (${p.relationship})` : ""}
+  .map(
+    (p) =>
+      `## ${p.name}${p.relationship ? ` (${p.relationship})` : ""}
 ${p.interests?.length ? `Interests: ${p.interests.join(", ")}\n` : ""}${p.notes ? `Notes: ${p.notes}\n` : ""}${p.style_notes ? `How James talks with them: ${p.style_notes}\n` : ""}${p.recentMemories?.length ? `Recent memories with them:\n- ${p.recentMemories.join("\n- ")}\n` : ""}${p.followUps?.length ? `Open follow-ups to bring up:\n- ${p.followUps.join("\n- ")}\n` : ""}`,
-          )
-          .join("\n")}`
+  )
+  .join("\n")}`
       : "";
 
     const placeBlock = data.place
@@ -479,11 +473,15 @@ Strongly bias suggestions toward making these key points and asking these key qu
     const moodGuidance: Record<string, string> = {
       normal: "",
       calm: "James's current mood: CALM and relaxed. Suggestions should sound measured, gentle, unhurried, and grounded. Avoid exclamation marks or high-energy phrasing.",
-      excited: "James's current mood: EXCITED and energetic. Suggestions should feel enthusiastic, upbeat, and animated. Use lively language and the occasional exclamation where natural, but still in his real voice.",
+      excited:
+        "James's current mood: EXCITED and energetic. Suggestions should feel enthusiastic, upbeat, and animated. Use lively language and the occasional exclamation where natural, but still in his real voice.",
       sad: "James's current mood: SAD or low. Suggestions should be quieter, more reflective, sometimes wistful. It's okay to acknowledge feelings, give shorter answers, or politely deflect.",
-      upset: "James's current mood: UPSET, frustrated or annoyed. Suggestions can be more blunt, firm, or short. He may want to push back, set a limit, or end a topic. Stay respectful but don't sugarcoat.",
-      empathetic: "James's current mood: EMPATHETIC. He wants to support the other person. Suggestions should validate feelings, ask caring follow-up questions, and offer warmth before any opinions.",
-      amused: "James's current mood: AMUSED and playful. Lean into his humor and signature phrases. Light teasing, jokes, and playful comebacks are welcome where they fit his style.",
+      upset:
+        "James's current mood: UPSET, frustrated or annoyed. Suggestions can be more blunt, firm, or short. He may want to push back, set a limit, or end a topic. Stay respectful but don't sugarcoat.",
+      empathetic:
+        "James's current mood: EMPATHETIC. He wants to support the other person. Suggestions should validate feelings, ask caring follow-up questions, and offer warmth before any opinions.",
+      amused:
+        "James's current mood: AMUSED and playful. Lean into his humor and signature phrases. Light teasing, jokes, and playful comebacks are welcome where they fit his style.",
     };
     const moodBlock =
       data.mood && data.mood !== "normal" ? `# Mood\n${moodGuidance[data.mood]}\n` : "";
@@ -589,9 +587,7 @@ Return exactly 6 suggestions in James's voice.`;
 /* ----------------------- AI: auto-summary on Stop -------------------------- */
 
 const summarySchema = z.object({
-  transcript: z.array(
-    z.object({ speaker: z.string(), text: z.string() }),
-  ),
+  transcript: z.array(z.object({ speaker: z.string(), text: z.string() })),
   placeName: z.string().optional(),
   peopleNames: z.array(z.string()).optional(),
   model: z.string().optional(),
@@ -601,9 +597,7 @@ export const summarizeConversation = createServerFn({ method: "POST" })
   .inputValidator((d) => summarySchema.parse(d))
   .handler(async ({ data }) => {
     const target = resolveChatTarget(data.model ?? "google/gemini-2.5-flash");
-    const transcriptText = data.transcript
-      .map((s) => `${s.speaker}: ${s.text}`)
-      .join("\n");
+    const transcriptText = data.transcript.map((s) => `${s.speaker}: ${s.text}`).join("\n");
 
     if (!transcriptText.trim()) {
       return {
@@ -914,7 +908,7 @@ ${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Pers
       : "";
 
     const existingBlock =
-      (data.existingPoints?.length || data.existingQuestions?.length)
+      data.existingPoints?.length || data.existingQuestions?.length
         ? `# Already drafted (offer DIFFERENT, complementary items)\n${data.existingPoints?.length ? `Points:\n- ${data.existingPoints.join("\n- ")}\n` : ""}${data.existingQuestions?.length ? `Questions:\n- ${data.existingQuestions.join("\n- ")}\n` : ""}`
         : "";
 
@@ -1090,7 +1084,8 @@ Produce one polished version (the recommended one) plus 3 alternative variations
     }
     const json = (await res.json()) as any;
     const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-    if (!argStr) return { recommended: data.rawText, alternatives: [], error: "No tool call returned" };
+    if (!argStr)
+      return { recommended: data.rawText, alternatives: [], error: "No tool call returned" };
     try {
       const parsed = JSON.parse(argStr) as {
         recommended: string;
@@ -1583,5 +1578,388 @@ Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRI
       return { profile: parsed, error: null };
     } catch {
       return { profile: null as unknown, error: "Parse error" };
+    }
+  });
+
+// === Tier 2: post-conversation analysis ===
+//
+// Server functions used by the post-conversation pipeline in
+// `src/lib/post-conversation.ts`. All three target the "smart" model tier
+// since they run after-the-fact and quality dominates latency.
+
+/* ---------- 2.1: re-diarize tie-breaker ---------- */
+
+const tieBreakerSchema = z.object({
+  knownSpeakers: z.array(z.string()).min(2),
+  candidates: z
+    .array(
+      z.object({
+        segmentId: z.string(),
+        text: z.string(),
+        proposedSpeaker: z.string(),
+        runnerUp: z.string(),
+      }),
+    )
+    .max(20),
+  recentContext: z.array(z.object({ speaker: z.string(), text: z.string() })).max(30),
+  model: z.string().optional(),
+});
+
+export const aiRediarizeTieBreaker = createServerFn({ method: "POST" })
+  .inputValidator((d) => tieBreakerSchema.parse(d))
+  .handler(async ({ data }) => {
+    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
+    const system = `You are a forensic transcript reviewer. A non-speaking AAC user, James, just finished a conversation. A first-pass automatic diarizer assigned each utterance a speaker label, but several were ambiguous. The user has confirmed the full list of speakers in the room.
+
+For EACH ambiguous candidate utterance you are given two possible speakers from the confirmed list. Decide who actually said it using BOTH:
+1. Voice-style cues already inferred from the rest of the transcript.
+2. Lexical & conversational cues: who is being addressed, who is replying to a question, name mentions, knowledge of the topic, register.
+
+Be decisive when evidence is clear (confidence >= 0.7). Return "unsure" only when truly indeterminate. NEVER invent a speaker not in the confirmed list.`;
+
+    const userMsg = `Confirmed speakers in the room: ${data.knownSpeakers.join(", ")}
+
+Recent context (already-assigned utterances, sorted chronologically):
+${data.recentContext.map((c) => `${c.speaker}: ${c.text}`).join("\n") || "(none)"}
+
+Ambiguous candidates to decide on:
+${data.candidates
+  .map(
+    (c) =>
+      `[id=${c.segmentId}] (currently labelled "${c.proposedSpeaker}" or possibly "${c.runnerUp}") "${c.text}"`,
+  )
+  .join("\n")}`;
+
+    if (data.candidates.length === 0) {
+      return {
+        decisions: [] as Array<{ segmentId: string; speaker: string; confidence: number }>,
+        error: null as string | null,
+      };
+    }
+
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: userMsg },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_decisions",
+              parameters: {
+                type: "object",
+                properties: {
+                  decisions: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        segmentId: { type: "string" },
+                        speaker: {
+                          type: "string",
+                          description:
+                            "A speaker from knownSpeakers, or the literal string 'unsure' if truly indeterminate.",
+                        },
+                        confidence: {
+                          type: "number",
+                          minimum: 0,
+                          maximum: 1,
+                        },
+                      },
+                      required: ["segmentId", "speaker", "confidence"],
+                    },
+                  },
+                },
+                required: ["decisions"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_decisions" } },
+      }),
+    });
+
+    if (!res.ok) {
+      return { decisions: [], error: `AI error ${res.status}` };
+    }
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) return { decisions: [], error: "No tool call" };
+    try {
+      const parsed = JSON.parse(argStr) as {
+        decisions: Array<{ segmentId: string; speaker: string; confidence: number }>;
+      };
+      // Filter to decisions referencing real candidates + real speakers.
+      const candIds = new Set(data.candidates.map((c) => c.segmentId));
+      const knownSet = new Set(data.knownSpeakers);
+      const decisions = (parsed.decisions ?? []).filter(
+        (d) => candIds.has(d.segmentId) && (knownSet.has(d.speaker) || d.speaker === "unsure"),
+      );
+      return { decisions, error: null };
+    } catch {
+      return { decisions: [], error: "Parse error" };
+    }
+  });
+/* ---------- 2.3: per-person profile enrichment ---------- */
+
+const enrichPersonSchema = z.object({
+  personName: z.string().min(1),
+  personId: z.string().min(1),
+  relationship: z.string().optional(),
+  currentProfile: z.object({
+    interests: z.array(z.string()).optional(),
+    style_notes: z.string().optional(),
+    topics_loved: z.string().optional(),
+    topics_avoided: z.string().optional(),
+    relationship_dynamics: z.string().optional(),
+    dynamic_tags: z.array(z.string()).optional(),
+  }),
+  filteredTranscript: z.array(z.object({ speaker: z.string(), text: z.string() })).max(200),
+  model: z.string().optional(),
+});
+
+const ENRICH_ALLOWED_TAGS = [
+  "teases",
+  "interrupts",
+  "formal",
+  "warm",
+  "directive",
+  "questions-a-lot",
+  "stories-a-lot",
+  "short-replies",
+  "follows-up",
+];
+
+export const enrichPersonProfile = createServerFn({ method: "POST" })
+  .inputValidator((d) => enrichPersonSchema.parse(d))
+  .handler(async ({ data }) => {
+    if (data.filteredTranscript.length === 0) {
+      return {
+        proposals: [] as Array<{
+          field: string;
+          value: string;
+          op: "add" | "replace";
+          reasoning?: string;
+        }>,
+        error: null as string | null,
+      };
+    }
+    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
+    const system = `You analyse a transcript filtered to a SINGLE pair: James (a non-speaking AAC user) and ONE other person. You propose small, conservative updates to your stored profile of that person so future AI replies feel more attuned to them.
+
+Categories (only propose what is strongly evidenced — skip categories with no evidence):
+- interests (array): hobbies / subjects they clearly care about, each <= 5 words.
+- style_notes (text, append): how James interacts with THIS person specifically.
+- topics_loved (text, append): topics they brought up enthusiastically.
+- topics_avoided (text, append): topics they steered away from.
+- relationship_dynamics (text, append): freeform observation about the dynamic.
+- dynamic_tags (array): tags from ONLY: [${ENRICH_ALLOWED_TAGS.map((t) => `"${t}"`).join(", ")}]. Max 3 new tags per proposal.
+
+NEVER propose anything already present (verbatim or paraphrased). Be terse. Each value <= 25 words. Return empty proposals if nothing meaningful to add.`;
+
+    const profileText = JSON.stringify(data.currentProfile, null, 2);
+    const transcriptText = data.filteredTranscript.map((s) => `${s.speaker}: ${s.text}`).join("\n");
+    const user = `Person: ${data.personName}${data.relationship ? ` (${data.relationship})` : ""}
+
+Current stored profile:
+${profileText}
+
+Filtered transcript (only turns by James and ${data.personName}):
+${transcriptText}`;
+
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_proposals",
+              parameters: {
+                type: "object",
+                properties: {
+                  proposals: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        field: {
+                          type: "string",
+                          enum: [
+                            "interests",
+                            "style_notes",
+                            "topics_loved",
+                            "topics_avoided",
+                            "relationship_dynamics",
+                            "dynamic_tags",
+                          ],
+                        },
+                        value: { type: "string" },
+                        op: { type: "string", enum: ["add", "replace"] },
+                        reasoning: { type: "string" },
+                      },
+                      required: ["field", "value", "op"],
+                    },
+                  },
+                },
+                required: ["proposals"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_proposals" } },
+      }),
+    });
+
+    if (!res.ok) return { proposals: [], error: `AI error ${res.status}` };
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) return { proposals: [], error: "No tool call" };
+    try {
+      const parsed = JSON.parse(argStr) as {
+        proposals: Array<{
+          field: string;
+          value: string;
+          op: "add" | "replace";
+          reasoning?: string;
+        }>;
+      };
+      const proposals = (parsed.proposals ?? []).filter((p) => {
+        if (!p.value || !p.value.trim()) return false;
+        if (p.field === "dynamic_tags") {
+          return ENRICH_ALLOWED_TAGS.includes(p.value.trim().toLowerCase());
+        }
+        return true;
+      });
+      return { proposals, error: null };
+    } catch {
+      return { proposals: [], error: "Parse error" };
+    }
+  });
+
+/* ---------- 2.4: self-introduction detection ---------- */
+
+const detectIntrosSchema = z.object({
+  transcript: z.array(z.object({ speaker: z.string(), text: z.string() })),
+  existingPeopleNames: z.array(z.string()),
+  jamesName: z.string().min(1),
+  model: z.string().optional(),
+});
+
+export const detectIntroductions = createServerFn({ method: "POST" })
+  .inputValidator((d) => detectIntrosSchema.parse(d))
+  .handler(async ({ data }) => {
+    if (data.transcript.length === 0) {
+      return {
+        introductions: [] as Array<{
+          name: string;
+          role?: string;
+          relationship?: string;
+          speakerLabel: string;
+          confidence: number;
+          quote: string;
+        }>,
+        error: null as string | null,
+      };
+    }
+    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
+    const system = `You scan a finished conversation transcript for SELF-INTRODUCTIONS by people James (a non-speaking AAC user) hadn't met before. For each genuine introduction, extract: the speaker's first name (preferred), role/relationship if explicit, and which speaker label uttered the introduction.
+
+Rules:
+- Only flag introductions for people NOT already in existingPeopleNames (case-insensitive, first-name match).
+- Confidence >= 0.7 required: the person must clearly introduce themselves, e.g. "Hi James, I'm Sarah from the agency", "This is Tom, I'll be helping today". Casual mentions of a third party DO NOT count.
+- If James says someone's name but they haven't introduced themselves, that does NOT count.
+- NEVER propose James himself.
+
+Return via emit_introductions tool. Empty array if nothing qualifies.`;
+
+    const user = `James's name: ${data.jamesName}
+Existing people in the address book: ${data.existingPeopleNames.join(", ") || "(none)"}
+
+Transcript:
+${data.transcript.map((t) => `${t.speaker}: ${t.text}`).join("\n")}`;
+
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_introductions",
+              parameters: {
+                type: "object",
+                properties: {
+                  introductions: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        name: { type: "string" },
+                        role: { type: "string" },
+                        relationship: { type: "string" },
+                        speakerLabel: { type: "string" },
+                        confidence: { type: "number", minimum: 0, maximum: 1 },
+                        quote: { type: "string" },
+                      },
+                      required: ["name", "speakerLabel", "confidence", "quote"],
+                    },
+                  },
+                },
+                required: ["introductions"],
+              },
+            },
+          },
+        ],
+        tool_choice: {
+          type: "function",
+          function: { name: "emit_introductions" },
+        },
+      }),
+    });
+
+    if (!res.ok) return { introductions: [], error: `AI error ${res.status}` };
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) return { introductions: [], error: "No tool call" };
+    try {
+      const parsed = JSON.parse(argStr) as {
+        introductions: Array<{
+          name: string;
+          role?: string;
+          relationship?: string;
+          speakerLabel: string;
+          confidence: number;
+          quote: string;
+        }>;
+      };
+      const known = new Set(
+        [...data.existingPeopleNames, data.jamesName].map((n) => n.trim().toLowerCase()),
+      );
+      const introductions = (parsed.introductions ?? []).filter((i) => {
+        if (!i.name || !i.name.trim()) return false;
+        const first = i.name.trim().split(/\s+/)[0].toLowerCase();
+        return !known.has(first) && i.confidence >= 0.7;
+      });
+      return { introductions, error: null };
+    } catch {
+      return { introductions: [], error: "Parse error" };
     }
   });
