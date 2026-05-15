@@ -27,6 +27,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { MapPicker, type MapPickResult } from "@/components/MapPicker";
+import { VoiceSampleRecorder } from "@/components/VoiceSampleRecorder";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
