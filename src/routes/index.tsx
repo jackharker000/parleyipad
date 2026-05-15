@@ -17,7 +17,11 @@ import {
   History,
   Plus,
   Reply,
+  AlertCircle,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
+import { VoiceSampleRecorder } from "@/components/VoiceSampleRecorder";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,6 +43,8 @@ import {
   summarizeConversation,
   synthesizeSpeech,
   expandUtterance,
+  identifySpeakerFromContext,
+  aiSplitTranscriptChunk,
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
@@ -50,6 +56,7 @@ import {
   recordVoiceprint,
   bestMatch,
   Diarizer,
+  cosineSim,
 } from "@/lib/voiceprint";
 import { VOICEPRINT_MATCH_THRESHOLD } from "@/lib/db";
 import { SpeakerPanel, type ClusterRow, type ClusterStatus, type SuggestedName } from "@/components/SpeakerPanel";
@@ -176,6 +183,11 @@ function Home() {
   const [addingPerson, setAddingPerson] = useState(false);
   const [newPersonName, setNewPersonName] = useState("");
   const [newPersonRel, setNewPersonRel] = useState("");
+  // Map of person_id -> sample_count for selected participants in the picker.
+  // null entry means "no voiceprint yet". Loaded when the picker opens.
+  const [voiceprintStatus, setVoiceprintStatus] = useState<Record<string, number | null>>({});
+  // Which selected participant has the inline recorder expanded inside the picker.
+  const [expandedRecorderPersonId, setExpandedRecorderPersonId] = useState<string | null>(null);
 
   // Event (optional)
   const [allEvents, setAllEvents] = useState<EventItem[]>([]);
@@ -223,7 +235,7 @@ function Home() {
   // ---- On-device voice fingerprinting ----
   const captureRef = useRef<VoiceCapture | null>(null);
   // Single source of truth for diarization this session.
-  const diarizerRef = useRef<Diarizer>(new Diarizer(0.82));
+  const diarizerRef = useRef<Diarizer>(new Diarizer(0.87));
   // Cluster status (suggested / confirmed) keyed by diarizer label.
   const [clusterStatus, setClusterStatus] = useState<Record<string, ClusterStatus>>({});
   const clusterStatusRef = useRef<Record<string, ClusterStatus>>({});
@@ -235,9 +247,58 @@ function Home() {
   // When James presses "Ask" on a specific cluster, the next time that
   // cluster speaks we attribute any heard self-intro name back to it.
   const expectingNameForClusterRef = useRef<string | null>(null);
+  // Require 2 consecutive voiceprint matches before suggesting a speaker to
+  // reduce false positives from short or noisy utterances.
+  const pendingVoiceprintMatchRef = useRef<Map<string, { personId: string; matchCount: number }>>(new Map());
+  // Timestamps (ms) of detected speaker shifts during the current session.
+  // Used to split Scribe-committed chunks that span multiple speakers.
+  const speakerShiftTimestampsRef = useRef<number[]>([]);
+  // Track which unknown clusters have already had AI context-ID fired (once per cluster).
+  const aiSpeakerIdSentRef = useRef<Set<string>>(new Set());
+  // Hysteresis: brand-new clusters start as "pending" and don't appear in the
+  // SpeakerPanel until promoted. Promotion requires at least one of: ≥2
+  // utterances, user-triggered, self-intro detected, strongly isolated voice,
+  // or first cluster in the conversation. Prevents one-off ghost clusters from
+  // noise/distance/interruption from polluting the speaker roster.
+  const pendingClustersRef = useRef<
+    Map<string, { firstSeenTs: number; utteranceCount: number; promoted: boolean }>
+  >(new Map());
+  // Voiceprints pre-loaded for declared participants at conversation start.
+  // Used to suggest the right person immediately when their voice is first
+  // heard, bypassing the 2-utterance pending gate.
+  const participantVoiceprintsRef = useRef<
+    Array<{ personId: string; centroid: number[] }>
+  >([]);
+  // Keep a fresh copy of `committed` accessible inside stale scribe callback.
+  const committedRef = useRef<TranscriptSegment[]>([]);
+  useEffect(() => {
+    committedRef.current = committed;
+  }, [committed]);
   useEffect(() => {
     speakerMapRef.current = speakerMap;
   }, [speakerMap]);
+
+  // Refresh voiceprint status for the picker — runs whenever it opens or the
+  // selection changes, so the green/amber badges and inline record buttons
+  // stay in sync after a recording completes.
+  const refreshVoiceprintStatus = useCallback(async () => {
+    if (selectedPersonIds.length === 0) {
+      setVoiceprintStatus({});
+      return;
+    }
+    const prints = await db.voiceprints
+      .where("person_id")
+      .anyOf(selectedPersonIds)
+      .toArray();
+    const map: Record<string, number | null> = {};
+    for (const pid of selectedPersonIds) map[pid] = null;
+    for (const vp of prints) map[vp.person_id] = vp.sample_count;
+    setVoiceprintStatus(map);
+  }, [selectedPersonIds]);
+
+  useEffect(() => {
+    if (showPeoplePicker) void refreshVoiceprintStatus();
+  }, [showPeoplePicker, refreshVoiceprintStatus]);
   useEffect(() => {
     seedJamesIfNeeded();
   }, []);
@@ -248,65 +309,342 @@ function Home() {
   const suggestFn = useServerFn(generateSuggestions);
   const summarizeFn = useServerFn(summarizeConversation);
   const expandFn = useServerFn(expandUtterance);
+  const identifyFn = useServerFn(identifySpeakerFromContext);
+  const aiSplitFn = useServerFn(aiSplitTranscriptChunk);
 
-  const scribe = useScribe({
-    modelId: "scribe_v2_realtime",
-    commitStrategy: CommitStrategy.VAD,
-    includeTimestamps: true,
-    onPartialTranscript: (d: { text: string }) => setPartial(d.text ?? ""),
-    onCommittedTranscriptWithTimestamps: async (d: any) => {
-      const text = (d.text ?? "").trim();
+  // Per-utterance processing — extracted so we can call it twice when we
+  // split a Scribe chunk that spans two speakers.
+  const processUtterance = useCallback(
+    async (
+      text: string,
+      mfcc: number[] | null,
+      opts: { forceNewCluster?: boolean; allowSelfIntroOverride?: boolean } = {},
+    ): Promise<void> => {
       if (!text || !conversationIdRef.current) return;
-      setPartial("");
 
-      // -------- Compute MFCC for this segment first so we can run our own
-      // local diarization regardless of what Scribe returns.
-      const cap = captureRef.current;
-      let mfcc: number[] | null = null;
-      let spoken = 0;
-      if (cap && d.words && d.words.length > 0) {
-        try {
-          const firstW = d.words[0];
-          const lastW = d.words[d.words.length - 1];
-          spoken = (lastW.end ?? 0) - (firstW.start ?? 0);
-          if (spoken >= 0.5) {
-            const dur = Math.max(1.2, spoken);
-            const pcm = cap.recentSlice(dur, 1.0);
-            mfcc = computeMfccMean(pcm, cap.sampleRate);
-          }
-        } catch (err) {
-          console.warn("[voiceprint] mfcc compute failed", err);
-        }
-      }
-
-      // -------- Pick a canonical speaker label for this segment.
-      // Single source of truth: the local Diarizer. We deliberately ignore
-      // Scribe's speaker_id — in our tests it produced one label for whole
-      // multi-speaker recordings, which then poisoned downstream mapping.
-      // Utterances that were too quiet/short to MFCC stick to the previous
-      // label so we don't invent ghost clusters from "uh huh".
+      // -------- Pick a canonical speaker label.
       let speakerLabel: string;
       let assignSim = -1;
       let assignNew = false;
-      if (mfcc) {
-        const r = diarizerRef.current.assign(mfcc);
-        speakerLabel = r.label;
-        assignSim = r.sim;
-        assignNew = r.isNew;
+      let introOverride = false;
+
+      // -------- Participant-override path --------
+      // When the user has declared participants AND their voiceprints are
+      // pre-loaded, use those voiceprints as the PRIMARY signal for cluster
+      // assignment instead of in-session MFCC similarity. Stored voiceprints
+      // are recorded under controlled conditions and are more discriminative
+      // than centroids that drift during a live conversation.
+      //
+      // Threshold 0.78 is chosen above the typical inter-speaker range
+      // (0.50–0.75) so we only override when we're confident which participant
+      // is speaking. Below 0.78 we fall back to the diarizer's normal logic.
+      let participantOverridePersonId: string | null = null;
+      let participantOverrideSim = 0;
+      if (
+        mfcc &&
+        !opts.forceNewCluster &&
+        participantVoiceprintsRef.current.length > 0
+      ) {
+        const PARTICIPANT_OVERRIDE_THRESHOLD = 0.78;
+        for (const pvp of participantVoiceprintsRef.current) {
+          if (pvp.centroid.length !== mfcc.length) continue;
+          const sim = cosineSim(mfcc, pvp.centroid);
+          if (sim >= PARTICIPANT_OVERRIDE_THRESHOLD && sim > participantOverrideSim) {
+            participantOverridePersonId = pvp.personId;
+            participantOverrideSim = sim;
+          }
+        }
+      }
+
+      if (mfcc && participantOverridePersonId) {
+        // Look for any existing cluster for this participant — both confirmed
+        // (in speakerMap) and suggested-but-unconfirmed (in clusterStatus) — to
+        // avoid creating a duplicate cluster for the same person.
+        let existingLabel: string | undefined;
+        for (const [label, pid] of Object.entries(speakerMapRef.current)) {
+          if (pid === participantOverridePersonId) {
+            existingLabel = label;
+            break;
+          }
+        }
+        if (!existingLabel) {
+          for (const [label, status] of Object.entries(clusterStatusRef.current)) {
+            if (
+              (status.kind === "suggested" || status.kind === "confirmed") &&
+              status.personId === participantOverridePersonId
+            ) {
+              existingLabel = label;
+              break;
+            }
+          }
+        }
+        if (existingLabel && diarizerRef.current.get(existingLabel)) {
+          const r = diarizerRef.current.forceAssign(existingLabel, mfcc);
+          speakerLabel = r.label;
+          assignSim = participantOverrideSim;
+          assignNew = false;
+        } else {
+          const r = diarizerRef.current.assignNew(mfcc);
+          speakerLabel = r.label;
+          assignSim = participantOverrideSim;
+          assignNew = true;
+        }
+      } else if (mfcc) {
+        if (opts.forceNewCluster) {
+          const r = diarizerRef.current.assignNew(mfcc);
+          speakerLabel = r.label;
+          assignSim = r.sim;
+          assignNew = true;
+        } else {
+          let forceNew = false;
+          if (opts.allowSelfIntroOverride !== false) {
+            const introducedName = extractIntroducedNames([
+              { text, speaker_label: "" },
+            ])[0]?.name;
+            if (introducedName) {
+              const preview = diarizerRef.current.peek(mfcc);
+              if (preview.label && preview.wouldMerge) {
+                const previewStatus = clusterStatusRef.current[preview.label];
+                let attributedName: string | undefined;
+                if (previewStatus?.kind === "confirmed") {
+                  attributedName = allPeople.find(
+                    (p) => p.id === previewStatus.personId,
+                  )?.name;
+                } else if (previewStatus?.kind === "suggested") {
+                  attributedName = allPeople.find(
+                    (p) => p.id === previewStatus.personId,
+                  )?.name;
+                }
+                if (
+                  attributedName &&
+                  attributedName.toLowerCase() !== introducedName.toLowerCase()
+                ) {
+                  forceNew = true;
+                  introOverride = true;
+                }
+              }
+            }
+          }
+          const r = forceNew
+            ? diarizerRef.current.assignNew(mfcc)
+            : diarizerRef.current.assign(mfcc);
+          speakerLabel = r.label;
+          assignSim = r.sim;
+          assignNew = r.isNew;
+        }
       } else {
-        const lastSeg = committed[committed.length - 1];
+        const lastSeg = committedRef.current[committedRef.current.length - 1];
         speakerLabel = lastSeg?.speaker_label ?? "Speaker ?";
       }
+
+      // -------- Ghost-cluster collapse --------
+      // When a BRAND-NEW cluster is created (assignNew=true), check whether its
+      // single-utterance MFCC closely matches an already-confirmed speaker's
+      // stored voiceprint. If so it's almost certainly the same person speaking
+      // under different acoustic conditions — silently merge back.
+      //
+      // Threshold 0.88 sits in the within-speaker range (0.78–0.95) and above
+      // the typical inter-speaker range (0.50–0.80), so we only merge when it's
+      // unambiguously the same person. Running this only on brand-new clusters
+      // (not every utterance of every unknown cluster) prevents real 2nd speakers
+      // from being absorbed into a confirmed speaker as their centroid drifts.
+      const GHOST_MATCH_THRESHOLD = 0.88;
+      if (mfcc && assignNew && !clusterStatusRef.current[speakerLabel]) {
+        for (const [confirmedLabel, confirmedPersonId] of Object.entries(
+          speakerMapRef.current,
+        )) {
+          if (confirmedLabel === speakerLabel) continue;
+          const storedVp = await db.voiceprints.get(confirmedPersonId);
+          if (storedVp && storedVp.centroid.length === mfcc.length) {
+            const sim = cosineSim(mfcc, storedVp.centroid);
+            if (sim >= GHOST_MATCH_THRESHOLD) {
+              const fromLabel = speakerLabel;
+              const mergedOk = diarizerRef.current.mergeClusters(
+                fromLabel,
+                confirmedLabel,
+              );
+              if (mergedOk) {
+                // Relabel any prior segments attributed to this ghost cluster.
+                setCommitted((prev) =>
+                  prev.map((s) =>
+                    s.speaker_label === fromLabel
+                      ? { ...s, speaker_label: confirmedLabel }
+                      : s,
+                  ),
+                );
+                const cid = conversationIdRef.current;
+                if (cid) {
+                  const segs = await db.transcript_segments
+                    .where("conversation_id")
+                    .equals(cid)
+                    .and((s) => s.speaker_label === fromLabel)
+                    .toArray();
+                  for (const seg of segs) {
+                    await db.transcript_segments.update(seg.id, {
+                      speaker_label: confirmedLabel,
+                    });
+                  }
+                }
+                pendingClustersRef.current.delete(fromLabel);
+                pendingVoiceprintMatchRef.current.delete(fromLabel);
+                aiSpeakerIdSentRef.current.delete(fromLabel);
+                if (clusterStatusRef.current[fromLabel]) {
+                  const nextStatus = { ...clusterStatusRef.current };
+                  delete nextStatus[fromLabel];
+                  clusterStatusRef.current = nextStatus;
+                  setClusterStatus(nextStatus);
+                }
+                speakerLabel = confirmedLabel;
+                assignNew = false;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // -------- Participant-constrained cluster cap (0b) --------
+      // If the label is still a new cluster AND participants were declared,
+      // prevent runaway cluster creation by merging into the best-matching
+      // existing cluster when we're already at the cap.
+      if (mfcc && assignNew && !clusterStatusRef.current[speakerLabel] && peopleInConvo.length > 0) {
+        const existingClusters = diarizerRef.current.clusters();
+        // Count clusters that existed before this new one was created
+        const priorCount = existingClusters.length - 1; // new cluster already added
+        if (priorCount >= peopleInConvo.length + 1) {
+          // Find the existing cluster (excluding the new one) with best cosine sim
+          let bestExistingLabel: string | null = null;
+          let bestExistingSim = -1;
+          for (const c of existingClusters) {
+            if (c.label === speakerLabel) continue;
+            const sim = cosineSim(mfcc, c.centroid);
+            if (sim > bestExistingSim) {
+              bestExistingSim = sim;
+              bestExistingLabel = c.label;
+            }
+          }
+          if (bestExistingLabel) {
+            const fromLabel = speakerLabel;
+            diarizerRef.current.mergeClusters(fromLabel, bestExistingLabel);
+            pendingClustersRef.current.delete(fromLabel);
+            speakerLabel = bestExistingLabel;
+            assignNew = false;
+          }
+        }
+      }
+
+      // -------- Pending-cluster hysteresis --------
+      // Hide brand-new clusters from the SpeakerPanel until we have stronger
+      // evidence they're a real distinct speaker. Promotion happens when at
+      // least one of these holds: it's the first cluster of the conversation,
+      // the user explicitly pressed "New", a self-introduction was detected,
+      // the voice is strongly isolated from all other clusters, or the cluster
+      // has accumulated ≥2 utterances.
+      const PROMOTE_AFTER_UTTERANCES = 2;
+      // Research shows inter-speaker MFCC cosine similarity is typically
+      // 0.50–0.75. Threshold 0.70 means: if the new voice scores < 0.70
+      // against all existing clusters it's clearly distinct → promote
+      // immediately. Same-speaker ghosts (0.75–0.85) still wait for 2
+      // utterances before becoming visible.
+      const ISOLATION_PROMOTE_THRESHOLD = 0.70;
+      if (mfcc) {
+        if (assignNew) {
+          const allClusters = diarizerRef.current.clusters();
+          const isFirstCluster = allClusters.length === 1;
+          const userTriggered = !!opts.forceNewCluster;
+          let maxSimToOthers = 0;
+          for (const c of allClusters) {
+            if (c.label === speakerLabel) continue;
+            const s = cosineSim(mfcc, c.centroid);
+            if (s > maxSimToOthers) maxSimToOthers = s;
+          }
+          const isStronglyIsolated = maxSimToOthers < ISOLATION_PROMOTE_THRESHOLD;
+          const matchedParticipant = !!participantOverridePersonId;
+          const promoteNow =
+            isFirstCluster ||
+            userTriggered ||
+            introOverride ||
+            isStronglyIsolated ||
+            matchedParticipant;
+          pendingClustersRef.current.set(speakerLabel, {
+            firstSeenTs: Date.now(),
+            utteranceCount: 1,
+            promoted: promoteNow,
+          });
+        } else {
+          const pending = pendingClustersRef.current.get(speakerLabel);
+          if (pending && !pending.promoted) {
+            const newCount = pending.utteranceCount + 1;
+            pendingClustersRef.current.set(speakerLabel, {
+              ...pending,
+              utteranceCount: newCount,
+              promoted: newCount >= PROMOTE_AFTER_UTTERANCES,
+            });
+          }
+        }
+      }
+
+      // -------- Participant voiceprint quick-match --------
+      // For brand-new clusters, compare against pre-loaded voiceprints of
+      // declared participants at a lower threshold (0.72). A match immediately
+      // promotes the cluster (bypassing the 2-utterance pending gate) and sets
+      // its status to "suggested" so the user sees a one-tap confirmation chip
+      // on the speaker's very first utterance. User confirmation is still
+      // required — this never silently confirms.
+      if (mfcc && assignNew && participantVoiceprintsRef.current.length > 0) {
+        const confirmedPersonIds = new Set(Object.values(speakerMapRef.current));
+        const curStatus = clusterStatusRef.current[speakerLabel];
+        if (!curStatus || curStatus.kind === "unknown") {
+          const PARTICIPANT_MATCH_THRESHOLD = 0.72;
+          let bestPvp: { personId: string; sim: number } | null = null;
+          for (const pvp of participantVoiceprintsRef.current) {
+            if (confirmedPersonIds.has(pvp.personId)) continue;
+            if (pvp.centroid.length !== mfcc.length) continue;
+            const sim = cosineSim(mfcc, pvp.centroid);
+            if (
+              sim >= PARTICIPANT_MATCH_THRESHOLD &&
+              (!bestPvp || sim > bestPvp.sim)
+            ) {
+              bestPvp = { personId: pvp.personId, sim };
+            }
+          }
+          if (bestPvp) {
+            // Promote pending cluster so it becomes visible in the panel.
+            const pendingEntry = pendingClustersRef.current.get(speakerLabel);
+            if (pendingEntry) {
+              pendingClustersRef.current.set(speakerLabel, {
+                ...pendingEntry,
+                promoted: true,
+              });
+            }
+            const nextStatus = {
+              ...clusterStatusRef.current,
+              [speakerLabel]: {
+                kind: "suggested" as const,
+                personId: bestPvp.personId,
+                sim: bestPvp.sim,
+                suggestions: [],
+              },
+            };
+            clusterStatusRef.current = nextStatus;
+            setClusterStatus(nextStatus);
+          }
+        }
+      }
+
       console.debug("[diarize]", {
         chosen: speakerLabel,
         sim: assignSim.toFixed(3),
         isNew: assignNew,
+        introOverride,
+        forcedNew: !!opts.forceNewCluster,
+        participantOverride: participantOverridePersonId ?? undefined,
         clusters: diarizerRef.current.clusters().length,
       });
 
       const seg: TranscriptSegment = {
         id: newId(),
-        conversation_id: conversationIdRef.current,
+        conversation_id: conversationIdRef.current!,
         speaker_label: speakerLabel,
         text,
         ts: Date.now(),
@@ -314,57 +652,73 @@ function Home() {
       setCommitted((prev) => [...prev, seg]);
       await db.transcript_segments.add(seg);
 
-      // -------- Recognition pass (suggestion only — never auto-confirms).
-      // For brand-new clusters, or any cluster still in `unknown` state, try
-      // to match this cluster's running centroid against saved voiceprints.
-      // Confirmed clusters keep their identity. Already-suggested clusters
-      // keep their previous suggestion (stable until James acts on it).
+      // -------- Recognition pass (suggestion-only).
       try {
         const cluster = diarizerRef.current.get(speakerLabel);
         const status = clusterStatusRef.current[speakerLabel];
         if (cluster && status?.kind !== "confirmed") {
-          // Always look for self-introduction names in this segment.
           const introHere = extractIntroducedNames([
             { text, speaker_label: speakerLabel },
           ])[0]?.name;
-          // Determine source: ask-reply if this cluster matches the one we
-          // just asked, otherwise self-intro.
           const askTarget = expectingNameForClusterRef.current;
           const isAskReply =
-            askTarget !== null &&
-            (askTarget === speakerLabel || askTarget === "");
-          // Resolve attribution target: ask-reply attributes back to the
-          // cluster Ask was clicked on (if it was a per-cluster ask).
+            askTarget !== null && (askTarget === speakerLabel || askTarget === "");
           const attributionLabel =
-            isAskReply && askTarget && askTarget !== ""
-              ? askTarget
-              : speakerLabel;
+            isAskReply && askTarget && askTarget !== "" ? askTarget : speakerLabel;
 
           let nextStatus: ClusterStatus | undefined;
-          // Only run voiceprint match for unknown clusters that haven't been
-          // matched yet — keep stable suggestions once shown.
+
           if (!status || status.kind === "unknown") {
             const confirmedIds = new Set(Object.values(speakerMapRef.current));
             const allPrints = await db.voiceprints.toArray();
             const candidates = allPrints.filter(
               (p) => !confirmedIds.has(p.person_id),
             );
+            const excludedIds = new Set(
+              status?.kind === "unknown" ? (status.excludedPersonIds ?? []) : [],
+            );
             const match = bestMatch(
               cluster.centroid,
               candidates,
               VOICEPRINT_MATCH_THRESHOLD,
+              excludedIds,
             );
             if (match) {
-              nextStatus = {
-                kind: "suggested",
-                personId: match.print.person_id,
-                sim: match.sim,
-                suggestions: status?.suggestions ?? [],
-              };
+              const highConf = match.sim >= 0.88;
+              const pending = pendingVoiceprintMatchRef.current.get(speakerLabel);
+              if (pending?.personId === match.print.person_id) {
+                const newCount = pending.matchCount + 1;
+                pendingVoiceprintMatchRef.current.set(speakerLabel, {
+                  personId: match.print.person_id,
+                  matchCount: newCount,
+                });
+                if (highConf || newCount >= 2) {
+                  nextStatus = {
+                    kind: "suggested",
+                    personId: match.print.person_id,
+                    sim: match.sim,
+                    suggestions: status?.suggestions ?? [],
+                  };
+                }
+              } else {
+                pendingVoiceprintMatchRef.current.set(speakerLabel, {
+                  personId: match.print.person_id,
+                  matchCount: 1,
+                });
+                if (highConf) {
+                  nextStatus = {
+                    kind: "suggested",
+                    personId: match.print.person_id,
+                    sim: match.sim,
+                    suggestions: status?.suggestions ?? [],
+                  };
+                }
+              }
+            } else {
+              pendingVoiceprintMatchRef.current.delete(speakerLabel);
             }
           }
 
-          // Append intro name as a suggestion chip on the attribution target.
           if (introHere) {
             const targetStatus =
               attributionLabel === speakerLabel
@@ -387,7 +741,6 @@ function Home() {
               clusterStatusRef.current = next;
               setClusterStatus(next);
             }
-            // Consume the ask target if attribution succeeded.
             if (isAskReply) expectingNameForClusterRef.current = null;
           }
 
@@ -399,11 +752,277 @@ function Home() {
             clusterStatusRef.current = next;
             setClusterStatus(next);
           }
+
+          // AI context-based identification (one-shot per cluster, 2+ utterances).
+          // Lowered from 3 -> 2 so identification kicks in earlier. When the
+          // user has declared participants we ONLY send those names as
+          // candidates so the AI doesn't get distracted by irrelevant people.
+          const clusterCount = cluster?.count ?? 0;
+          const curStatusKind = (
+            nextStatus ?? clusterStatusRef.current[speakerLabel]
+          )?.kind;
+          if (
+            clusterCount >= 2 &&
+            curStatusKind !== "confirmed" &&
+            curStatusKind !== "suggested" &&
+            !aiSpeakerIdSentRef.current.has(speakerLabel)
+          ) {
+            aiSpeakerIdSentRef.current.add(speakerLabel);
+            const confirmedNames: Record<string, string> = {};
+            for (const [lbl, pid] of Object.entries(speakerMapRef.current)) {
+              const p = allPeople.find((pp) => pp.id === pid);
+              if (p) confirmedNames[lbl] = p.name;
+            }
+            const recentForAI = committedRef.current.slice(-15).map((s) => {
+              const pid = speakerMapRef.current[s.speaker_label];
+              const p = pid ? allPeople.find((pp) => pp.id === pid) : null;
+              return { speaker: p?.name ?? s.speaker_label, text: s.text };
+            });
+            // Bias candidate list toward declared participants when present.
+            const declaredNames = personIdsRef.current
+              .map((id) => allPeople.find((p) => p.id === id)?.name)
+              .filter((n): n is string => Boolean(n));
+            const candidateNames =
+              declaredNames.length > 0
+                ? declaredNames
+                : allPeople.map((p) => p.name);
+            identifyFn({
+              data: {
+                unknownLabel: speakerLabel,
+                recentTranscript: recentForAI,
+                confirmedSpeakers: confirmedNames,
+                candidateNames,
+                model: fastModelRef.current,
+              },
+            })
+              .then((result) => {
+                if (result.personName && result.confidence >= 0.65) {
+                  const cur = clusterStatusRef.current[speakerLabel];
+                  if (cur && cur.kind !== "confirmed") {
+                    const chip: SuggestedName = {
+                      name: result.personName,
+                      source: "context-ai",
+                    };
+                    const merged = mergeSuggestion(cur, chip);
+                    const next = {
+                      ...clusterStatusRef.current,
+                      [speakerLabel]: merged,
+                    };
+                    clusterStatusRef.current = next;
+                    setClusterStatus(next);
+                  }
+                }
+              })
+              .catch(() => {});
+          }
         }
         setClusterTick((n) => n + 1);
       } catch (err) {
         console.warn("voiceprint match failed", err);
       }
+    },
+    [allPeople, identifyFn],
+  );
+
+  const scribe = useScribe({
+    modelId: "scribe_v2_realtime",
+    commitStrategy: CommitStrategy.VAD,
+    includeTimestamps: true,
+    onPartialTranscript: (d: { text: string }) => setPartial(d.text ?? ""),
+    onCommittedTranscriptWithTimestamps: async (d: any) => {
+      const text = (d.text ?? "").trim();
+      if (!text || !conversationIdRef.current) return;
+      setPartial("");
+
+      const cap = captureRef.current;
+      // Compute the chunk's duration from word timestamps
+      let spoken = 0;
+      if (cap && d.words && d.words.length > 0) {
+        const firstW = d.words[0];
+        const lastW = d.words[d.words.length - 1];
+        spoken = (lastW.end ?? 0) - (firstW.start ?? 0);
+      }
+
+      // Determine if we should split this chunk by mid-chunk speaker shift.
+      const segEndAbsMs = Date.now();
+      const segStartAbsMs = segEndAbsMs - spoken * 1000;
+      const shiftsInSeg = speakerShiftTimestampsRef.current.filter(
+        (t) => t > segStartAbsMs + 200 && t < segEndAbsMs - 200,
+      );
+
+      // 0.5s minimum lets us split short interruptions; 2-word minimum
+      // ensures both halves have enough content for MFCC computation.
+      const canSplit =
+        cap && shiftsInSeg.length > 0 && d.words && d.words.length >= 2 && spoken >= 0.5;
+
+      if (canSplit) {
+        try {
+          const shiftTs = shiftsInSeg[0];
+          const firstStart = d.words[0].start ?? 0;
+          const shiftSecFromUtteranceStart =
+            (shiftTs - segStartAbsMs) / 1000;
+          const splitWordIdx = d.words.findIndex(
+            (w: any) => (w.start ?? 0) - firstStart >= shiftSecFromUtteranceStart,
+          );
+
+          if (splitWordIdx > 1 && splitWordIdx < d.words.length - 1) {
+            const totalSec = spoken + 1.0;
+            const totalPcm = cap.recentSlice(totalSec, 0);
+            const splitSampleFromEnd = Math.floor(
+              ((Date.now() - shiftTs) / 1000) * cap.sampleRate,
+            );
+            const splitSampleFromStart = totalPcm.length - splitSampleFromEnd;
+            // FRAME size is 512 — need at least 4 frames per half
+            if (splitSampleFromStart > 512 * 4 && splitSampleFromEnd > 512 * 4) {
+              const prePcm = totalPcm.subarray(0, splitSampleFromStart);
+              const postPcm = totalPcm.subarray(splitSampleFromStart);
+              const preMfcc = computeMfccMean(prePcm, cap.sampleRate);
+              const postMfcc = computeMfccMean(postPcm, cap.sampleRate);
+              if (preMfcc && postMfcc) {
+                const preText = d.words
+                  .slice(0, splitWordIdx)
+                  .map((w: any) => w.text ?? "")
+                  .join(" ")
+                  .trim();
+                const postText = d.words
+                  .slice(splitWordIdx)
+                  .map((w: any) => w.text ?? "")
+                  .join(" ")
+                  .trim();
+                console.debug("[diarize] split chunk at shift", {
+                  shiftAtSec: shiftSecFromUtteranceStart.toFixed(2),
+                  preText,
+                  postText,
+                });
+                // Consume the shift timestamp
+                speakerShiftTimestampsRef.current =
+                  speakerShiftTimestampsRef.current.filter((t) => t !== shiftTs);
+                if (preText) await processUtterance(preText, preMfcc, {});
+                if (postText)
+                  await processUtterance(postText, postMfcc, {
+                    forceNewCluster: true,
+                    allowSelfIntroOverride: false,
+                  });
+                return;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("[diarize] split failed, falling back to single-utterance", err);
+        }
+      }
+
+      // ---------- AI-fallback split ----------
+      // If MFCC didn't detect a shift but the chunk text looks like it could
+      // contain two speakers (long chunk, multiple sentences, Q+A pattern),
+      // ask the AI to inspect it. Only fire when there are 2+ declared
+      // participants so the AI has candidate names to choose between, and
+      // only on chunks long enough to plausibly contain a speaker change.
+      const wordsArr: any[] = d.words ?? [];
+      const wordCount = wordsArr.length;
+      const looksMultiSpeaker = (() => {
+        if (wordCount < 5 || spoken < 1.5) return false;
+        // mid-chunk sentence-ending punctuation (not just at very end)
+        const body = text.slice(0, -1);
+        const midPunct = body.match(/[.?!]\s+\S/g);
+        return !!midPunct && midPunct.length >= 1;
+      })();
+      if (
+        cap &&
+        !shiftsInSeg.length &&
+        looksMultiSpeaker &&
+        peopleInConvo.length >= 2 &&
+        wordCount >= 5 &&
+        wordCount <= 80
+      ) {
+        try {
+          const recent = committedRef.current.slice(-6).map((s) => {
+            const pid = speakerMapRef.current[s.speaker_label];
+            const p = pid ? allPeople.find((pp) => pp.id === pid) : null;
+            return { speaker: p?.name ?? s.speaker_label, text: s.text };
+          });
+          const confirmedSpeakers: Record<string, string> = {};
+          for (const [lbl, pid] of Object.entries(speakerMapRef.current)) {
+            const p = allPeople.find((pp) => pp.id === pid);
+            if (p) confirmedSpeakers[lbl] = p.name;
+          }
+          const candidateNames = peopleInConvo.map((p) => p.name);
+          const aiRes = await aiSplitFn({
+            data: {
+              recentTranscript: recent,
+              chunkText: text,
+              wordCount,
+              candidateNames,
+              confirmedSpeakers,
+              model: fastModelRef.current,
+            },
+          });
+          console.debug("[diarize] ai split result", aiRes);
+          if (
+            aiRes.splitAtWord > 0 &&
+            aiRes.splitAtWord < wordCount &&
+            aiRes.confidence >= 0.7
+          ) {
+            const splitWordIdx = aiRes.splitAtWord;
+            const firstStart = wordsArr[0].start ?? 0;
+            const splitWord = wordsArr[splitWordIdx];
+            // Time from chunk start to the split point, in seconds.
+            const splitSecFromChunkStart =
+              (splitWord.start ?? 0) - firstStart;
+            const totalSec = spoken + 1.0;
+            const totalPcm = cap.recentSlice(totalSec, 0);
+            // Mirror the MFCC-shift split logic: compute sample offset from
+            // the END of totalPcm (which corresponds to ~now).
+            const splitSampleFromEnd = Math.floor(
+              (spoken - splitSecFromChunkStart) * cap.sampleRate,
+            );
+            const splitAt = Math.max(
+              512 * 4,
+              Math.min(
+                totalPcm.length - 512 * 4,
+                totalPcm.length - splitSampleFromEnd,
+              ),
+            );
+            const prePcm = totalPcm.subarray(0, splitAt);
+            const postPcm = totalPcm.subarray(splitAt);
+            const preMfcc = computeMfccMean(prePcm, cap.sampleRate);
+            const postMfcc = computeMfccMean(postPcm, cap.sampleRate);
+            const preText = wordsArr
+              .slice(0, splitWordIdx)
+              .map((w) => w.text ?? "")
+              .join(" ")
+              .trim();
+            const postText = wordsArr
+              .slice(splitWordIdx)
+              .map((w) => w.text ?? "")
+              .join(" ")
+              .trim();
+            if (preText && postText && preMfcc && postMfcc) {
+              await processUtterance(preText, preMfcc, {});
+              await processUtterance(postText, postMfcc, {
+                forceNewCluster: true,
+                allowSelfIntroOverride: false,
+              });
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn("[diarize] AI split failed, falling through", err);
+        }
+      }
+
+      // No split — single utterance path.
+      let mfcc: number[] | null = null;
+      if (cap && d.words && d.words.length > 0 && spoken >= 0.5) {
+        try {
+          const dur = Math.max(1.2, spoken);
+          const pcm = cap.recentSlice(dur, 1.0);
+          mfcc = computeMfccMean(pcm, cap.sampleRate);
+        } catch (err) {
+          console.warn("[voiceprint] mfcc compute failed", err);
+        }
+      }
+      await processUtterance(text, mfcc, { allowSelfIntroOverride: true });
     },
   });
 
@@ -492,6 +1111,27 @@ function Home() {
       diarizerRef.current.reset();
       setClusterStatus({});
       clusterStatusRef.current = {};
+      pendingVoiceprintMatchRef.current.clear();
+      aiSpeakerIdSentRef.current.clear();
+      speakerShiftTimestampsRef.current = [];
+      pendingClustersRef.current.clear();
+      participantVoiceprintsRef.current = [];
+      // Pre-load voiceprints for declared participants so the first utterance
+      // from each gets an immediate suggestion chip rather than waiting for
+      // 2+ utterances or a high-confidence standalone match.
+      if (selectedPersonIds.length > 0) {
+        db.voiceprints
+          .where("person_id")
+          .anyOf(selectedPersonIds)
+          .toArray()
+          .then((prints) => {
+            participantVoiceprintsRef.current = prints.map((vp) => ({
+              personId: vp.person_id,
+              centroid: vp.centroid,
+            }));
+          })
+          .catch(() => {});
+      }
 
       const conv: Conversation = {
         id,
@@ -512,6 +1152,13 @@ function Home() {
         const cap = new VoiceCapture();
         await cap.start();
         captureRef.current = cap;
+        cap.startShiftMonitor((ts) => {
+          speakerShiftTimestampsRef.current.push(ts);
+          // Trim to the last 30 seconds
+          const cutoff = Date.now() - 30000;
+          speakerShiftTimestampsRef.current =
+            speakerShiftTimestampsRef.current.filter((t) => t > cutoff);
+        });
         console.debug("[voiceprint] capture started", {
           sampleRate: cap.sampleRate,
         });
@@ -549,6 +1196,20 @@ function Home() {
           const cluster = diarizerRef.current.get(label);
           if (cluster && cluster.count >= 1) {
             await recordVoiceprint(personId, cluster.centroid);
+            const examples = committedRef.current
+              .filter((s) => s.speaker_label === label)
+              .slice(-3)
+              .map((s) => s.text)
+              .join(" / ");
+            await db.voiceprint_contributions.add({
+              id: newId(),
+              person_id: personId,
+              conversation_id: cid ?? undefined,
+              source: "auto",
+              mfcc: cluster.centroid.slice(),
+              ts: Date.now(),
+              preview_text: examples || undefined,
+            });
           }
         }
       } catch (err) {
@@ -657,6 +1318,16 @@ function Home() {
         place: placeRef.current,
         event: selectedEventRef.current ?? undefined,
       });
+      // Detect if a question was just asked so the AI can prioritise answers.
+      const jamesLabel = jamesLabelRef.current ?? "__james_self__";
+      const QUESTION_STARTERS = /^(what|how|when|where|why|who|which|would|could|should|is|are|do|did|will|can)\b/i;
+      const lastNonJames = committed
+        .filter((s) => s.speaker_label !== jamesLabel && s.speaker_label !== "__james_self__")
+        .slice(-2);
+      const questionAsked = lastNonJames.some((s) => {
+        const t = s.text.trim();
+        return t.endsWith("?") || QUESTION_STARTERS.test(t);
+      });
       const r = await suggestFn({
         data: {
           recentTranscript: recent,
@@ -668,6 +1339,7 @@ function Home() {
           alreadyShown: lastShownRef.current.slice(-20),
           model: fastModelRef.current,
           mood: moodRef.current,
+          questionAsked,
         },
       });
       if (r.suggestions?.length) {
@@ -702,9 +1374,12 @@ function Home() {
 
   useEffect(() => {
     if (!active) return;
+    // First call (no transcript yet): shorter delay so James has opening
+    // suggestions within ~800ms of pressing Start.
+    const delay = committed.length === 0 ? 800 : 1500;
     const t = setTimeout(() => {
       refreshSuggestions();
-    }, 1500);
+    }, delay);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committed.length, active, mood]);
@@ -772,10 +1447,21 @@ function Home() {
   );
 
   // Build cluster rows from the diarizer + cluster-status state for the SpeakerPanel.
+  // Pending unpromoted clusters are filtered out — they exist in the diarizer
+  // (so utterances still cluster correctly) but don't appear in the UI until
+  // we have stronger evidence they're a real distinct speaker.
   const clusterRows = useMemo<ClusterRow[]>(() => {
     const rows: ClusterRow[] = [];
     for (const c of diarizerRef.current.clusters()) {
       const status = clusterStatus[c.label] ?? { kind: "unknown" as const };
+      const pending = pendingClustersRef.current.get(c.label);
+      const isConfirmed = status.kind === "confirmed";
+      const isSuggested = status.kind === "suggested";
+      // Always show confirmed/suggested clusters even if they happen to still
+      // have a pending entry (e.g. confirmation arrived before promotion).
+      if (pending && !pending.promoted && !isConfirmed && !isSuggested) {
+        continue;
+      }
       rows.push({ label: c.label, count: c.count, status });
     }
     // Stable sort by numeric portion of "Speaker N"
@@ -792,8 +1478,27 @@ function Home() {
   // ---- Speaker confirmation handlers ----
   const confirmKnownSpeaker = useCallback(
     async (label: string, personId: string) => {
+      // Confirmation overrides any pending hysteresis — the cluster is now real.
+      pendingClustersRef.current.delete(label);
       const cluster = diarizerRef.current.get(label);
-      if (cluster) await recordVoiceprint(personId, cluster.centroid);
+      if (cluster) {
+        await recordVoiceprint(personId, cluster.centroid);
+        // Capture a recent example from this cluster for the user to verify later.
+        const examples = committedRef.current
+          .filter((s) => s.speaker_label === label)
+          .slice(-3)
+          .map((s) => s.text)
+          .join(" / ");
+        await db.voiceprint_contributions.add({
+          id: newId(),
+          person_id: personId,
+          conversation_id: conversationIdRef.current ?? undefined,
+          source: "auto",
+          mfcc: cluster.centroid.slice(),
+          ts: Date.now(),
+          preview_text: examples || undefined,
+        });
+      }
       // Update speakerMap (only confirmed entries) and conversation roster.
       const nextMap = { ...speakerMapRef.current };
       // Remove any prior label for this person
@@ -831,9 +1536,22 @@ function Home() {
       cur && (cur.kind === "suggested" || cur.kind === "unknown")
         ? cur.suggestions
         : undefined;
+    // Remember the rejected person so we skip them in future voiceprint matches.
+    const prevExcluded =
+      cur?.kind === "unknown" ? (cur.excludedPersonIds ?? []) : [];
+    const rejectedId = cur?.kind === "suggested" ? cur.personId : null;
+    const excludedPersonIds = rejectedId
+      ? [...prevExcluded, rejectedId].filter(
+          (id, i, arr) => arr.indexOf(id) === i,
+        )
+      : prevExcluded;
     const next = {
       ...clusterStatusRef.current,
-      [label]: { kind: "unknown" as const, suggestions: carried },
+      [label]: {
+        kind: "unknown" as const,
+        suggestions: carried,
+        excludedPersonIds,
+      },
     };
     clusterStatusRef.current = next;
     setClusterStatus(next);
@@ -889,6 +1607,80 @@ function Home() {
     }
   }, []);
 
+  const mergeSpeakerClusters = useCallback(
+    async (fromLabel: string, toLabel: string) => {
+      const ok = diarizerRef.current.mergeClusters(fromLabel, toLabel);
+      if (!ok) return;
+      // Drop any pending/aux tracking for the dissolved label.
+      pendingClustersRef.current.delete(fromLabel);
+      pendingVoiceprintMatchRef.current.delete(fromLabel);
+      aiSpeakerIdSentRef.current.delete(fromLabel);
+
+      // Relabel all transcript segments in state and DB.
+      setCommitted((prev) =>
+        prev.map((s) =>
+          s.speaker_label === fromLabel ? { ...s, speaker_label: toLabel } : s,
+        ),
+      );
+      const cid = conversationIdRef.current;
+      if (cid) {
+        const segs = await db.transcript_segments
+          .where("conversation_id")
+          .equals(cid)
+          .and((s) => s.speaker_label === fromLabel)
+          .toArray();
+        for (const seg of segs) {
+          await db.transcript_segments.update(seg.id, {
+            speaker_label: toLabel,
+          });
+        }
+      }
+
+      // Merge cluster status: prefer confirmed over other states.
+      const fromStatus = clusterStatusRef.current[fromLabel];
+      const toStatus = clusterStatusRef.current[toLabel];
+      let newToStatus: ClusterStatus = toStatus ?? { kind: "unknown" as const };
+      if (fromStatus?.kind === "confirmed" && newToStatus.kind !== "confirmed") {
+        newToStatus = fromStatus;
+      }
+      const nextStatus = { ...clusterStatusRef.current };
+      nextStatus[toLabel] = newToStatus;
+      delete nextStatus[fromLabel];
+      clusterStatusRef.current = nextStatus;
+      setClusterStatus(nextStatus);
+
+      // Merge speaker map.
+      const nextMap = { ...speakerMapRef.current };
+      if (nextMap[fromLabel] && !nextMap[toLabel]) {
+        nextMap[toLabel] = nextMap[fromLabel];
+      }
+      delete nextMap[fromLabel];
+      speakerMapRef.current = nextMap;
+      setSpeakerMap(nextMap);
+
+      // Re-persist voiceprint for the merged cluster if it's confirmed.
+      const mergedCluster = diarizerRef.current.get(toLabel);
+      const confirmedPersonId =
+        nextMap[toLabel] ??
+        (newToStatus.kind === "confirmed" ? newToStatus.personId : null);
+      if (mergedCluster && confirmedPersonId) {
+        await recordVoiceprint(confirmedPersonId, mergedCluster.centroid);
+      }
+
+      if (cid) {
+        await db.conversations.update(cid, { speaker_map: nextMap });
+      }
+      setClusterTick((n) => n + 1);
+      toast.success(`Merged ${fromLabel} → ${toLabel}`);
+    },
+    [],
+  );
+
+  const forceNewSpeaker = useCallback(() => {
+    diarizerRef.current.forceNextNew();
+    toast.info("Ready — next utterance will start a new speaker");
+  }, []);
+
   const askSpeakerName = useCallback(
     (label?: string) => {
       // Empty string means "global ask"; null means "no pending ask".
@@ -928,7 +1720,9 @@ function Home() {
           jamesProfile: ctx.jamesProfile,
           people: ctx.people,
           place: ctx.place,
-          model: fastModelRef.current,
+          // Use smart model for expansion — it's a one-shot operation so the
+          // extra latency is acceptable, and quality matters more than speed here.
+          model: smartModelRef.current,
         },
       });
       const spoken = (r.expanded || raw).trim();
@@ -1180,11 +1974,15 @@ function Home() {
             partial={partial}
             clusters={clusterRows}
             people={allPeople}
+            participantIds={selectedPersonIds}
+            participantCount={peopleInConvo.length}
             onConfirmKnown={confirmKnownSpeaker}
             onRejectSuggestion={rejectSuggestion}
             onConfirmNew={confirmNewSpeaker}
             onAskName={askSpeakerName}
             onClearConfirmed={clearConfirmedSpeaker}
+            onMerge={mergeSpeakerClusters}
+            onForceNew={forceNewSpeaker}
           />
         </div>
       </div>
@@ -1249,6 +2047,103 @@ function Home() {
                       </button>
                     );
                   })}
+                </div>
+              )}
+
+              {/* Voice recognition status & inline recording for the people
+                  selected for this conversation. Recording a voice sample here
+                  means the participant-override path can identify them
+                  correctly from their very first utterance — no guessing. */}
+              {selectedPersonIds.length > 0 && (
+                <div className="mt-5 border-t border-border pt-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h4 className="text-sm font-semibold">
+                      Voice recognition
+                    </h4>
+                    <span className="text-xs text-muted-foreground">
+                      Recording a sample makes identification instant & accurate
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {selectedPersonIds.map((pid) => {
+                      const person = allPeople.find((p) => p.id === pid);
+                      if (!person) return null;
+                      const sampleCount = voiceprintStatus[pid];
+                      const hasPrint = sampleCount != null;
+                      const expanded = expandedRecorderPersonId === pid;
+                      return (
+                        <div
+                          key={pid}
+                          className={`rounded-lg border ${
+                            hasPrint
+                              ? "border-emerald-500/30 bg-emerald-500/5"
+                              : "border-amber-500/40 bg-amber-500/5"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 px-3 py-2">
+                            <span className="font-medium">{person.name}</span>
+                            {hasPrint ? (
+                              <span className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
+                                <Check className="size-3" />
+                                Voice learned · {sampleCount} sample
+                                {sampleCount === 1 ? "" : "s"}
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
+                                <AlertCircle className="size-3" />
+                                No voice sample yet
+                              </span>
+                            )}
+                            <button
+                              onClick={() =>
+                                setExpandedRecorderPersonId(
+                                  expanded ? null : pid,
+                                )
+                              }
+                              className="ml-auto flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-secondary"
+                            >
+                              {hasPrint ? (
+                                expanded ? (
+                                  <>
+                                    <ChevronUp className="size-3" /> Hide
+                                  </>
+                                ) : (
+                                  <>
+                                    <Mic className="size-3" /> Re-record
+                                  </>
+                                )
+                              ) : expanded ? (
+                                <>
+                                  <ChevronUp className="size-3" /> Hide
+                                </>
+                              ) : (
+                                <>
+                                  <Mic className="size-3" /> Record now
+                                </>
+                              )}
+                            </button>
+                          </div>
+                          {expanded && (
+                            <div className="border-t border-border px-3 py-3">
+                              <VoiceSampleRecorder personId={pid} />
+                              <div className="mt-2 flex justify-end">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={async () => {
+                                    await refreshVoiceprintStatus();
+                                    setExpandedRecorderPersonId(null);
+                                  }}
+                                >
+                                  Done
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>

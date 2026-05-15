@@ -41,8 +41,24 @@ export type ConversationContext = {
   styleProfileJson?: string;
 };
 
-const RECENT_MEMORY_LIMIT = 8;
-const FOLLOW_UP_LIMIT = 6;
+const RECENT_MEMORY_LIMIT = 4;
+const FOLLOW_UP_LIMIT = 3;
+
+// Session-scoped memo cache: stable parts of the context (people, place, event,
+// profile) rarely change within a conversation, so we skip re-querying IndexedDB
+// on every suggestion refresh unless the participant/place/event set changes.
+type CtxCacheEntry = {
+  fingerprint: string;
+  context: ConversationContext;
+  builtAt: number;
+};
+let _ctxCache: CtxCacheEntry | null = null;
+const CTX_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Invalidate the context cache — call after profile or memory edits. */
+export function invalidateContextCache() {
+  _ctxCache = null;
+}
 
 export async function suggestPeopleAtPlace(placeId: string, limit = 6): Promise<Person[]> {
   const convs = await db.conversations.where("place_id").equals(placeId).toArray();
@@ -142,6 +158,16 @@ export async function buildConversationContext(opts: {
   place?: Place;
   event?: EventItem;
 }): Promise<ConversationContext> {
+  const fingerprint = [
+    [...opts.personIds].sort().join(","),
+    opts.place?.id ?? "",
+    opts.event?.id ?? "",
+  ].join(":");
+  const now = Date.now();
+  if (_ctxCache && _ctxCache.fingerprint === fingerprint && now - _ctxCache.builtAt < CTX_CACHE_TTL_MS) {
+    return _ctxCache.context;
+  }
+
   const profile = await getJamesProfile();
   const styleProfile = await db.style_profile.get("singleton");
 
@@ -224,7 +250,7 @@ export async function buildConversationContext(opts: {
     };
   }
 
-  return {
+  const context: ConversationContext = {
     jamesProfile: {
       name: profile.display_name || "James",
       background: profile.background,
@@ -245,4 +271,6 @@ export async function buildConversationContext(opts: {
     event,
     styleProfileJson: styleProfile?.json,
   };
+  _ctxCache = { fingerprint, context, builtAt: Date.now() };
+  return context;
 }

@@ -289,6 +289,7 @@ const suggestionsSchema = z.object({
   mood: z
     .enum(["normal", "calm", "excited", "sad", "upset", "empathetic", "amused"])
     .optional(),
+  questionAsked: z.boolean().optional(),
 });
 
 const SUGGESTION_CATEGORIES = [
@@ -367,7 +368,11 @@ STRICT PRIVACY & SCOPE RULES — these override everything else:
 - James's general profile (background, interests, humor, life context) is fair game because it is general knowledge about him. But specific stories or sensitive disclosures (health, family struggles, work problems, opinions about others) must NOT be carried into a conversation with someone different unless that exact topic also appears in the present people's own memories/follow-ups.
 - When in doubt about whether something is private, leave it out and prefer a neutral question or in-context reply instead.
 
-Mix categories: direct answers, questions back, follow-ups about past topics with THESE people, planned points, light humor when appropriate, "give me a moment" stalls. Avoid repeating any text in "alreadyShown". Each suggestion must be under 16 words and feel natural to say out loud. Prefer concrete references over generic small talk ONLY when those references come from the present people's own memories/follow-ups.`;
+Each suggestion must be under 16 words and feel natural to say out loud. Avoid repeating any text in "alreadyShown". Prefer concrete references over generic small talk ONLY when those references come from the present people's own memories/follow-ups.`;
+
+    const questionGuidance = data.questionAsked
+      ? "A question was just asked. Prioritise direct, specific answers — include at least 3 answer suggestions. The other slots can be follow-ups or conversation-movers."
+      : "Distribute the 6 suggestions: 2 direct responses to what was just said, 2 conversation-movers (deepen a topic or gently shift it), 1 practical or action suggestion, 1 humorous or light option. Vary tone clearly.";
 
     const user = `${profileBlock}
 ${peopleBlock}
@@ -379,7 +384,8 @@ ${moodBlock}
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
 ${data.alreadyShown?.length ? `# Already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
-Return 10 ranked suggestions in James's voice. Provide a wide variety so James has plenty of useful options to pick from.`;
+${questionGuidance}
+Return exactly 6 suggestions in James's voice.`;
 
     const target = resolveChatTarget(data.model);
     const res = await fetch(target.url, {
@@ -403,7 +409,7 @@ Return 10 ranked suggestions in James's voice. Provide a wide variety so James h
                   suggestions: {
                     type: "array",
                     minItems: 6,
-                    maxItems: 9,
+                    maxItems: 6,
                     items: {
                       type: "object",
                       properties: {
@@ -1060,5 +1066,254 @@ Return 0-3 suggested profile additions.`;
       };
     } catch {
       return { suggestions: [], error: "Parse error" };
+    }
+  });
+
+/* -------------- AI: identify unknown speaker from conversation context -------------- */
+
+const speakerContextSchema = z.object({
+  unknownLabel: z.string(),
+  recentTranscript: z
+    .array(z.object({ speaker: z.string(), text: z.string() }))
+    .max(20),
+  confirmedSpeakers: z.record(z.string()),
+  candidateNames: z.array(z.string()).max(15),
+  model: z.string().optional(),
+});
+
+export const identifySpeakerFromContext = createServerFn({ method: "POST" })
+  .inputValidator((d) => speakerContextSchema.parse(d))
+  .handler(async ({ data }) => {
+    const confirmedList = Object.entries(data.confirmedSpeakers)
+      .map(([lbl, name]) => `${lbl} = ${name}`)
+      .join(", ");
+    const transcriptText = data.recentTranscript
+      .map((s) => `${s.speaker}: ${s.text}`)
+      .join("\n");
+
+    const system = `You are a speaker identification assistant. A conversation is being transcribed in real time. Some speakers are already identified; one cluster label is unknown. Use contextual clues — direct address by name, reply patterns, topic knowledge, name mentions by others, relationship cues — to infer who the unknown speaker likely is. Be conservative: only return a name (from the candidate list) if you are genuinely confident (confidence >= 0.65). Return "unknown" if there is not enough evidence.`;
+
+    const user = `Known speakers: ${confirmedList || "(none yet)"}
+Candidate names (people expected in this conversation): ${data.candidateNames.join(", ") || "(none)"}
+Unknown cluster label: ${data.unknownLabel}
+
+Recent transcript:
+${transcriptText}
+
+Who is ${data.unknownLabel}? Return the most likely candidate name or "unknown", with confidence 0–1.`;
+
+    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-flash-lite");
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_speaker_id",
+              parameters: {
+                type: "object",
+                properties: {
+                  personName: { type: "string" },
+                  confidence: {
+                    type: "number",
+                    minimum: 0,
+                    maximum: 1,
+                  },
+                  reasoning: { type: "string" },
+                },
+                required: ["personName", "confidence"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_speaker_id" } },
+      }),
+    });
+
+    if (!res.ok) {
+      return { personName: null, confidence: 0, reasoning: "", error: `AI error ${res.status}` };
+    }
+    const json = (await res.json()) as any;
+    const argStr =
+      json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) {
+      return { personName: null, confidence: 0, reasoning: "", error: "No tool call" };
+    }
+    try {
+      const parsed = JSON.parse(argStr) as {
+        personName: string;
+        confidence: number;
+        reasoning?: string;
+      };
+      const name = (parsed.personName ?? "").trim();
+      return {
+        personName:
+          name.toLowerCase() === "unknown" || !name ? null : name,
+        confidence: parsed.confidence ?? 0,
+        reasoning: parsed.reasoning ?? "",
+        error: null,
+      };
+    } catch {
+      return { personName: null, confidence: 0, reasoning: "", error: "Parse error" };
+    }
+  });
+
+/* -------------- AI: split a committed transcript chunk by speaker -------------- */
+
+const chunkSplitSchema = z.object({
+  /** Recent committed transcript (last few segments) with speaker names so the
+   *  AI has conversation context to reason about turn-taking. */
+  recentTranscript: z
+    .array(z.object({ speaker: z.string(), text: z.string() }))
+    .max(10),
+  /** The new chunk text that just arrived from Scribe — may contain one or
+   *  more speakers' utterances if Scribe waited too long for VAD silence. */
+  chunkText: z.string(),
+  /** Total word count in the chunk; the AI returns a word index where the
+   *  speaker change happens (1..wordCount-1, or 0 for no split). */
+  wordCount: z.number().int().min(1).max(200),
+  /** Candidate speaker names (declared participants for this conversation). */
+  candidateNames: z.array(z.string()).max(10),
+  /** Confirmed speakers in the session so far, label -> name. */
+  confirmedSpeakers: z.record(z.string()),
+  model: z.string().optional(),
+});
+
+export const aiSplitTranscriptChunk = createServerFn({ method: "POST" })
+  .inputValidator((d) => chunkSplitSchema.parse(d))
+  .handler(async ({ data }) => {
+    const confirmedList = Object.entries(data.confirmedSpeakers)
+      .map(([lbl, name]) => `${lbl} = ${name}`)
+      .join(", ");
+    const transcriptText = data.recentTranscript
+      .map((s) => `${s.speaker}: ${s.text}`)
+      .join("\n");
+
+    const system = `You analyse short transcribed audio chunks in a multi-speaker conversation to detect when ONE chunk actually contains TWO speakers — for example, a question immediately followed by an answer from a different person.
+
+Given recent context and a new chunk, decide:
+- If the chunk is clearly a single speaker's utterance → return splitAtWord = 0.
+- If the chunk has TWO speakers (e.g. one ends with "?" then someone else responds; or a clear topic/perspective shift mid-chunk) → return the 1-indexed word position where the second speaker starts (1 < splitAtWord < wordCount).
+
+Be conservative: only split when there is strong textual evidence. Natural pauses or list-like enumerations from one speaker are NOT splits. Also infer who each side is (from candidate names and conversation context) when possible.`;
+
+    const user = `Confirmed speakers so far: ${confirmedList || "(none yet)"}
+Candidate names (people in this conversation): ${data.candidateNames.join(", ") || "(none)"}
+
+Recent transcript (for context):
+${transcriptText || "(none — this is the first utterance)"}
+
+New chunk (${data.wordCount} words):
+"${data.chunkText}"
+
+Does this chunk contain two speakers? If yes, at which word does the second speaker start?`;
+
+    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-flash-lite");
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_split_decision",
+              parameters: {
+                type: "object",
+                properties: {
+                  splitAtWord: {
+                    type: "integer",
+                    minimum: 0,
+                    maximum: 200,
+                    description:
+                      "Word index (1-based) where second speaker starts, or 0 if no split",
+                  },
+                  confidence: { type: "number", minimum: 0, maximum: 1 },
+                  beforeSpeaker: {
+                    type: "string",
+                    description: "Best-guess name of speaker before the split (from candidates), or empty",
+                  },
+                  afterSpeaker: {
+                    type: "string",
+                    description: "Best-guess name of speaker after the split (from candidates), or empty",
+                  },
+                  reasoning: { type: "string" },
+                },
+                required: ["splitAtWord", "confidence"],
+              },
+            },
+          },
+        ],
+        tool_choice: {
+          type: "function",
+          function: { name: "emit_split_decision" },
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      return {
+        splitAtWord: 0,
+        confidence: 0,
+        beforeSpeaker: null,
+        afterSpeaker: null,
+        reasoning: "",
+        error: `AI error ${res.status}`,
+      };
+    }
+    const json = (await res.json()) as any;
+    const argStr =
+      json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) {
+      return {
+        splitAtWord: 0,
+        confidence: 0,
+        beforeSpeaker: null,
+        afterSpeaker: null,
+        reasoning: "",
+        error: "No tool call",
+      };
+    }
+    try {
+      const parsed = JSON.parse(argStr) as {
+        splitAtWord: number;
+        confidence: number;
+        beforeSpeaker?: string;
+        afterSpeaker?: string;
+        reasoning?: string;
+      };
+      const clean = (s: string | undefined): string | null =>
+        !s || s.trim() === "" || s.toLowerCase() === "unknown"
+          ? null
+          : s.trim();
+      return {
+        splitAtWord: Math.max(0, Math.min(data.wordCount, parsed.splitAtWord ?? 0)),
+        confidence: parsed.confidence ?? 0,
+        beforeSpeaker: clean(parsed.beforeSpeaker),
+        afterSpeaker: clean(parsed.afterSpeaker),
+        reasoning: parsed.reasoning ?? "",
+        error: null,
+      };
+    } catch {
+      return {
+        splitAtWord: 0,
+        confidence: 0,
+        beforeSpeaker: null,
+        afterSpeaker: null,
+        reasoning: "",
+        error: "Parse error",
+      };
     }
   });

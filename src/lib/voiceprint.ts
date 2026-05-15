@@ -13,6 +13,11 @@ import Meyda from "meyda";
 import { db, MFCC_COEFFS, type Voiceprint } from "./db";
 
 const FRAME = 512;
+
+/** Only update a cluster's running centroid when the utterance MFCC is at
+ *  least this similar to the existing centroid. Keeps outlier utterances from
+ *  drifting the centroid away from a confirmed speaker's true voice. */
+export const CENTROID_UPDATE_THRESHOLD = 0.76;
 const RMS_GATE = 0.012; // skip near-silent frames
 
 // Meyda is configured globally; set defaults once.
@@ -30,6 +35,46 @@ export class VoiceCapture {
   startTimeMs = 0;
   sampleRate = 16000;
   private maxSamples = 0;
+  private shiftTimer: ReturnType<typeof setInterval> | null = null;
+  private shiftPrevMfcc: number[] | null = null;
+
+  /** Periodically computes MFCC on the last ~500ms of audio. When the
+   *  cosine similarity to the previous window drops below `threshold`,
+   *  fires `onShift(Date.now())` — a likely speaker change point. Used
+   *  to split Scribe commits that span multiple speakers without a pause. */
+  startShiftMonitor(
+    onShift: (timestampMs: number) => void,
+    options: { intervalMs?: number; windowSec?: number; threshold?: number } = {},
+  ) {
+    const intervalMs = options.intervalMs ?? 200;
+    const windowSec = options.windowSec ?? 0.5;
+    const threshold = options.threshold ?? 0.68;
+    this.stopShiftMonitor();
+    this.shiftPrevMfcc = null;
+    this.shiftTimer = setInterval(() => {
+      if (!this.ctx || this.bufferLen < this.sampleRate * windowSec) return;
+      try {
+        const pcm = this.recentSlice(windowSec, 0);
+        const mfcc = computeMfccMean(pcm, this.sampleRate);
+        if (!mfcc) return;
+        if (this.shiftPrevMfcc) {
+          const sim = cosineSim(mfcc, this.shiftPrevMfcc);
+          if (sim < threshold) {
+            try { onShift(Date.now()); } catch {}
+          }
+        }
+        this.shiftPrevMfcc = mfcc;
+      } catch {}
+    }, intervalMs);
+  }
+
+  stopShiftMonitor() {
+    if (this.shiftTimer) {
+      clearInterval(this.shiftTimer);
+      this.shiftTimer = null;
+    }
+    this.shiftPrevMfcc = null;
+  }
 
   async start() {
     if (this.ctx) return;
@@ -119,6 +164,7 @@ export class VoiceCapture {
   }
 
   stop() {
+    this.stopShiftMonitor();
     try {
       this.processor?.disconnect();
     } catch {}
@@ -229,9 +275,12 @@ export function bestMatch(
   vector: number[],
   prints: Voiceprint[],
   threshold = 0.86,
+  excludedPersonIds?: ReadonlySet<string>,
 ): { print: Voiceprint; sim: number } | null {
   let best: { print: Voiceprint; sim: number } | null = null;
   for (const p of prints) {
+    if (p.centroid.length !== vector.length) continue;
+    if (excludedPersonIds?.has(p.person_id)) continue;
     const sim = cosineSim(vector, p.centroid);
     if (!best || sim > best.sim) best = { print: p, sim };
   }
@@ -250,10 +299,19 @@ export function bestMatch(
  */
 export type Cluster = { label: string; centroid: number[]; count: number };
 
+type ClusterEntry = { centroid: number[]; count: number; spread: number };
+
 export class Diarizer {
-  private clustersMap = new Map<string, { centroid: number[]; count: number }>();
+  private clustersMap = new Map<string, ClusterEntry>();
   private counter = 0;
-  constructor(public mergeThreshold = 0.82) {}
+  private _forceNewOnNext = false;
+  // mergeThreshold is the baseline; actual threshold per cluster adapts to its spread.
+  // 0.87 is intentionally above the typical inter-speaker MFCC cosine similarity
+  // range (0.50–0.80) so that distinct voices reliably get their own cluster.
+  // Same-speaker variation (different mic distance, emotion, noise) typically
+  // stays in 0.78–0.95 — ghost-collapse and pending hysteresis at the caller
+  // layer handle one-off same-speaker ghosts that fall below 0.87.
+  constructor(public mergeThreshold = 0.87) {}
 
   reset() {
     this.clustersMap.clear();
@@ -262,6 +320,10 @@ export class Diarizer {
 
   /** Assign an MFCC mean to a cluster (existing or new). Returns the label. */
   assign(mfcc: number[]): { label: string; sim: number; isNew: boolean } {
+    if (this._forceNewOnNext) {
+      this._forceNewOnNext = false;
+      return this.assignNew(mfcc);
+    }
     let bestLabel: string | null = null;
     let bestSim = -1;
     for (const [label, cluster] of this.clustersMap.entries()) {
@@ -273,17 +335,129 @@ export class Diarizer {
     }
     let label: string;
     let isNew = false;
-    if (bestLabel && bestSim >= this.mergeThreshold) {
-      label = bestLabel;
+    if (bestLabel) {
+      const threshold = this.thresholdFor(bestLabel);
+      if (bestSim >= threshold) {
+        label = bestLabel;
+      } else {
+        this.counter += 1;
+        label = `Speaker ${this.counter}`;
+        isNew = true;
+      }
     } else {
       this.counter += 1;
       label = `Speaker ${this.counter}`;
       isNew = true;
     }
+    // Centroid guard: only update the running centroid when the utterance is
+    // sufficiently similar to the current centroid. This prevents drift from
+    // noisy or misassigned utterances while still assigning the cluster label.
+    const cluster = this.clustersMap.get(label);
+    const preMergeSim = cluster ? cosineSim(mfcc, cluster.centroid) : 1.0;
+    if (preMergeSim >= CENTROID_UPDATE_THRESHOLD) {
+      this.mergeUtterance(label, mfcc);
+    }
+    return { label, sim: bestSim, isNew };
+  }
+
+  /** Preview which cluster an MFCC would be assigned to, without mutating state. */
+  peek(mfcc: number[]): { label: string | null; sim: number; wouldMerge: boolean } {
+    let bestLabel: string | null = null;
+    let bestSim = -1;
+    for (const [label, cluster] of this.clustersMap.entries()) {
+      const sim = cosineSim(mfcc, cluster.centroid);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestLabel = label;
+      }
+    }
+    if (!bestLabel) return { label: null, sim: -1, wouldMerge: false };
+    const threshold = this.thresholdFor(bestLabel);
+    return { label: bestLabel, sim: bestSim, wouldMerge: bestSim >= threshold };
+  }
+
+  /** Force-create a new cluster seeded by this MFCC. Use when textual evidence
+   *  (e.g. self-introduction) strongly suggests a different speaker even if
+   *  the MFCC superficially resembles an existing cluster. */
+  assignNew(mfcc: number[]): { label: string; sim: number; isNew: true } {
+    this.counter += 1;
+    const label = `Speaker ${this.counter}`;
+    this.clustersMap.set(label, { centroid: mfcc.slice(), count: 1, spread: 0 });
+    return { label, sim: 1, isNew: true };
+  }
+
+  /** Compute the adaptive merge threshold for a given cluster.
+   *  - With <3 samples we use the conservative baseline (0.87 by default) —
+   *    spread isn't meaningful yet, so don't relax.
+   *  - With ≥3 samples we relax for tight clusters and tighten for broad ones,
+   *    but always stay within [0.83, 0.93]. */
+  private thresholdFor(label: string): number {
+    const c = this.clustersMap.get(label);
+    if (!c || c.count < 3) return this.mergeThreshold;
+    const adjusted = this.mergeThreshold + (c.spread - 0.08) * 0.6;
+    return Math.min(0.93, Math.max(0.83, adjusted));
+  }
+
+  /** Force-assign an MFCC to a specific cluster label. If the cluster doesn't
+   *  exist, create it seeded with this MFCC. Otherwise update its centroid
+   *  with the new sample (subject to the centroid update guard).
+   *
+   *  Use this when external evidence (e.g. a participant's stored voiceprint)
+   *  determines the cluster identity more reliably than in-session MFCC
+   *  similarity. Returns the resolved label and the cluster's prior similarity
+   *  for caller bookkeeping. */
+  forceAssign(label: string, mfcc: number[]): { label: string; sim: number; isNew: boolean } {
+    const existing = this.clustersMap.get(label);
+    if (!existing) {
+      this.clustersMap.set(label, { centroid: mfcc.slice(), count: 1, spread: 0 });
+      return { label, sim: 1, isNew: true };
+    }
+    const preMergeSim = cosineSim(mfcc, existing.centroid);
+    if (preMergeSim >= CENTROID_UPDATE_THRESHOLD) {
+      this.mergeUtterance(label, mfcc);
+    }
+    return { label, sim: preMergeSim, isNew: false };
+  }
+
+  private mergeUtterance(label: string, mfcc: number[]) {
     const prev = this.clustersMap.get(label);
     const merged = mergeIntoCentroid(prev?.centroid, prev?.count ?? 0, mfcc);
-    this.clustersMap.set(label, merged);
-    return { label, sim: bestSim, isNew };
+    const simToCentroid = prev ? cosineSim(mfcc, prev.centroid) : 1.0;
+    const prevCount = prev?.count ?? 0;
+    const newSpread = prevCount > 0
+      ? ((prev!.spread * prevCount) + (1 - simToCentroid)) / (prevCount + 1)
+      : 0;
+    this.clustersMap.set(label, { centroid: merged.centroid, count: merged.count, spread: newSpread });
+  }
+
+  /** Mark that the next `assign()` call should create a new cluster
+   *  regardless of cosine similarity (e.g. James signals a new speaker
+   *  is about to talk). */
+  forceNextNew() {
+    this._forceNewOnNext = true;
+  }
+
+  /** Merge cluster `fromLabel` into `toLabel` (weighted centroid blend).
+   *  Returns false if either label doesn't exist. After merging, all
+   *  utterances previously labelled `fromLabel` should be relabelled
+   *  `toLabel` by the caller. */
+  mergeClusters(fromLabel: string, toLabel: string): boolean {
+    const from = this.clustersMap.get(fromLabel);
+    const to = this.clustersMap.get(toLabel);
+    if (!from || !to) return false;
+    const totalCount = from.count + to.count;
+    const merged = to.centroid.map((v, i) =>
+      (v * to.count + from.centroid[i] * from.count) / totalCount,
+    );
+    const newSpread =
+      (to.spread * to.count + from.spread * from.count) / totalCount;
+    this.clustersMap.set(toLabel, {
+      centroid: merged,
+      count: totalCount,
+      spread: newSpread,
+    });
+    this.clustersMap.delete(fromLabel);
+    return true;
   }
 
   /** Snapshot of all live clusters. */

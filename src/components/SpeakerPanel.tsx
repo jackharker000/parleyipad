@@ -1,19 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, X, HelpCircle, Mic2, Pencil } from "lucide-react";
+import { Check, X, HelpCircle, Mic2, Pencil, GitMerge, UserPlus, Brain } from "lucide-react";
 import type { Person, TranscriptSegment } from "@/lib/db";
 
 export type SuggestedName = {
   name: string;
-  source: "self-intro" | "ask-reply" | "manual";
+  source: "self-intro" | "ask-reply" | "manual" | "context-ai";
 };
 
 export type ClusterStatus =
-  | { kind: "unknown"; suggestions?: SuggestedName[] }
+  | { kind: "unknown"; suggestions?: SuggestedName[]; excludedPersonIds?: string[] }
   | {
       kind: "suggested";
       personId: string;
       sim: number;
       suggestions?: SuggestedName[];
+      excludedPersonIds?: string[];
     }
   | { kind: "confirmed"; personId: string };
 
@@ -30,21 +31,30 @@ export function SpeakerPanel({
   partial,
   clusters,
   people,
+  participantIds,
+  participantCount,
   onConfirmKnown,
   onRejectSuggestion,
   onConfirmNew,
   onAskName,
   onClearConfirmed,
+  onMerge,
+  onForceNew,
 }: {
   segments: TranscriptSegment[];
   partial: string;
   clusters: ClusterRow[];
   people: Person[];
+  /** IDs of all people declared as "in the room" for this conversation. */
+  participantIds?: string[];
+  participantCount?: number;
   onConfirmKnown: (label: string, personId: string) => void;
   onRejectSuggestion: (label: string) => void;
   onConfirmNew: (label: string, name: string) => void;
   onAskName: (label?: string) => void;
   onClearConfirmed: (label: string) => void;
+  onMerge: (fromLabel: string, toLabel: string) => void;
+  onForceNew: () => void;
 }) {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -61,7 +71,12 @@ export function SpeakerPanel({
     if (c?.status.kind === "confirmed") {
       return peopleById.get(c.status.personId)?.name ?? label;
     }
-    return label;
+    if (c) return label;
+    // Cluster is hidden (pending hysteresis) — show a neutral marker so the
+    // transcript line still has a speaker indicator. When the cluster is
+    // eventually promoted (or merged into a confirmed speaker) the proper
+    // name appears retroactively.
+    return "…";
   }
 
   return (
@@ -102,16 +117,58 @@ export function SpeakerPanel({
           <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Speakers
           </h2>
-          <button
-            onClick={() => onAskName()}
-            title="Ask the room to introduce themselves"
-            className="flex items-center gap-1 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs text-foreground hover:bg-secondary"
-          >
-            <HelpCircle className="size-3" /> Ask
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onForceNew}
+              title="Next utterance will start a new speaker cluster"
+              className="flex items-center gap-1 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs text-foreground hover:bg-secondary"
+            >
+              <UserPlus className="size-3" /> New
+            </button>
+            <button
+              onClick={() => onAskName()}
+              title="Ask the room to introduce themselves"
+              className="flex items-center gap-1 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs text-foreground hover:bg-secondary"
+            >
+              <HelpCircle className="size-3" /> Ask
+            </button>
+          </div>
         </div>
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
-          {clusters.length === 0 && (
+          {participantCount != null && participantCount > 0 && clusters.length > participantCount && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-800 dark:text-amber-300">
+              You declared {participantCount} {participantCount === 1 ? "person" : "people"} — confirm who's who to improve accuracy.
+            </div>
+          )}
+          {/* Participants declared for this conversation who haven't spoken yet */}
+          {(participantIds ?? [])
+            .filter((pid) => {
+              // Hide once they're confirmed or visible as a cluster
+              const alreadyConfirmed = clusters.some(
+                (c) => c.status.kind === "confirmed" && c.status.personId === pid,
+              );
+              const alreadySuggested = clusters.some(
+                (c) =>
+                  (c.status.kind === "suggested" || c.status.kind === "unknown") &&
+                  (c.status as any).personId === pid,
+              );
+              return !alreadyConfirmed && !alreadySuggested;
+            })
+            .map((pid) => {
+              const person = peopleById.get(pid);
+              if (!person) return null;
+              return (
+                <div
+                  key={pid}
+                  className="flex items-center gap-2 rounded-xl border border-dashed border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+                >
+                  <span className="size-2 rounded-full bg-muted-foreground/40" />
+                  <span className="font-medium">{person.name}</span>
+                  <span className="ml-auto italic">hasn't spoken yet</span>
+                </div>
+              );
+            })}
+          {clusters.length === 0 && (participantIds ?? []).length === 0 && (
             <p className="text-xs italic text-muted-foreground">
               Voices will appear here as they speak.
             </p>
@@ -120,12 +177,15 @@ export function SpeakerPanel({
             <ClusterCard
               key={c.label}
               cluster={c}
+              allClusters={clusters}
               people={people}
+              participantIds={participantIds}
               onConfirmKnown={onConfirmKnown}
               onRejectSuggestion={onRejectSuggestion}
               onConfirmNew={onConfirmNew}
               onAskName={onAskName}
               onClearConfirmed={onClearConfirmed}
+              onMerge={onMerge}
             />
           ))}
         </div>
@@ -136,36 +196,114 @@ export function SpeakerPanel({
 
 function ClusterCard({
   cluster,
+  allClusters,
   people,
+  participantIds,
   onConfirmKnown,
   onRejectSuggestion,
   onConfirmNew,
   onAskName,
   onClearConfirmed,
+  onMerge,
 }: {
   cluster: ClusterRow;
+  allClusters: ClusterRow[];
   people: Person[];
+  participantIds?: string[];
   onConfirmKnown: (label: string, personId: string) => void;
   onRejectSuggestion: (label: string) => void;
   onConfirmNew: (label: string, name: string) => void;
   onAskName: (label?: string) => void;
   onClearConfirmed: (label: string) => void;
+  onMerge: (fromLabel: string, toLabel: string) => void;
 }) {
+  // Participants who are declared for this conversation but not yet confirmed
+  // for any cluster. These appear as one-tap "quick identify" chips on
+  // unknown clusters so the user can assign them in a single tap.
+  const availableParticipants = (participantIds ?? [])
+    .filter((pid) => {
+      const taken = allClusters.some(
+        (c) =>
+          c.label !== cluster.label &&
+          c.status.kind === "confirmed" &&
+          c.status.personId === pid,
+      );
+      return !taken;
+    })
+    .map((pid) => people.find((p) => p.id === pid))
+    .filter((p): p is Person => Boolean(p));
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
+  const [showMerge, setShowMerge] = useState(false);
 
-  // Reset edit state when status flips
   useEffect(() => {
     setEditing(false);
     setName("");
+    setShowMerge(false);
   }, [cluster.status.kind]);
+
+  const mergeTargets = allClusters.filter((c) => c.label !== cluster.label);
 
   const sourceLabel = (s: SuggestedName["source"]) =>
     s === "self-intro"
       ? "heard self-introduction"
       : s === "ask-reply"
         ? "answered 'who am I speaking with?'"
-        : "added manually";
+        : s === "context-ai"
+          ? "identified by AI from context"
+          : "added manually";
+
+  const SuggestionIcon = ({ source }: { source: SuggestedName["source"] }) =>
+    source === "context-ai" ? <Brain className="inline size-2.5 mr-0.5 text-violet-500" /> : null;
+
+  const MergeSection = () =>
+    mergeTargets.length === 0 ? null : showMerge ? (
+      <div className="mt-1.5 flex items-center gap-1">
+        <GitMerge className="size-3 shrink-0 text-muted-foreground" />
+        <select
+          className="min-w-0 flex-1 rounded border border-input bg-background px-1 py-0.5 text-[11px]"
+          defaultValue=""
+          onChange={(e) => {
+            const target = e.target.value;
+            if (target) {
+              onMerge(cluster.label, target);
+              setShowMerge(false);
+            }
+          }}
+        >
+          <option value="" disabled>
+            Merge into…
+          </option>
+          {mergeTargets.map((t) => {
+            const confirmedPerson =
+              t.status.kind === "confirmed"
+                ? people.find((p) => p.id === t.status.personId)
+                : null;
+            return (
+              <option key={t.label} value={t.label}>
+                {confirmedPerson ? `${confirmedPerson.name} (${t.label})` : t.label} ·{" "}
+                {t.count}
+              </option>
+            );
+          })}
+        </select>
+        <button
+          onClick={() => setShowMerge(false)}
+          className="rounded p-0.5 hover:bg-secondary"
+          aria-label="Cancel merge"
+        >
+          <X className="size-3" />
+        </button>
+      </div>
+    ) : (
+      <button
+        onClick={() => setShowMerge(true)}
+        className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+        title="Merge this cluster into another"
+      >
+        <GitMerge className="size-3" /> Merge into…
+      </button>
+    );
 
   // ---------- Confirmed ----------
   if (cluster.status.kind === "confirmed" && !editing) {
@@ -188,6 +326,7 @@ function ClusterCard({
             <Pencil className="size-3.5 text-emerald-700" />
           </button>
         </div>
+        <MergeSection />
       </div>
     );
   }
@@ -272,6 +411,8 @@ function ClusterCard({
     const status = cluster.status;
     const person = people.find((p) => p.id === status.personId);
     const suggestions = status.suggestions ?? [];
+    const confidenceLabel =
+      status.sim >= 0.9 ? "Sounds like" : status.sim >= 0.83 ? "Probably" : "Maybe";
     return (
       <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-2 text-sm">
         <div className="flex items-center gap-1.5">
@@ -282,7 +423,8 @@ function ClusterCard({
           </span>
         </div>
         <p className="mt-1 text-xs">
-          Sounds like <span className="font-semibold">{person?.name ?? "?"}</span>
+          {confidenceLabel}{" "}
+          <span className="font-semibold">{person?.name ?? "?"}</span>
         </p>
         <div className="mt-1.5 flex gap-1.5">
           <button
@@ -310,11 +452,13 @@ function ClusterCard({
                 title={sourceLabel(s.source)}
                 className="rounded-full border border-amber-500/40 bg-background px-2 py-0.5 text-[11px] hover:bg-amber-500/20"
               >
+                <SuggestionIcon source={s.source} />
                 {s.name}
               </button>
             ))}
           </div>
         )}
+        <MergeSection />
       </div>
     );
   }
@@ -322,6 +466,11 @@ function ClusterCard({
   // ---------- Unknown ----------
   if (cluster.status.kind !== "unknown") return null;
   const suggestions = cluster.status.suggestions ?? [];
+  const excludedIds = new Set(cluster.status.excludedPersonIds ?? []);
+  // Filter out participants the user has already explicitly rejected for this cluster
+  const quickIdentifyOptions = availableParticipants.filter(
+    (p) => !excludedIds.has(p.id),
+  );
   return (
     <div className="rounded-xl border border-border bg-secondary/40 p-2 text-sm">
       <div className="flex items-center gap-1.5">
@@ -339,6 +488,26 @@ function ClusterCard({
           <HelpCircle className="size-3.5" />
         </button>
       </div>
+      {/* One-tap quick-identify for declared participants who aren't yet
+          confirmed elsewhere. Tap the matching name to assign this cluster. */}
+      {quickIdentifyOptions.length > 0 && (
+        <div className="mt-1.5">
+          <p className="text-[10px] text-muted-foreground mb-1">
+            Who's this?
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {quickIdentifyOptions.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => onConfirmKnown(cluster.label, p.id)}
+                className="rounded-full border-2 border-primary/50 bg-primary/15 px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-primary/25"
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {suggestions.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {suggestions.map((s) => (
@@ -348,6 +517,7 @@ function ClusterCard({
               title={sourceLabel(s.source)}
               className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium hover:bg-primary/20"
             >
+              <SuggestionIcon source={s.source} />
               {s.name} ✓
             </button>
           ))}
@@ -379,6 +549,7 @@ function ClusterCard({
           Save
         </button>
       </div>
+      <MergeSection />
     </div>
   );
 }

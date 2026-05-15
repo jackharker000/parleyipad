@@ -7,7 +7,7 @@ import {
   recordVoiceprint,
   deleteVoiceprint,
 } from "@/lib/voiceprint";
-import { db, type Voiceprint } from "@/lib/db";
+import { db, type Voiceprint, type VoiceprintContribution } from "@/lib/db";
 import { Button } from "@/components/ui/button";
 
 const MIN_SECS = 3;
@@ -86,8 +86,20 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
       }
       if (replaceModeRef.current) {
         await deleteVoiceprint(personId);
+        await db.voiceprint_contributions
+          .where("person_id")
+          .equals(personId)
+          .delete();
       }
       await recordVoiceprint(personId, mfcc);
+      await db.voiceprint_contributions.add({
+        id: crypto.randomUUID(),
+        person_id: personId,
+        source: "manual",
+        mfcc: mfcc.slice(),
+        ts: Date.now(),
+        preview_text: `Manual sample (${duration.toFixed(1)}s)`,
+      });
       toast.success("Voice sample saved");
       await refresh();
     } catch (e: any) {
@@ -100,6 +112,10 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
   const remove = async () => {
     if (!confirm("Delete this person's voice sample?")) return;
     await deleteVoiceprint(personId);
+    await db.voiceprint_contributions
+      .where("person_id")
+      .equals(personId)
+      .delete();
     await refresh();
     toast.success("Voiceprint deleted");
   };
@@ -167,6 +183,114 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
           {MAX_SECS} seconds. The recording stays on this device.
         </p>
       )}
+      {/* Auto-learned contributions */}
+      <VoiceprintContributions personId={personId} onChanged={refresh} />
+    </div>
+  );
+}
+
+function VoiceprintContributions({
+  personId,
+  onChanged,
+}: {
+  personId: string;
+  onChanged: () => void | Promise<void>;
+}) {
+  const [items, setItems] = useState<VoiceprintContribution[]>([]);
+
+  const refresh = async () => {
+    const list = await db.voiceprint_contributions
+      .where("person_id")
+      .equals(personId)
+      .reverse()
+      .sortBy("ts");
+    setItems(list);
+  };
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personId]);
+
+  // Remove this contribution and recompute the centroid from the remaining ones.
+  const remove = async (id: string) => {
+    if (!confirm("Remove this contribution from the voice profile?")) return;
+    await db.voiceprint_contributions.delete(id);
+    const remaining = await db.voiceprint_contributions
+      .where("person_id")
+      .equals(personId)
+      .toArray();
+    if (remaining.length === 0) {
+      await deleteVoiceprint(personId);
+    } else {
+      // Recompute centroid as the simple mean of remaining MFCCs of the same dim.
+      const dim = remaining[0].mfcc.length;
+      const compatible = remaining.filter((r) => r.mfcc.length === dim);
+      const sum = new Array(dim).fill(0);
+      for (const c of compatible) {
+        for (let i = 0; i < dim; i++) sum[i] += c.mfcc[i];
+      }
+      const centroid = sum.map((v) => v / compatible.length);
+      await db.voiceprints.put({
+        id: personId,
+        person_id: personId,
+        centroid,
+        sample_count: compatible.length,
+        updated_at: Date.now(),
+      });
+    }
+    await refresh();
+    await onChanged();
+    toast.success("Removed contribution");
+  };
+
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-1.5 rounded-md border border-border bg-secondary/30 p-2">
+      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Voice contributions ({items.length})
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Remove any entry that isn't actually them — the voice profile will be
+        rebuilt from the rest.
+      </p>
+      <ul className="space-y-1">
+        {items.slice(0, 20).map((c) => (
+          <li
+            key={c.id}
+            className="flex items-start justify-between gap-2 rounded border border-border bg-background px-2 py-1.5 text-xs"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                    c.source === "manual"
+                      ? "bg-emerald-500/20 text-emerald-700"
+                      : "bg-amber-500/20 text-amber-800"
+                  }`}
+                >
+                  {c.source === "manual" ? "manual" : "auto"}
+                </span>
+                <span className="text-muted-foreground">
+                  {new Date(c.ts).toLocaleString()}
+                </span>
+              </div>
+              {c.preview_text && (
+                <p className="mt-0.5 truncate italic">"{c.preview_text}"</p>
+              )}
+            </div>
+            <Button
+              onClick={() => remove(c.id)}
+              size="sm"
+              variant="ghost"
+              className="h-auto px-1.5 py-1 text-destructive"
+              title="This isn't them — remove this contribution"
+            >
+              <Trash2 className="size-3" />
+            </Button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

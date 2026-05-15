@@ -3,6 +3,23 @@ import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useServerFn } from "@tanstack/react-start";
 import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   ArrowLeft,
   Volume2,
   Plus,
@@ -233,7 +250,6 @@ function SystemTab() {
   }
 
   async function clearAllData() {
-    if (!confirm("Delete ALL local data? This cannot be undone.")) return;
     await Promise.all([
       db.conversations.clear(),
       db.transcript_segments.clear(),
@@ -262,192 +278,206 @@ function SystemTab() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <AccountCard />
-      <Card className="p-6">
-        <h2 className="text-lg font-semibold">Voice</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Choose how the app speaks suggestions out loud. Selection is
-          remembered across sessions.
-        </p>
-        <div className="mt-4 flex items-center gap-3">
-          <Select
-            value={settings.voice_id}
-            onValueChange={handleVoiceChange}
-            disabled={loadingVoices}
-          >
-            <SelectTrigger className="h-12 flex-1 text-base">
-              <SelectValue placeholder="Select a voice" />
-            </SelectTrigger>
-            <SelectContent>
-              {mergedVoices.map((v) => (
-                <SelectItem key={v.voice_id} value={v.voice_id}>
-                  {v.name}
-                  {v.labels?.accent ? ` · ${v.labels.accent}` : ""}
-                  {v.labels?.gender ? ` · ${v.labels.gender}` : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button
-            variant="secondary"
-            className="h-12"
-            onClick={previewVoice}
-            disabled={previewing}
-          >
-            <Volume2 className="size-5" />
-            {previewing ? "…" : "Preview"}
-          </Button>
-        </div>
-
-        <VoiceDesignerPanel
-          onSaved={(v) => {
-            addCustomVoice(v);
-            handleVoiceChange(v.voice_id);
-          }}
-        />
-      </Card>
-
-      <Card className="p-6">
-        <h2 className="text-lg font-semibold">Location</h2>
-        <div className="mt-3 flex items-center justify-between">
-          <div>
-            <Label className="text-base">Use GPS for context</Label>
-            <p className="text-sm text-muted-foreground">
-              Auto-detects places (e.g. library, café) to tailor suggestions.
+      <Accordion type="multiple" defaultValue={[]} className="space-y-2">
+        <AccordionItem value="voice" className="rounded-xl border border-border bg-card px-5">
+          <AccordionTrigger className="text-base font-semibold hover:no-underline">
+            <span className="flex items-center gap-2"><Volume2 className="size-4" /> Voice</span>
+          </AccordionTrigger>
+          <AccordionContent className="pb-5">
+            <p className="mb-4 text-sm text-muted-foreground">
+              Choose how the app speaks suggestions out loud. Selection is remembered across sessions.
             </p>
-          </div>
-          <Switch
-            checked={settings.gps_enabled}
-            onCheckedChange={(v) =>
-              updateSettings({ gps_enabled: v }).then(() =>
-                toast.success(v ? "GPS on" : "GPS off"),
-              )
-            }
-          />
-        </div>
-      </Card>
+            <div className="flex items-center gap-3">
+              <Select
+                value={settings.voice_id}
+                onValueChange={handleVoiceChange}
+                disabled={loadingVoices}
+              >
+                <SelectTrigger className="h-12 flex-1 text-base">
+                  <SelectValue placeholder="Select a voice" />
+                </SelectTrigger>
+                <SelectContent>
+                  {mergedVoices.map((v) => (
+                    <SelectItem key={v.voice_id} value={v.voice_id}>
+                      {v.name}
+                      {v.labels?.accent ? ` · ${v.labels.accent}` : ""}
+                      {v.labels?.gender ? ` · ${v.labels.gender}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="secondary"
+                className="h-12"
+                onClick={previewVoice}
+                disabled={previewing}
+              >
+                <Volume2 className="size-5" />
+                {previewing ? "…" : "Preview"}
+              </Button>
+            </div>
+            <VoiceDesignerPanel
+              onSaved={(v) => {
+                addCustomVoice(v);
+                handleVoiceChange(v.voice_id);
+              }}
+            />
+          </AccordionContent>
+        </AccordionItem>
 
-      <Card className="p-6">
-        <h2 className="text-lg font-semibold">AI models</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Two tiers: a <strong>fast</strong> model for live suggestions and
-          clarify-and-speak (runs constantly, needs to be snappy), and a{" "}
-          <strong>smart</strong> model for end-of-conversation summary, memory
-          extraction, event prep and reply drafts (runs once, quality matters
-          more than speed). "Your key" options use your own OpenAI API key.
-        </p>
+        <AccordionItem value="ai" className="rounded-xl border border-border bg-card px-5">
+          <AccordionTrigger className="text-base font-semibold hover:no-underline">
+            <span className="flex items-center gap-2"><SlidersHorizontal className="size-4" /> AI models</span>
+          </AccordionTrigger>
+          <AccordionContent className="pb-5">
+            <p className="mb-4 text-sm text-muted-foreground">
+              <strong>Fast</strong> model runs live for every suggestion — speed matters. <strong>Smart</strong> model runs once at the end of conversations and for drafts — quality matters. "Your key" options use your own OpenAI API key.
+            </p>
+            <div>
+              <div className="text-sm font-medium">Live suggestions (fast)</div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Powers suggestion chips. James will feel every extra second.
+              </p>
+              <Select
+                value={settings.fast_model ?? settings.suggestion_model ?? "google/gemini-2.5-flash-lite"}
+                onValueChange={(v) =>
+                  updateSettings({ fast_model: v, suggestion_model: v, expand_model: v }).then(() =>
+                    toast.success("Fast model updated"),
+                  )
+                }
+              >
+                <SelectTrigger className="mt-2 h-12 text-base">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MODEL_OPTIONS.map((m) => (
+                    <SelectItem key={`fast-${m.id}`} value={m.id}>
+                      {m.label} — <span className="text-muted-foreground">{m.hint}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="mt-5">
+              <div className="text-sm font-medium">Memory, summary &amp; drafts (smart)</div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Summary, memory extraction, event prep, reply drafts, and expand-and-speak. The extra second is invisible to James.
+              </p>
+              <Select
+                value={settings.smart_model ?? "google/gemini-2.5-pro"}
+                onValueChange={(v) =>
+                  updateSettings({ smart_model: v }).then(() =>
+                    toast.success("Smart model updated"),
+                  )
+                }
+              >
+                <SelectTrigger className="mt-2 h-12 text-base">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MODEL_OPTIONS.map((m) => (
+                    <SelectItem key={`smart-${m.id}`} value={m.id}>
+                      {m.label} — <span className="text-muted-foreground">{m.hint}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
 
-        <div className="mt-4">
-          <div className="text-sm font-medium">Live suggestions &amp; expansion (fast)</div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Powers the suggestion chips and the "clarify &amp; speak" rewrite.
-            Pick a fast model — James will feel every extra second.
-          </p>
-          <Select
-            value={
-              settings.fast_model ??
-              settings.suggestion_model ??
-              "google/gemini-2.5-flash-lite"
-            }
-            onValueChange={(v) =>
-              updateSettings({
-                fast_model: v,
-                // Keep legacy fields in sync for back-compat.
-                suggestion_model: v,
-                expand_model: v,
-              }).then(() => toast.success("Fast model updated"))
-            }
-          >
-            <SelectTrigger className="mt-2 h-12 text-base">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MODEL_OPTIONS.map((m) => (
-                <SelectItem key={`fast-${m.id}`} value={m.id}>
-                  {m.label} — <span className="text-muted-foreground">{m.hint}</span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <AccordionItem value="display" className="rounded-xl border border-border bg-card px-5">
+          <AccordionTrigger className="text-base font-semibold hover:no-underline">
+            <span className="flex items-center gap-2"><MapPin className="size-4" /> Display size</span>
+          </AccordionTrigger>
+          <AccordionContent className="pb-5">
+            <p className="mb-4 text-sm text-muted-foreground">
+              Pick the iPad you mostly use. The home screen scales so all suggestions, transcript and controls fit without scrolling.
+            </p>
+            <Select
+              value={settings.ipad_model ?? "auto"}
+              onValueChange={(v) =>
+                updateSettings({ ipad_model: v as IPadModel }).then(() =>
+                  toast.success("Display size updated"),
+                )
+              }
+            >
+              <SelectTrigger className="h-12 text-base">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto (use this screen)</SelectItem>
+                {Object.entries(IPAD_PRESETS).map(([key, p]) => (
+                  <SelectItem key={key} value={key}>
+                    {p.label} — {p.width}×{p.height}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </AccordionContent>
+        </AccordionItem>
 
-        <div className="mt-6">
-          <div className="text-sm font-medium">Memory, summary &amp; drafts (smart)</div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Powers the end-of-conversation summary, durable memory extraction,
-            event prep briefings and reply drafts. Pick a stronger model — the
-            extra second or two is invisible to James.
-          </p>
-          <Select
-            value={settings.smart_model ?? "google/gemini-2.5-pro"}
-            onValueChange={(v) =>
-              updateSettings({ smart_model: v }).then(() =>
-                toast.success("Smart model updated"),
-              )
-            }
-          >
-            <SelectTrigger className="mt-2 h-12 text-base">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MODEL_OPTIONS.map((m) => (
-                <SelectItem key={`smart-${m.id}`} value={m.id}>
-                  {m.label} — <span className="text-muted-foreground">{m.hint}</span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </Card>
+        <AccordionItem value="location" className="rounded-xl border border-border bg-card px-5">
+          <AccordionTrigger className="text-base font-semibold hover:no-underline">
+            <span className="flex items-center gap-2"><Crosshair className="size-4" /> Location</span>
+          </AccordionTrigger>
+          <AccordionContent className="pb-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-base">Use GPS for context</Label>
+                <p className="text-sm text-muted-foreground">
+                  Auto-detects places (e.g. library, café) to tailor suggestions.
+                </p>
+              </div>
+              <Switch
+                checked={settings.gps_enabled}
+                onCheckedChange={(v) =>
+                  updateSettings({ gps_enabled: v }).then(() =>
+                    toast.success(v ? "GPS on" : "GPS off"),
+                  )
+                }
+              />
+            </div>
+          </AccordionContent>
+        </AccordionItem>
 
-      <Card className="p-6">
-        <h2 className="text-lg font-semibold">Display size</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Pick the iPad you mostly use. The home screen scales so all
-          suggestions, transcript and controls fit without scrolling.
-        </p>
-        <div className="mt-4">
-          <Select
-            value={settings.ipad_model ?? "auto"}
-            onValueChange={(v) =>
-              updateSettings({ ipad_model: v as IPadModel }).then(() =>
-                toast.success("Display size updated"),
-              )
-            }
-          >
-            <SelectTrigger className="h-12 text-base">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">Auto (use this screen)</SelectItem>
-              {Object.entries(IPAD_PRESETS).map(([key, p]) => (
-                <SelectItem key={key} value={key}>
-                  {p.label} — {p.width}×{p.height}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </Card>
-
-      <Card className="p-6">
-        <h2 className="text-lg font-semibold">Storage</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Your data lives on this iPad and is automatically backed up to your
-          Lovable Cloud account whenever it changes. Sign in with the same
-          email on another device to restore everything there. Use{" "}
-          <span className="font-medium text-foreground">Back up now</span> at
-          the top of this tab to force an immediate sync.
-        </p>
-        <Button
-          variant="destructive"
-          className="mt-6 h-11"
-          onClick={clearAllData}
-        >
-          Clear all local data
-        </Button>
-      </Card>
+        <AccordionItem value="storage" className="rounded-xl border border-border bg-card px-5">
+          <AccordionTrigger className="text-base font-semibold hover:no-underline">
+            <span className="flex items-center gap-2"><FileText className="size-4" /> Storage &amp; privacy</span>
+          </AccordionTrigger>
+          <AccordionContent className="pb-5">
+            <p className="mb-5 text-sm text-muted-foreground">
+              Your data lives on this iPad and is automatically backed up to your Lovable Cloud account whenever it changes. Sign in with the same email on another device to restore everything.
+            </p>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" className="h-11">
+                  Clear all local data
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Clear all local data?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete all conversations, memories, people, places, events, and profile data stored on this device. This cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel className="h-12 text-base">Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="h-12 bg-destructive text-base text-destructive-foreground hover:bg-destructive/90"
+                    onClick={clearAllData}
+                  >
+                    Delete everything
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
     </div>
   );
 }
@@ -621,6 +651,16 @@ function VoiceDesignerPanel({
 
 /* -------------------------- James Profile editor -------------------------- */
 
+function CharCount({ value, max }: { value: string | undefined; max: number }) {
+  const len = (value ?? "").length;
+  const pct = len / max;
+  return (
+    <span className={`text-xs tabular-nums ${pct >= 1 ? "text-destructive" : pct >= 0.8 ? "text-amber-500" : "text-muted-foreground"}`}>
+      {len} / {max}
+    </span>
+  );
+}
+
 function JamesProfileCard() {
   const profile = useLiveQuery(() => getJamesProfile(), []);
   const [draft, setDraft] = useState<JamesProfile | null>(null);
@@ -683,6 +723,7 @@ function JamesProfileCard() {
             value={draft.background ?? ""}
             onChange={(e) => set("background", e.target.value)}
           />
+          <CharCount value={draft.background} max={500} />
         </Field>
         <Field
           label="Personality"
@@ -693,6 +734,7 @@ function JamesProfileCard() {
             value={draft.personality ?? ""}
             onChange={(e) => set("personality", e.target.value)}
           />
+          <CharCount value={draft.personality} max={300} />
         </Field>
         <Field label="Humor style" hint="e.g. loves puns, deadpan, self-deprecating">
           <Textarea
@@ -700,6 +742,7 @@ function JamesProfileCard() {
             value={draft.humor_style ?? ""}
             onChange={(e) => set("humor_style", e.target.value)}
           />
+          <CharCount value={draft.humor_style} max={200} />
         </Field>
         <Field
           label="Communication style"
@@ -710,6 +753,7 @@ function JamesProfileCard() {
             value={draft.communication_style ?? ""}
             onChange={(e) => set("communication_style", e.target.value)}
           />
+          <CharCount value={draft.communication_style} max={200} />
         </Field>
         <Field label="Topics he loves" hint="Comma-separated or freeform">
           <Textarea
@@ -717,6 +761,7 @@ function JamesProfileCard() {
             value={draft.topics_loved ?? ""}
             onChange={(e) => set("topics_loved", e.target.value)}
           />
+          <CharCount value={draft.topics_loved} max={300} />
         </Field>
         <Field label="Topics he avoids">
           <Textarea
@@ -724,6 +769,7 @@ function JamesProfileCard() {
             value={draft.topics_avoided ?? ""}
             onChange={(e) => set("topics_avoided", e.target.value)}
           />
+          <CharCount value={draft.topics_avoided} max={200} />
         </Field>
         <Field
           label="Signature phrases"
@@ -734,6 +780,7 @@ function JamesProfileCard() {
             value={draft.signature_phrases ?? ""}
             onChange={(e) => set("signature_phrases", e.target.value)}
           />
+          <CharCount value={draft.signature_phrases} max={300} />
         </Field>
         <Field
           label="Current life context"
@@ -744,6 +791,7 @@ function JamesProfileCard() {
             value={draft.current_life_context ?? ""}
             onChange={(e) => set("current_life_context", e.target.value)}
           />
+          <CharCount value={draft.current_life_context} max={500} />
         </Field>
         <div className="md:col-span-2">
           <Field label="Anything else (freeform)">
@@ -752,6 +800,7 @@ function JamesProfileCard() {
               value={draft.freeform_notes ?? ""}
               onChange={(e) => set("freeform_notes", e.target.value)}
             />
+            <CharCount value={draft.freeform_notes} max={500} />
           </Field>
         </div>
       </div>
@@ -969,7 +1018,6 @@ function PeopleTab() {
   }
 
   async function remove(id: string) {
-    if (!confirm("Remove this person?")) return;
     await db.people.delete(id);
     if (selectedId === id) setSelectedId(null);
   }
@@ -1095,14 +1143,30 @@ function PersonDetail({
           <Button size="sm" variant="secondary" onClick={() => onEdit(person)}>
             Edit
           </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={onDelete}
-            aria-label="Delete"
-          >
-            <Trash2 className="size-4 text-destructive" />
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button size="icon" variant="ghost" aria-label="Delete person">
+                <Trash2 className="size-4 text-destructive" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Remove {person.name}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will delete {person.name} and all their saved memories, follow-ups, and voice print from this device.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="h-12 text-base">Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  className="h-12 bg-destructive text-base text-destructive-foreground hover:bg-destructive/90"
+                  onClick={onDelete}
+                >
+                  Remove
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
 
@@ -2020,13 +2084,21 @@ function EventsTab() {
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [timeFilter, setTimeFilter] = useState<"upcoming" | "past">("upcoming");
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const list = events ?? [];
-    if (!filter.trim()) return list;
+    const now = new Date();
+    const byTime = list.filter((e) => {
+      const d = parseEventDate(e.when);
+      if (timeFilter === "upcoming") return !d || d >= now;
+      return !!d && d < now;
+    });
+    if (!filter.trim()) return byTime;
     const q = filter.toLowerCase();
-    return list.filter((e) => e.name.toLowerCase().includes(q));
-  }, [events, filter]);
+    return byTime.filter((e) => e.name.toLowerCase().includes(q));
+  }, [events, filter, timeFilter]);
 
   useEffect(() => {
     if (!selectedId && filtered.length > 0) setSelectedId(filtered[0].id);
@@ -2046,16 +2118,52 @@ function EventsTab() {
   }
 
   async function remove(id: string) {
-    if (!confirm("Delete this event and its documents?")) return;
     await db.events.delete(id);
     const docs = await db.event_documents.where("event_id").equals(id).toArray();
     await db.event_documents.bulkDelete(docs.map((d) => d.id));
     if (selectedId === id) setSelectedId(null);
+    setPendingDeleteId(null);
   }
+
+  const pendingEvent = pendingDeleteId ? (events ?? []).find((e) => e.id === pendingDeleteId) : null;
 
   return (
     <div className="grid gap-4 grid-cols-[260px_1fr] sm:grid-cols-[280px_1fr]">
+      <AlertDialog open={!!pendingDeleteId} onOpenChange={(o) => !o && setPendingDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete "{pendingEvent?.name ?? "this event"}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the event and all attached documents.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="h-12 text-base">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="h-12 bg-destructive text-base text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => pendingDeleteId && remove(pendingDeleteId)}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Card className="p-3">
+        <div className="mb-2 flex items-center gap-1 rounded-lg bg-secondary/60 p-1 text-sm">
+          <button
+            onClick={() => setTimeFilter("upcoming")}
+            className={`flex-1 rounded-md py-1 font-medium transition ${timeFilter === "upcoming" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+          >
+            Upcoming
+          </button>
+          <button
+            onClick={() => setTimeFilter("past")}
+            className={`flex-1 rounded-md py-1 font-medium transition ${timeFilter === "past" ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+          >
+            Past
+          </button>
+        </div>
         <div className="mb-2 flex items-center gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -2096,16 +2204,19 @@ function EventsTab() {
                   </div>
                 )}
               </div>
-              <button
+              <span
+                role="button"
+                tabIndex={0}
                 onClick={(ev) => {
                   ev.stopPropagation();
-                  remove(e.id);
+                  setPendingDeleteId(e.id);
                 }}
+                onKeyDown={(ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.stopPropagation(); setPendingDeleteId(e.id); }}}
                 className="rounded-full p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                 aria-label="Delete"
               >
                 <Trash2 className="size-4" />
-              </button>
+              </span>
             </button>
           ))}
         </div>

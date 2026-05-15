@@ -200,6 +200,18 @@ export type Voiceprint = {
   updated_at: number;
 };
 
+export type VoiceprintContribution = {
+  id: string;
+  person_id: string;
+  conversation_id?: string;
+  source: "manual" | "auto"; // manual = recorded in settings; auto = learned during conversation
+  mfcc: number[];
+  ts: number;
+  // Optional preview text captured at the moment the contribution was learned,
+  // so the user can recognise what was being said.
+  preview_text?: string;
+};
+
 export type PersonDocument = {
   id: string;
   person_id: string;
@@ -211,7 +223,7 @@ export type PersonDocument = {
   created_at: number;
 };
 
-export const MFCC_COEFFS = 13;
+export const MFCC_COEFFS = 20;
 /** Cosine-similarity threshold above which an unknown speaker is auto-matched to a stored voiceprint.
  *  MFCC means across short utterances from the same speaker typically land in
  *  the 0.78–0.92 range, so 0.86 was too strict and almost never triggered.
@@ -235,6 +247,7 @@ class AacDb extends Dexie {
   event_documents!: Table<EventDocument, string>;
   voiceprints!: Table<Voiceprint, string>;
   person_documents!: Table<PersonDocument, string>;
+  voiceprint_contributions!: Table<VoiceprintContribution, string>;
 
   constructor() {
     super("aac_copilot");
@@ -265,6 +278,9 @@ class AacDb extends Dexie {
     });
     this.version(6).stores({
       person_documents: "id, person_id, created_at",
+    });
+    this.version(7).stores({
+      voiceprint_contributions: "id, person_id, ts",
     });
   }
 }
