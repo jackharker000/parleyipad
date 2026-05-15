@@ -179,6 +179,7 @@ export function SpeakerPanel({
               cluster={c}
               allClusters={clusters}
               people={people}
+              participantIds={participantIds}
               onConfirmKnown={onConfirmKnown}
               onRejectSuggestion={onRejectSuggestion}
               onConfirmNew={onConfirmNew}
@@ -197,6 +198,7 @@ function ClusterCard({
   cluster,
   allClusters,
   people,
+  participantIds,
   onConfirmKnown,
   onRejectSuggestion,
   onConfirmNew,
@@ -207,6 +209,7 @@ function ClusterCard({
   cluster: ClusterRow;
   allClusters: ClusterRow[];
   people: Person[];
+  participantIds?: string[];
   onConfirmKnown: (label: string, personId: string) => void;
   onRejectSuggestion: (label: string) => void;
   onConfirmNew: (label: string, name: string) => void;
@@ -214,6 +217,21 @@ function ClusterCard({
   onClearConfirmed: (label: string) => void;
   onMerge: (fromLabel: string, toLabel: string) => void;
 }) {
+  // Participants who are declared for this conversation but not yet confirmed
+  // for any cluster. These appear as one-tap "quick identify" chips on
+  // unknown clusters so the user can assign them in a single tap.
+  const availableParticipants = (participantIds ?? [])
+    .filter((pid) => {
+      const taken = allClusters.some(
+        (c) =>
+          c.label !== cluster.label &&
+          c.status.kind === "confirmed" &&
+          c.status.personId === pid,
+      );
+      return !taken;
+    })
+    .map((pid) => people.find((p) => p.id === pid))
+    .filter((p): p is Person => Boolean(p));
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
   const [showMerge, setShowMerge] = useState(false);
@@ -448,6 +466,11 @@ function ClusterCard({
   // ---------- Unknown ----------
   if (cluster.status.kind !== "unknown") return null;
   const suggestions = cluster.status.suggestions ?? [];
+  const excludedIds = new Set(cluster.status.excludedPersonIds ?? []);
+  // Filter out participants the user has already explicitly rejected for this cluster
+  const quickIdentifyOptions = availableParticipants.filter(
+    (p) => !excludedIds.has(p.id),
+  );
   return (
     <div className="rounded-xl border border-border bg-secondary/40 p-2 text-sm">
       <div className="flex items-center gap-1.5">
@@ -465,6 +488,26 @@ function ClusterCard({
           <HelpCircle className="size-3.5" />
         </button>
       </div>
+      {/* One-tap quick-identify for declared participants who aren't yet
+          confirmed elsewhere. Tap the matching name to assign this cluster. */}
+      {quickIdentifyOptions.length > 0 && (
+        <div className="mt-1.5">
+          <p className="text-[10px] text-muted-foreground mb-1">
+            Who's this?
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {quickIdentifyOptions.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => onConfirmKnown(cluster.label, p.id)}
+                className="rounded-full border-2 border-primary/50 bg-primary/15 px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-primary/25"
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {suggestions.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {suggestions.map((s) => (

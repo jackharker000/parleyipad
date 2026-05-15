@@ -751,13 +751,16 @@ function Home() {
             setClusterStatus(next);
           }
 
-          // AI context-based identification (one-shot per cluster, 3+ utterances)
+          // AI context-based identification (one-shot per cluster, 2+ utterances).
+          // Lowered from 3 -> 2 so identification kicks in earlier. When the
+          // user has declared participants we ONLY send those names as
+          // candidates so the AI doesn't get distracted by irrelevant people.
           const clusterCount = cluster?.count ?? 0;
           const curStatusKind = (
             nextStatus ?? clusterStatusRef.current[speakerLabel]
           )?.kind;
           if (
-            clusterCount >= 3 &&
+            clusterCount >= 2 &&
             curStatusKind !== "confirmed" &&
             curStatusKind !== "suggested" &&
             !aiSpeakerIdSentRef.current.has(speakerLabel)
@@ -773,12 +776,20 @@ function Home() {
               const p = pid ? allPeople.find((pp) => pp.id === pid) : null;
               return { speaker: p?.name ?? s.speaker_label, text: s.text };
             });
+            // Bias candidate list toward declared participants when present.
+            const declaredNames = personIdsRef.current
+              .map((id) => allPeople.find((p) => p.id === id)?.name)
+              .filter((n): n is string => Boolean(n));
+            const candidateNames =
+              declaredNames.length > 0
+                ? declaredNames
+                : allPeople.map((p) => p.name);
             identifyFn({
               data: {
                 unknownLabel: speakerLabel,
                 recentTranscript: recentForAI,
                 confirmedSpeakers: confirmedNames,
-                candidateNames: allPeople.map((p) => p.name),
+                candidateNames,
                 model: fastModelRef.current,
               },
             })
