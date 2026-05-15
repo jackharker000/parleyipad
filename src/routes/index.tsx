@@ -41,6 +41,7 @@ import {
   expandUtterance,
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
+import { getCrossSessionDeadPhrases } from "@/lib/style-evidence";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
 import { seedJamesIfNeeded, backfillSuggestionsLogPersonIds } from "@/lib/seed";
@@ -643,6 +644,11 @@ function Home() {
   // Tracks the (transcriptLen + mood) signature of the last AI call so we
   // skip redundant refreshes when nothing relevant has changed.
   const lastSuggestKeyRef = useRef<string>("");
+  // === Tier 1.3: cross-session dead phrases ===
+  // Cached so the Dexie scan only runs once per minute, not on every 1.5 s
+  // refresh tick. Keyed by sorted personIds to invalidate when the present
+  // set changes.
+  const deadPhrasesCacheRef = useRef<{ key: string; at: number; list: string[] } | null>(null);
   const refreshSuggestions = useCallback(async () => {
     if (loadingSuggestions || !active) return;
     const key = `${committed.length}:${moodRef.current}`;
@@ -666,6 +672,29 @@ function Home() {
         place: placeRef.current,
         event: selectedEventRef.current ?? undefined,
       });
+      // === Tier 1.3: merge cross-session dead phrases into alreadyShown ===
+      const personKey = [...personIdsRef.current].sort().join(",");
+      let crossDead: string[] = [];
+      if (personIdsRef.current.length) {
+        const cached = deadPhrasesCacheRef.current;
+        if (cached && cached.key === personKey && Date.now() - cached.at < 60_000) {
+          crossDead = cached.list;
+        } else {
+          try {
+            crossDead = await getCrossSessionDeadPhrases(personIdsRef.current);
+            deadPhrasesCacheRef.current = {
+              key: personKey,
+              at: Date.now(),
+              list: crossDead,
+            };
+          } catch (err) {
+            console.warn("cross-session dead phrases lookup failed", err);
+            crossDead = [];
+          }
+        }
+      }
+      const sessionShown = lastShownRef.current.slice(-20);
+      const alreadyShown = Array.from(new Set([...sessionShown, ...crossDead])).slice(0, 80);
       const r = await suggestFn({
         data: {
           recentTranscript: recent,
@@ -676,7 +705,7 @@ function Home() {
           styleProfileJson: ctx.styleProfileJson,
           // === Tier 1.1: style evidence ===
           styleEvidence: ctx.styleEvidence,
-          alreadyShown: lastShownRef.current.slice(-20),
+          alreadyShown,
           model: fastModelRef.current,
           mood: moodRef.current,
         },

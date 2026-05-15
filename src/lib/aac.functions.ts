@@ -512,7 +512,7 @@ ${styleEvidenceBlock}${moodBlock}
 # Live conversation so far
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
-${data.alreadyShown?.length ? `# Already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
+${data.alreadyShown?.length ? `# Recently ignored or already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
 Return 10 ranked suggestions in James's voice. Provide a wide variety so James has plenty of useful options to pick from.`;
 
     const target = resolveChatTarget(data.model);

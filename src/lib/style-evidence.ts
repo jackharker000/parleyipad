@@ -283,6 +283,64 @@ export async function invalidateStyleEvidence(personIds?: string[]): Promise<voi
   await db.style_evidence_cache.delete(cacheKeyFor(personIds.slice(0, 6)));
 }
 
+/* === Tier 1.3: cross-session dead phrases ================================ */
+
+/**
+ * Return canonical-cased texts that were shown >=N times to the given people
+ * and ignored every time within the lookback window. Used to extend the
+ * `alreadyShown` list in the suggestion prompt so the model stops re-emitting
+ * suggestions James has consistently passed over across sessions.
+ *
+ * Texts that were ever `selected===true` in the lookback are never returned,
+ * even if their ignore count also crosses the threshold — picks beat misses.
+ */
+export async function getCrossSessionDeadPhrases(
+  personIds: string[],
+  opts?: { lookbackMs?: number; minIgnoredCount?: number; max?: number },
+): Promise<string[]> {
+  const lookbackMs = opts?.lookbackMs ?? 7 * 24 * 3600 * 1000;
+  const minIgnoredCount = opts?.minIgnoredCount ?? 3;
+  const max = opts?.max ?? 40;
+  const cutoff = Date.now() - lookbackMs;
+  const ids = personIds.slice(0, 6);
+  if (ids.length === 0) return [];
+
+  const rows = await db.suggestions_log.where("person_id").anyOf(ids).toArray();
+
+  type Acc = {
+    count: number;
+    everSelected: boolean;
+    canonical: string; // most-recent original-cased variant
+    lastShown: number;
+  };
+  const grouped = new Map<string, Acc>();
+  for (const r of rows) {
+    if (r.shown_at < cutoff) continue;
+    if (!r.text) continue;
+    const k = r.text.trim().toLowerCase();
+    if (!k) continue;
+    const a = grouped.get(k) ?? {
+      count: 0,
+      everSelected: false,
+      canonical: r.text,
+      lastShown: 0,
+    };
+    if (r.selected) a.everSelected = true;
+    if (r.ignored && !r.selected) a.count += 1;
+    if (r.shown_at >= a.lastShown) {
+      a.lastShown = r.shown_at;
+      a.canonical = r.text;
+    }
+    grouped.set(k, a);
+  }
+
+  return [...grouped.values()]
+    .filter((a) => !a.everSelected && a.count >= minIgnoredCount)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, max)
+    .map((a) => a.canonical);
+}
+
 /* === Tier 1: helpers used at log-write time ============================== */
 
 /**
