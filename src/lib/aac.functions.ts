@@ -1323,3 +1323,118 @@ ${transcriptText}`;
     }
   });
 
+/* ---------- 2.4: self-introduction detection ---------- */
+
+const detectIntrosSchema = z.object({
+  transcript: z.array(z.object({ speaker: z.string(), text: z.string() })),
+  existingPeopleNames: z.array(z.string()),
+  jamesName: z.string().min(1),
+  model: z.string().optional(),
+});
+
+export const detectIntroductions = createServerFn({ method: "POST" })
+  .inputValidator((d) => detectIntrosSchema.parse(d))
+  .handler(async ({ data }) => {
+    if (data.transcript.length === 0) {
+      return {
+        introductions: [] as Array<{
+          name: string;
+          role?: string;
+          relationship?: string;
+          speakerLabel: string;
+          confidence: number;
+          quote: string;
+        }>,
+        error: null as string | null,
+      };
+    }
+    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
+    const system = `You scan a finished conversation transcript for SELF-INTRODUCTIONS by people James (a non-speaking AAC user) hadn't met before. For each genuine introduction, extract: the speaker's first name (preferred), role/relationship if explicit, and which speaker label uttered the introduction.
+
+Rules:
+- Only flag introductions for people NOT already in existingPeopleNames (case-insensitive, first-name match).
+- Confidence >= 0.7 required: the person must clearly introduce themselves, e.g. "Hi James, I'm Sarah from the agency", "This is Tom, I'll be helping today". Casual mentions of a third party DO NOT count.
+- If James says someone's name but they haven't introduced themselves, that does NOT count.
+- NEVER propose James himself.
+
+Return via emit_introductions tool. Empty array if nothing qualifies.`;
+
+    const user = `James's name: ${data.jamesName}
+Existing people in the address book: ${data.existingPeopleNames.join(", ") || "(none)"}
+
+Transcript:
+${data.transcript.map((t) => `${t.speaker}: ${t.text}`).join("\n")}`;
+
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_introductions",
+              parameters: {
+                type: "object",
+                properties: {
+                  introductions: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        name: { type: "string" },
+                        role: { type: "string" },
+                        relationship: { type: "string" },
+                        speakerLabel: { type: "string" },
+                        confidence: { type: "number", minimum: 0, maximum: 1 },
+                        quote: { type: "string" },
+                      },
+                      required: ["name", "speakerLabel", "confidence", "quote"],
+                    },
+                  },
+                },
+                required: ["introductions"],
+              },
+            },
+          },
+        ],
+        tool_choice: {
+          type: "function",
+          function: { name: "emit_introductions" },
+        },
+      }),
+    });
+
+    if (!res.ok) return { introductions: [], error: `AI error ${res.status}` };
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) return { introductions: [], error: "No tool call" };
+    try {
+      const parsed = JSON.parse(argStr) as {
+        introductions: Array<{
+          name: string;
+          role?: string;
+          relationship?: string;
+          speakerLabel: string;
+          confidence: number;
+          quote: string;
+        }>;
+      };
+      const known = new Set(
+        [...data.existingPeopleNames, data.jamesName].map((n) => n.trim().toLowerCase()),
+      );
+      const introductions = (parsed.introductions ?? []).filter((i) => {
+        if (!i.name || !i.name.trim()) return false;
+        const first = i.name.trim().split(/\s+/)[0].toLowerCase();
+        return !known.has(first) && i.confidence >= 0.7;
+      });
+      return { introductions, error: null };
+    } catch {
+      return { introductions: [], error: "Parse error" };
+    }
+  });

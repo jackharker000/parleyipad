@@ -29,7 +29,8 @@ import {
 } from "./db";
 import { cosineSim, rebuildVoiceprintFromContributions } from "./voiceprint";
 import { kmeansRediarize, type UtteranceVec } from "./rediarize";
-import { aiRediarizeTieBreaker, enrichPersonProfile } from "./aac.functions";
+import { aiRediarizeTieBreaker, enrichPersonProfile, detectIntroductions } from "./aac.functions";
+import { extractIntroducedNames } from "./auto-person";
 import { toast } from "sonner";
 
 export type Tier2Ctx = {
@@ -414,9 +415,185 @@ export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* 2.4 — Self-introduction detection                                          */
+/* -------------------------------------------------------------------------- */
+
 export async function detectIntroductionsAfterStop(
-  _ctx: Tier2Ctx,
-  _rediarize: RediarizeAfterStopResult,
+  ctx: Tier2Ctx,
+  rediarize: RediarizeAfterStopResult,
 ): Promise<void> {
-  /* Implemented in 2.4 commit. */
+  // Cheap pre-filter: use the existing regex-based introduction detector.
+  // If it finds zero candidates we skip the LLM call entirely.
+  const transcriptForRegex = ctx.segs.map((s) => ({
+    text: s.text,
+    speaker_label: s.speaker_label,
+  }));
+  const regexHits = extractIntroducedNames(transcriptForRegex);
+  if (regexHits.length === 0) return;
+
+  const profile = await getJamesProfile();
+  const jamesName = profile.display_name ?? "James";
+
+  // Build the full transcript for the LLM with current human labels where
+  // available.
+  const conv = await db.conversations.get(ctx.conversationId);
+  const speakerMap = conv?.speaker_map ?? {};
+  const personById = new Map<string, Person>();
+  for (const pid of Object.values(speakerMap)) {
+    const p = await db.people.get(pid);
+    if (p) personById.set(p.id, p);
+  }
+  const fullTranscript = ctx.segs
+    .slice()
+    .sort((a, b) => a.ts - b.ts)
+    .map((s) => {
+      const pid = s.person_id ?? speakerMap[s.speaker_label];
+      const p = pid ? personById.get(pid) : undefined;
+      return { speaker: p ? p.name : s.speaker_label, text: s.text };
+    });
+
+  const existing = await db.people.toArray();
+  const existingNames = existing.map((p) => p.name);
+
+  let llmRes: Awaited<ReturnType<typeof detectIntroductions>> = {
+    introductions: [],
+    error: null,
+  };
+  try {
+    llmRes = await detectIntroductions({
+      data: {
+        transcript: fullTranscript.slice(0, 400),
+        existingPeopleNames: existingNames,
+        jamesName,
+        model: ctx.smartModel,
+      },
+    });
+  } catch (e) {
+    console.warn("[tier2.4] detectIntroductions failed", e);
+    return;
+  }
+
+  const intros = (llmRes.introductions ?? []).filter((i) => i.confidence >= 0.7);
+  if (intros.length === 0) return;
+
+  // Build a quick lookup: speaker_label -> aggregate centroid (from this
+  // conversation's MFCCs if available).
+  const mfccsThisConv = await db.segment_mfccs
+    .where("conversation_id")
+    .equals(ctx.conversationId)
+    .toArray();
+  const segIdToLabel = new Map(ctx.segs.map((s) => [s.id, s.speaker_label]));
+  const labelCentroids = new Map<string, { sum: number[]; count: number }>();
+  for (const m of mfccsThisConv) {
+    const lbl = segIdToLabel.get(m.segment_id);
+    if (!lbl) continue;
+    if (m.mfcc.length !== MFCC_COEFFS) continue;
+    const agg = labelCentroids.get(lbl) ?? {
+      sum: new Array(MFCC_COEFFS).fill(0),
+      count: 0,
+    };
+    for (let i = 0; i < MFCC_COEFFS; i++) agg.sum[i] += m.mfcc[i];
+    agg.count += 1;
+    labelCentroids.set(lbl, agg);
+  }
+
+  // Process each intro: dedup by first name and by speakerLabel cluster.
+  const seenByCluster = new Set<string>();
+  let createdAny = false;
+  // Sort by confidence desc so highest-confidence intro wins per cluster.
+  intros.sort((a, b) => b.confidence - a.confidence);
+
+  // rediarize.cluster_centroids is provided for future-proofing — if a
+  // downstream variant of this function wants to align speakerLabel ↔ rediarize
+  // cluster, the map is available. Today we use the per-label aggregate above.
+  void rediarize;
+
+  for (const intro of intros) {
+    const firstName = intro.name.trim().split(/\s+/)[0];
+    if (!firstName) continue;
+    if (firstName.toLowerCase() === jamesName.toLowerCase()) continue;
+
+    if (seenByCluster.has(intro.speakerLabel)) continue;
+    seenByCluster.add(intro.speakerLabel);
+
+    // Build a centroid for this speakerLabel.
+    let centroid: number[] | undefined;
+    const agg = labelCentroids.get(intro.speakerLabel);
+    if (agg && agg.count > 0) {
+      centroid = agg.sum.map((v) => v / agg.count);
+    }
+    if (!centroid) continue; // No voice samples available for this speaker.
+
+    // Check for an existing person with the same first name (case-insensitive).
+    const refreshedPeople = await db.people.toArray();
+    const matchingPerson = refreshedPeople.find(
+      (p) => p.name.trim().split(/\s+/)[0].toLowerCase() === firstName.toLowerCase(),
+    );
+
+    const now = Date.now();
+    let targetPersonId: string;
+    if (matchingPerson) {
+      targetPersonId = matchingPerson.id;
+    } else {
+      // Create a new Person with status "auto".
+      targetPersonId = newId();
+      const noteLine = `Heard them say: "${intro.quote ?? ""}"`;
+      const newPerson: Person = {
+        id: targetPersonId,
+        name: firstName,
+        relationship: intro.relationship || intro.role || undefined,
+        notes: noteLine,
+        status: "auto",
+        created_at: now,
+      };
+      await db.people.add(newPerson);
+      createdAny = true;
+    }
+
+    // Write the voiceprint (only if none exists yet for this person).
+    const existingVp = await db.voiceprints.get(targetPersonId);
+    if (!existingVp) {
+      const vp: Voiceprint = {
+        id: targetPersonId,
+        person_id: targetPersonId,
+        centroid: centroid.slice(),
+        sample_count: 1,
+        updated_at: now,
+      };
+      await db.voiceprints.put(vp);
+    }
+
+    // Record a voiceprint contribution for traceability.
+    await db.voiceprint_contributions.add({
+      id: newId(),
+      person_id: targetPersonId,
+      conversation_id: ctx.conversationId,
+      source: "auto",
+      mfcc: centroid.slice(),
+      ts: now,
+      preview_text: intro.quote,
+    });
+
+    // Backfill transcript_segments.person_id for that speaker label.
+    const segsForLabel = await db.transcript_segments
+      .where("conversation_id")
+      .equals(ctx.conversationId)
+      .and((s) => s.speaker_label === intro.speakerLabel)
+      .toArray();
+    for (const seg of segsForLabel) {
+      await db.transcript_segments.update(seg.id, { person_id: targetPersonId });
+    }
+    // Update the conversation's speaker_map.
+    await db.conversations.update(ctx.conversationId, {
+      speaker_map: { ...speakerMap, [intro.speakerLabel]: targetPersonId },
+    });
+    speakerMap[intro.speakerLabel] = targetPersonId;
+
+    if (createdAny) {
+      toast.message(`Detected new person: ${firstName} — review in Settings → People`, {
+        id: `tier2-intro-${targetPersonId}`,
+      });
+    }
+  }
 }

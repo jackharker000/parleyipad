@@ -980,6 +980,14 @@ function PeopleTab() {
   async function remove(id: string) {
     if (!confirm("Remove this person?")) return;
     await db.people.delete(id);
+    // Tier 2.4: when removing an auto-detected person, also clean up the
+    // voiceprint + contributions we created so a re-introduction can start fresh.
+    try {
+      await db.voiceprints.delete(id);
+      await db.voiceprint_contributions.where("person_id").equals(id).delete();
+    } catch {
+      // Best-effort cleanup.
+    }
     if (selectedId === id) setSelectedId(null);
   }
 
@@ -1111,10 +1119,17 @@ function PersonDetail({
   const grouped = stats ? groupMemories(stats.recentMemories) : null;
 
   return (
-    <Card className="p-6">
+    <Card className={`p-6 ${person.status === "auto" ? "ring-2 ring-amber-400/60" : ""}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold">{person.name}</h2>
+          <h2 className="flex items-center gap-2 text-2xl font-semibold">
+            {person.name}
+            {person.status === "auto" && (
+              <span className="rounded bg-amber-500/20 px-2 py-0.5 text-xs uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                Auto-detected
+              </span>
+            )}
+          </h2>
           {person.relationship && (
             <p className="mt-0.5 text-sm text-muted-foreground">
               {person.relationship}
@@ -1135,6 +1150,28 @@ function PersonDetail({
           </Button>
         </div>
       </div>
+      {person.status === "auto" && (
+        <div className="mt-3 rounded-lg border border-amber-400/40 bg-amber-50/40 p-3 text-sm dark:bg-amber-950/20">
+          <p className="text-muted-foreground">
+            This person was auto-detected from a conversation. Review the details (Edit to add notes
+            / fix the name), then Confirm to keep them, or Reject to remove them entirely.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              onClick={async () => {
+                await db.people.update(personId, { status: "live" });
+                toast.success("Confirmed");
+              }}
+            >
+              <Check className="size-4" /> Confirm new person
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onDelete}>
+              <X className="size-4" /> Reject — not a real person
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* At-a-glance metrics */}
       <div className="mt-5 grid grid-cols-3 gap-3">
