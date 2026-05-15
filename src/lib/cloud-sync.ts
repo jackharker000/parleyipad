@@ -27,6 +27,10 @@ const TABLES = [
   "event_documents",
   "voiceprints",
   "person_documents",
+  "voiceprint_contributions",
+  // Tier 2 additions
+  "profile_proposals",
+  "segment_mfccs",
 ] as const;
 
 type TableName = (typeof TABLES)[number];
@@ -67,7 +71,7 @@ async function pushNow() {
       .from("user_backups")
       .upsert(
         { user_id: currentUserId, data: snap as any, updated_at: new Date().toISOString() },
-        { onConflict: "user_id" }
+        { onConflict: "user_id" },
       );
     if (error) console.error("[cloud-sync] push failed", error);
   } catch (e) {

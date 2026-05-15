@@ -45,6 +45,12 @@ import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
 import { seedJamesIfNeeded } from "@/lib/seed";
 import {
+  rediarizeAfterStop,
+  rebuildVoiceprintsAfterStop,
+  enrichProfilesAfterStop,
+  detectIntroductionsAfterStop,
+} from "@/lib/post-conversation";
+import {
   VoiceCapture,
   computeMfccMean,
   recordVoiceprint,
@@ -313,6 +319,22 @@ function Home() {
       };
       setCommitted((prev) => [...prev, seg]);
       await db.transcript_segments.add(seg);
+      // Tier 2: persist per-segment MFCC so the offline re-diarize pass can
+      // re-cluster utterances post-hoc using stored voiceprints as seeds.
+      // Older conversations (no MFCC rows) gracefully no-op at re-diarize.
+      if (mfcc != null) {
+        try {
+          await db.segment_mfccs.add({
+            id: newId(),
+            segment_id: seg.id,
+            conversation_id: seg.conversation_id,
+            mfcc,
+            ts: seg.ts,
+          });
+        } catch {
+          // Best-effort; missing rows just disable post-hoc re-diarize.
+        }
+      }
 
       // -------- Recognition pass (suggestion only — never auto-confirms).
       // For brand-new clusters, or any cluster still in `unknown` state, try
@@ -549,6 +571,20 @@ function Home() {
           const cluster = diarizerRef.current.get(label);
           if (cluster && cluster.count >= 1) {
             await recordVoiceprint(personId, cluster.centroid);
+            // Tier 2: also log a contribution so the offline rebuild has
+            // durable per-conversation samples to re-cluster from.
+            try {
+              await db.voiceprint_contributions.add({
+                id: newId(),
+                person_id: personId,
+                conversation_id: cid ?? undefined,
+                source: "auto",
+                mfcc: cluster.centroid.slice(),
+                ts: Date.now(),
+              });
+            } catch {
+              // Contribution log is advisory; safe to skip.
+            }
           }
         }
       } catch (err) {
@@ -617,6 +653,30 @@ function Home() {
             );
           }
           toast.success("Saved", { id: "sum" });
+
+          /* Post-stop pipeline: summary → [Tier 2 jobs in Promise.all] → [Tier 3 embed memories] */
+          const tier2Ctx = {
+            conversationId: cid,
+            segs,
+            peopleNames,
+            personIds: personIdsRef.current,
+            smartModel: smartModelRef.current,
+            fastModel: fastModelRef.current,
+          };
+          toast.loading("Analysing conversation…", { id: "tier2" });
+          try {
+            // 2.1 must complete before 2.4 (needs corrected labels + centroids).
+            const rediarizeResult = await rediarizeAfterStop(tier2Ctx);
+            await Promise.all([
+              rebuildVoiceprintsAfterStop(tier2Ctx),
+              enrichProfilesAfterStop(tier2Ctx),
+              detectIntroductionsAfterStop(tier2Ctx, rediarizeResult),
+            ]);
+            toast.success("Updated profiles", { id: "tier2" });
+          } catch (e) {
+            console.warn("[tier2] post-pass failed", e);
+            toast.dismiss("tier2");
+          }
         }
       }
     } catch (e: any) {
