@@ -1110,26 +1110,26 @@ function Home() {
               {loadingSuggestions ? "Thinking…" : "Refresh"}
             </Button>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-4 gap-1.5 overflow-hidden p-2">
+          <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-3 gap-2 overflow-hidden p-2">
             {!active && suggestions.length === 0 && (
-              <Card className="col-span-3 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
+              <Card className="col-span-3 row-span-3 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Press the green mic button to start a conversation. Suggestions
                 will appear here.
               </Card>
             )}
             {active && suggestions.length === 0 && !loadingSuggestions && (
-              <Card className="col-span-3 row-span-4 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
+              <Card className="col-span-3 row-span-3 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Listening… suggestions will appear after a few words.
               </Card>
             )}
-            {suggestions.slice(0, 12).map((s, i) => (
+            {suggestions.slice(0, 9).map((s, i) => (
               <button
                 key={`${i}-${s.text}`}
                 onClick={() => speak(s.text, { suggestion: s })}
                 disabled={speaking}
-                className={`flex h-full min-h-0 w-full items-center justify-center rounded-xl border-2 p-2 text-center text-base leading-tight transition-transform active:scale-[0.98] ${categoryClass(s.category)}`}
+                className={`flex h-full min-h-0 w-full items-center justify-center rounded-2xl border-2 p-3 text-center text-xl font-medium leading-snug transition-transform active:scale-[0.98] ${categoryClass(s.category)}`}
               >
-                <span className="line-clamp-4">{s.text}</span>
+                <span className="line-clamp-5">{s.text}</span>
               </button>
             ))}
           </div>
@@ -1160,7 +1160,7 @@ function Home() {
                   type="button"
                   onClick={() => setMood(m.id)}
                   aria-pressed={selected}
-                  className={`rounded-full border-2 px-3 py-1.5 text-sm font-medium transition ${
+                  className={`rounded-full border-2 px-5 py-2.5 text-base font-medium transition ${
                     selected
                       ? `${m.color} border-transparent shadow`
                       : "border-border bg-background text-muted-foreground hover:bg-secondary"
