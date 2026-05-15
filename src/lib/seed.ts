@@ -1,6 +1,8 @@
 import { db, newId, getJamesProfile, updateJamesProfile, type Person } from "./db";
 
 const SEED_FLAG = "aac_seeded_v1";
+// === Tier 1.1: backfill person_id on historical suggestions_log rows ===
+const SUGGESTIONS_LOG_PERSON_ID_BACKFILL_FLAG = "suggestions_log_person_id_backfill_v1";
 
 const SEED_PEOPLE: Omit<Person, "id" | "created_at">[] = [
   {
@@ -72,5 +74,35 @@ export async function seedJamesIfNeeded() {
     localStorage.setItem(SEED_FLAG, "1");
   } catch (e) {
     console.error("Seed failed", e);
+  }
+}
+
+/**
+ * === Tier 1.1: feedback loop ===
+ *
+ * Historical `suggestions_log` rows were written before we added `person_id`
+ * to the schema. Walk all conversations once and tag each row with the
+ * conversation's primary person, so style-evidence aggregation can bucket
+ * them per person. Idempotent and gated by a localStorage flag.
+ */
+export async function backfillSuggestionsLogPersonIds() {
+  if (typeof window === "undefined") return;
+  if (localStorage.getItem(SUGGESTIONS_LOG_PERSON_ID_BACKFILL_FLAG)) return;
+  try {
+    const conversations = await db.conversations.toArray();
+    for (const c of conversations) {
+      const primary = c.person_ids?.[0];
+      if (!primary) continue;
+      const rows = await db.suggestions_log
+        .where("conversation_id")
+        .equals(c.id)
+        .filter((r) => !r.person_id)
+        .toArray();
+      if (rows.length === 0) continue;
+      await db.suggestions_log.bulkPut(rows.map((r) => ({ ...r, person_id: primary })));
+    }
+    localStorage.setItem(SUGGESTIONS_LOG_PERSON_ID_BACKFILL_FLAG, "1");
+  } catch (e) {
+    console.warn("suggestions_log person_id backfill failed", e);
   }
 }

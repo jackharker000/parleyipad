@@ -27,6 +27,9 @@ const TABLES = [
   "event_documents",
   "voiceprints",
   "person_documents",
+  // === Tier 1: feedback loop ===
+  "style_evidence_cache",
+  "style_distill_runs",
 ] as const;
 
 type TableName = (typeof TABLES)[number];

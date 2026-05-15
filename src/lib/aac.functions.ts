@@ -275,6 +275,34 @@ const jamesProfileSchema = z.object({
   freeform: z.string().optional(),
 });
 
+// === Tier 1.1: style evidence schema ===
+const styleEvidencePerPersonSchema = z.object({
+  personId: z.string(),
+  name: z.string(),
+  topCategories: z.array(
+    z.object({
+      category: z.string(),
+      pickRate: z.number(),
+      n: z.number(),
+    }),
+  ),
+  avgLenPicked: z.number(),
+  avgLenEdited: z.number(),
+  avgWordsAddedOnEdit: z.number(),
+  avgWordsRemovedOnEdit: z.number(),
+  editFormalityShift: z.enum(["more_casual", "more_formal", "neutral"]),
+  deadPhrases: z.array(z.string()),
+  recentPickedSamples: z.array(z.string()),
+  recentEditedSamples: z.array(z.object({ from: z.string(), to: z.string() })),
+});
+const styleEvidenceSchema = z.object({
+  perPerson: z.array(styleEvidencePerPersonSchema),
+  global: z.object({
+    avgLenPicked: z.number(),
+    topPickedCategories: z.array(z.object({ category: z.string(), pickRate: z.number() })),
+  }),
+});
+
 const suggestionsSchema = z.object({
   recentTranscript: z
     .array(z.object({ speaker: z.string(), text: z.string() }))
@@ -284,7 +312,10 @@ const suggestionsSchema = z.object({
   place: placeCtxSchema.optional(),
   event: eventCtxSchema.optional(),
   styleProfileJson: z.string().optional(),
-  alreadyShown: z.array(z.string()).max(40).optional(),
+  // Tier 1.3 raised this from 40 → 80 so cross-session dead phrases can be
+  // appended to the session-shown list without truncating either source.
+  alreadyShown: z.array(z.string()).max(80).optional(),
+  styleEvidence: styleEvidenceSchema.optional(),
   model: z.string().optional(),
   mood: z
     .enum(["normal", "calm", "excited", "sad", "upset", "empathetic", "amused"])
@@ -345,6 +376,106 @@ Strongly bias suggestions toward making these key points and asking these key qu
       ? `# Learned style profile (JSON)\n${data.styleProfileJson}\n`
       : "";
 
+    // === Tier 1.1: style evidence block ===
+    // Block order (so other tiers can slot in cleanly):
+    // profile → people → place → event → style_profile → [Tier 3.1 retrieved_memories]
+    //   → style_evidence → [Tier 3.2 arc] → [Tier 3.3 mood] → [Tier 3.4 category_bias]
+    const styleEvidenceBlock = (() => {
+      const ev = data.styleEvidence;
+      if (!ev) return "";
+      const hasPer = ev.perPerson.some(
+        (p) =>
+          p.topCategories.length > 0 ||
+          p.avgLenPicked > 0 ||
+          p.deadPhrases.length > 0 ||
+          p.recentPickedSamples.length > 0 ||
+          p.recentEditedSamples.length > 0,
+      );
+      const hasGlobal = ev.global.avgLenPicked > 0 || ev.global.topPickedCategories.length > 0;
+      if (!hasPer && !hasGlobal) return "";
+
+      const lines: string[] = [];
+      lines.push("# Style evidence (what James actually picks vs. ignores)");
+      lines.push(
+        "For each present person, the recent suggestion log shows which categories he picks, how he edits, and what to avoid.",
+      );
+      for (const p of ev.perPerson) {
+        const fewSamples =
+          p.topCategories.length === 0 &&
+          p.avgLenPicked === 0 &&
+          p.deadPhrases.length === 0 &&
+          p.recentPickedSamples.length === 0 &&
+          p.recentEditedSamples.length === 0;
+        if (fewSamples) continue;
+        lines.push("");
+        lines.push(`## With ${p.name}`);
+        if (p.topCategories.length) {
+          const catStr = p.topCategories
+            .map((c) => `${c.category} ${Math.round(c.pickRate * 100)}% (${c.n})`)
+            .join("; ");
+          lines.push(`- Picks by category (rate, n): ${catStr}`);
+        }
+        if (p.avgLenPicked || p.avgLenEdited) {
+          lines.push(
+            `- Avg picked length: ${p.avgLenPicked} chars; avg edited: ${p.avgLenEdited} chars.`,
+          );
+        }
+        if (p.avgWordsAddedOnEdit || p.avgWordsRemovedOnEdit) {
+          const verb =
+            p.editFormalityShift === "more_casual"
+              ? "loosens"
+              : p.editFormalityShift === "more_formal"
+                ? "tightens"
+                : "tweaks";
+          lines.push(
+            `- When he edits, he typically ${verb} the wording (+${p.avgWordsAddedOnEdit} / -${p.avgWordsRemovedOnEdit} words).`,
+          );
+        }
+        if (p.recentPickedSamples.length) {
+          lines.push(
+            `- Examples he kept: ${p.recentPickedSamples.map((t) => `"${t}"`).join("; ")}`,
+          );
+        }
+        if (p.recentEditedSamples.length) {
+          lines.push(
+            `- Examples he rewrote: ${p.recentEditedSamples
+              .map((s) => `"${s.from}" → "${s.to}"`)
+              .join("; ")}`,
+          );
+        }
+        if (p.deadPhrases.length) {
+          lines.push(
+            `- DO NOT propose (these were shown ≥3 times and ignored every time): ${p.deadPhrases
+              .map((t) => `"${t}"`)
+              .join("; ")}`,
+          );
+        }
+      }
+      if (hasGlobal) {
+        lines.push("");
+        lines.push("# Global");
+        const globalLineParts: string[] = [];
+        if (ev.global.avgLenPicked) {
+          globalLineParts.push(`avg picked length ${ev.global.avgLenPicked} chars`);
+        }
+        if (ev.global.topPickedCategories.length) {
+          globalLineParts.push(
+            `top categories: ${ev.global.topPickedCategories
+              .map((c) => `${c.category} ${Math.round(c.pickRate * 100)}%`)
+              .join(", ")}`,
+          );
+        }
+        if (globalLineParts.length) {
+          lines.push(`- Across people: ${globalLineParts.join("; ")}.`);
+        }
+      }
+      lines.push("");
+      lines.push(
+        'Calibrate this batch of 6 toward the patterns above. Skew categories and length toward "Picks by category" and "Avg picked length". Never emit anything in DO NOT propose. If a person has fewer than 5 logged suggestions, fall back to global patterns and don\'t over-fit.',
+      );
+      return lines.join("\n") + "\n";
+    })();
+
     const moodGuidance: Record<string, string> = {
       normal: "",
       calm: "James's current mood: CALM and relaxed. Suggestions should sound measured, gentle, unhurried, and grounded. Avoid exclamation marks or high-energy phrasing.",
@@ -374,16 +505,19 @@ Each suggestion must be under 16 words and feel natural to say out loud. Avoid r
       ? "A question was just asked. Prioritise direct, specific answers — include at least 3 answer suggestions. The other slots can be follow-ups or conversation-movers."
       : "Distribute the 6 suggestions: 2 direct responses to what was just said, 2 conversation-movers (deepen a topic or gently shift it), 1 practical or action suggestion, 1 humorous or light option. Vary tone clearly.";
 
+    // Block order — keep in sync with the comment above `styleEvidenceBlock`:
+    // profile → people → place → event → style_profile → [Tier 3.1 retrieved_memories]
+    //   → style_evidence → [Tier 3.2 arc] → [Tier 3.3 mood] → [Tier 3.4 category_bias]
     const user = `${profileBlock}
 ${peopleBlock}
 ${placeBlock}
 ${eventBlock}
 ${styleBlock}
-${moodBlock}
+${styleEvidenceBlock}${moodBlock}
 # Live conversation so far
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
-${data.alreadyShown?.length ? `# Already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
+${data.alreadyShown?.length ? `# Recently ignored or already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
 ${questionGuidance}
 Return exactly 6 suggestions in James's voice.`;
 
@@ -1315,5 +1449,139 @@ Does this chunk contain two speakers? If yes, at which word does the second spea
         reasoning: "",
         error: "Parse error",
       };
+    }
+  });
+// === Tier 1: feedback loop ===
+/* ----------------------- AI: distill style profile -------------------------
+ *
+ * 1.2 — periodically rolls the suggestions_log up into a structured
+ * StyleProfileJson (preferred openers, formality, humor markers, taboo
+ * phrases, etc.). Called from `runStyleDistillation` in style-distill.ts.
+ * Kept here so the LLM call stays server-side with the other AI fns.
+ * ------------------------------------------------------------------------- */
+
+const distillSampleSchema = z.object({
+  shown: z.string(),
+  edited_to: z.string().optional(),
+  selected: z.boolean(),
+  ignored: z.boolean(),
+  category: z.string(),
+  person_name: z.string().optional(),
+});
+
+const distillStyleProfileSchema = z.object({
+  samples: z.array(distillSampleSchema).max(800),
+  jamesProfile: jamesProfileSchema.optional(),
+  previous: z.string().optional(),
+  model: z.string().optional(),
+  windowDays: z.number().int().positive().max(365),
+});
+
+export const distillStyleProfile = createServerFn({ method: "POST" })
+  .inputValidator((d) => distillStyleProfileSchema.parse(d))
+  .handler(async ({ data }) => {
+    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
+    if (data.samples.length < 20) {
+      return {
+        profile: null as unknown,
+        error: "insufficient samples",
+      };
+    }
+
+    const jp = data.jamesProfile;
+    const profileLine = jp
+      ? `${jp.name}${jp.communication ? ` — communication style: ${jp.communication}` : ""}`
+      : "James";
+
+    // Compact sample list — cap to keep the prompt bounded.
+    const sampleLines = data.samples.slice(0, 400).map((s, i) => {
+      const tags: string[] = [];
+      if (s.selected) tags.push("picked");
+      if (s.edited_to && s.edited_to !== s.shown) tags.push("edited");
+      if (s.ignored && !s.selected) tags.push("ignored");
+      const tagStr = tags.length ? `[${tags.join(",")}]` : "[shown]";
+      const who = s.person_name ? ` (with ${s.person_name})` : "";
+      const edit = s.edited_to && s.edited_to !== s.shown ? ` → "${s.edited_to}"` : "";
+      return `${i + 1}. ${tagStr} ${s.category}${who}: "${s.shown}"${edit}`;
+    });
+
+    const system = `You distill James's communication style from real picked vs. ignored suggestions. Return a structured StyleProfileJson via the emit_profile tool. Be conservative — only assert patterns you can see in the samples.`;
+    const user = `User: ${profileLine}
+Window: last ${data.windowDays} days, ${data.samples.length} logged suggestions.
+${data.previous ? `Previous distilled profile (for reference, may be wrong/stale):\n${data.previous}\n` : ""}
+Sample log (one per line, with [picked|edited|ignored|shown] tag):
+${sampleLines.join("\n")}
+
+Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRITES (edited). Treat (ignored) lines as anti-examples. Do not over-claim if signal is thin.`;
+
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_profile",
+              description: "Emit a distilled style profile JSON",
+              parameters: {
+                type: "object",
+                properties: {
+                  preferred_openers: { type: "array", items: { type: "string" } },
+                  preferred_signoffs: { type: "array", items: { type: "string" } },
+                  formality: {
+                    type: "string",
+                    enum: ["casual", "neutral", "formal"],
+                  },
+                  formality_score: { type: "number" },
+                  humor_markers: { type: "array", items: { type: "string" } },
+                  taboo_phrases: { type: "array", items: { type: "string" } },
+                  avg_sentence_length_words: { type: "number" },
+                  reading_grade_estimate: { type: "number" },
+                  category_preference: {
+                    type: "object",
+                    additionalProperties: { type: "number" },
+                  },
+                  notes: { type: "string" },
+                },
+                required: [
+                  "preferred_openers",
+                  "preferred_signoffs",
+                  "formality",
+                  "formality_score",
+                  "humor_markers",
+                  "taboo_phrases",
+                  "avg_sentence_length_words",
+                  "reading_grade_estimate",
+                  "category_preference",
+                  "notes",
+                ],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_profile" } },
+        temperature: 0.2,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("Distill failed:", res.status, err);
+      return { profile: null as unknown, error: `AI error ${res.status}` };
+    }
+    const json = (await res.json()) as any;
+    const call = json.choices?.[0]?.message?.tool_calls?.[0];
+    if (!call) return { profile: null as unknown, error: "No tool call" };
+    try {
+      const parsed = JSON.parse(call.function.arguments);
+      return { profile: parsed, error: null };
+    } catch {
+      return { profile: null as unknown, error: "Parse error" };
     }
   });

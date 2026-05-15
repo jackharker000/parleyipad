@@ -1,4 +1,5 @@
 import { db, getJamesProfile, type EventItem, type Person, type Place } from "./db";
+import { getStyleEvidence, type StyleEvidence } from "./style-evidence";
 
 export type ConversationContext = {
   jamesProfile: {
@@ -39,6 +40,10 @@ export type ConversationContext = {
     docs: string[]; // formatted doc snippets
   };
   styleProfileJson?: string;
+  // === Tier 1: feedback loop ===
+  /** Aggregated per-person picks / edits / dead phrases, used to calibrate
+   *  the suggestion prompt. Populated by `buildConversationContext`. */
+  styleEvidence?: StyleEvidence;
 };
 
 const RECENT_MEMORY_LIMIT = 4;
@@ -250,6 +255,17 @@ export async function buildConversationContext(opts: {
     };
   }
 
+  // === Tier 1: feedback loop ===
+  // Fold in the rolled-up per-person picks/edits so the suggestion prompt
+  // can calibrate toward what James actually picks. Failures here must not
+  // break suggestion generation — the field is optional.
+  let styleEvidence: StyleEvidence | undefined;
+  try {
+    styleEvidence = await getStyleEvidence(opts.personIds);
+  } catch (err) {
+    console.warn("style evidence lookup failed", err);
+  }
+
   const context: ConversationContext = {
     jamesProfile: {
       name: profile.display_name || "James",
@@ -270,6 +286,7 @@ export async function buildConversationContext(opts: {
     place,
     event,
     styleProfileJson: styleProfile?.json,
+    styleEvidence,
   };
   _ctxCache = { fingerprint, context, builtAt: Date.now() };
   return context;

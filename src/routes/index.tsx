@@ -47,9 +47,11 @@ import {
   aiSplitTranscriptChunk,
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
+import { getCrossSessionDeadPhrases } from "@/lib/style-evidence";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
-import { seedJamesIfNeeded } from "@/lib/seed";
+import { seedJamesIfNeeded, backfillSuggestionsLogPersonIds } from "@/lib/seed";
+import { runStyleDistillation } from "@/lib/style-distill";
 import {
   VoiceCapture,
   computeMfccMean,
@@ -301,6 +303,10 @@ function Home() {
   }, [showPeoplePicker, refreshVoiceprintStatus]);
   useEffect(() => {
     seedJamesIfNeeded();
+    // === Tier 1.1: one-time backfill of person_id on historical
+    // suggestions_log rows so style-evidence aggregation has signal from
+    // pre-existing conversations. ===
+    void backfillSuggestionsLogPersonIds();
   }, []);
 
   // Server fns
@@ -1280,6 +1286,10 @@ function Home() {
           toast.success("Saved", { id: "sum" });
         }
       }
+      // === Tier 1.2: auto-distil style profile ===
+      // Cadence-guarded (≤ once per 12 h); silently no-ops if there aren't
+      // enough samples yet. Failures never block the Stop flow.
+      void runStyleDistillation().catch((err) => console.warn("style distill failed", err));
     } catch (e: any) {
       toast.error(e?.message ?? "Could not save", { id: "sum" });
     } finally {
@@ -1295,6 +1305,11 @@ function Home() {
   // Tracks the (transcriptLen + mood) signature of the last AI call so we
   // skip redundant refreshes when nothing relevant has changed.
   const lastSuggestKeyRef = useRef<string>("");
+  // === Tier 1.3: cross-session dead phrases ===
+  // Cached so the Dexie scan only runs once per minute, not on every 1.5 s
+  // refresh tick. Keyed by sorted personIds to invalidate when the present
+  // set changes.
+  const deadPhrasesCacheRef = useRef<{ key: string; at: number; list: string[] } | null>(null);
   const refreshSuggestions = useCallback(async () => {
     if (loadingSuggestions || !active) return;
     const key = `${committed.length}:${moodRef.current}`;
@@ -1328,6 +1343,29 @@ function Home() {
         const t = s.text.trim();
         return t.endsWith("?") || QUESTION_STARTERS.test(t);
       });
+      // === Tier 1.3: merge cross-session dead phrases into alreadyShown ===
+      const personKey = [...personIdsRef.current].sort().join(",");
+      let crossDead: string[] = [];
+      if (personIdsRef.current.length) {
+        const cached = deadPhrasesCacheRef.current;
+        if (cached && cached.key === personKey && Date.now() - cached.at < 60_000) {
+          crossDead = cached.list;
+        } else {
+          try {
+            crossDead = await getCrossSessionDeadPhrases(personIdsRef.current);
+            deadPhrasesCacheRef.current = {
+              key: personKey,
+              at: Date.now(),
+              list: crossDead,
+            };
+          } catch (err) {
+            console.warn("cross-session dead phrases lookup failed", err);
+            crossDead = [];
+          }
+        }
+      }
+      const sessionShown = lastShownRef.current.slice(-20);
+      const alreadyShown = Array.from(new Set([...sessionShown, ...crossDead])).slice(0, 80);
       const r = await suggestFn({
         data: {
           recentTranscript: recent,
@@ -1336,7 +1374,9 @@ function Home() {
           place: ctx.place,
           event: ctx.event,
           styleProfileJson: ctx.styleProfileJson,
-          alreadyShown: lastShownRef.current.slice(-20),
+          // === Tier 1.1: style evidence ===
+          styleEvidence: ctx.styleEvidence,
+          alreadyShown,
           model: fastModelRef.current,
           mood: moodRef.current,
           questionAsked,
@@ -1349,11 +1389,28 @@ function Home() {
           ...r.suggestions.map((s: Suggestion) => s.text),
         ].slice(-30);
         const now = Date.now();
-        if (conversationIdRef.current) {
+        const cid = conversationIdRef.current;
+        if (cid) {
+          // === Tier 1.1: mark displaced rows as ignored ===
+          // Any prior rows in this conversation that the user didn't pick AND
+          // aren't being re-emitted by this batch are now "ignored". This
+          // gives `deadPhrases` real signal across refreshes.
+          const newTexts = new Set((r.suggestions as Suggestion[]).map((s) => s.text));
+          try {
+            await db.suggestions_log
+              .where("conversation_id")
+              .equals(cid)
+              .and((l) => !l.selected && l.displaced_at == null && !newTexts.has(l.text))
+              .modify({ displaced_at: now, ignored: true });
+          } catch (err) {
+            console.warn("mark displaced rows failed", err);
+          }
+          // === Tier 1.1: tag new rows with person_id ===
+          const primaryPersonId = personIdsRef.current[0];
           await db.suggestions_log.bulkAdd(
             (r.suggestions as Suggestion[]).map((s) => ({
               id: newId(),
-              conversation_id: conversationIdRef.current!,
+              conversation_id: cid,
               text: s.text,
               category: s.category,
               source: "ai",
@@ -1361,6 +1418,7 @@ function Home() {
               selected: false,
               ignored: false,
               spoken: false,
+              person_id: primaryPersonId,
             })),
           );
         }

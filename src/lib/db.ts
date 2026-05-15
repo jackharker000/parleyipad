@@ -57,6 +57,13 @@ export type SuggestionLog = {
   ignored: boolean;
   spoken: boolean;
   time_to_tap_ms?: number;
+  /** Which person was the conversation primarily with when this was shown.
+   * Used by Tier 1 style-evidence aggregation to bucket picks per person. */
+  person_id?: string;
+  /** Set when a row was bumped out of the visible 6 by a refresh without
+   * being selected — Tier 1 uses this to detect "ignored" suggestions
+   * across the cross-session dead-phrase filter. */
+  displaced_at?: number;
 };
 
 export type ManualReply = {
@@ -130,6 +137,45 @@ export type StyleProfile = {
   id: "singleton";
   updated_at: number;
   json: string;
+};
+
+// === Tier 1: feedback loop ===
+/** Cached per-person style evidence so suggestion refreshes don't re-run the
+ * Dexie aggregation on every 1.5 s tick. Keyed by sorted-joined personIds. */
+export type StyleEvidenceCache = {
+  id: string;
+  person_id: string;
+  computed_at: number;
+  json: string; // serialized StyleEvidence
+};
+
+/** Run log for the auto style-profile distillation job. */
+export type StyleDistillRun = {
+  id: string;
+  ran_at: number;
+  conversations_seen: number;
+  samples_used: number;
+  ok: boolean;
+  error?: string;
+};
+
+/** Shape persisted to `style_profile.json` after distillation. Kept here so
+ * both the server fn and the reader use a single source of truth. */
+export type StyleProfileJson = {
+  version: 1;
+  generated_at: number;
+  source_window_days: number;
+  source_sample_count: number;
+  preferred_openers: string[];
+  preferred_signoffs: string[];
+  formality: "casual" | "neutral" | "formal";
+  formality_score: number; // 0..1
+  humor_markers: string[];
+  taboo_phrases: string[];
+  avg_sentence_length_words: number;
+  reading_grade_estimate: number;
+  category_preference: Record<string, number>;
+  notes: string;
 };
 
 export type JamesProfile = {
@@ -248,6 +294,9 @@ class AacDb extends Dexie {
   voiceprints!: Table<Voiceprint, string>;
   person_documents!: Table<PersonDocument, string>;
   voiceprint_contributions!: Table<VoiceprintContribution, string>;
+  // === Tier 1: feedback loop ===
+  style_evidence_cache!: Table<StyleEvidenceCache, string>;
+  style_distill_runs!: Table<StyleDistillRun, string>;
 
   constructor() {
     super("aac_copilot");
@@ -281,6 +330,15 @@ class AacDb extends Dexie {
     });
     this.version(7).stores({
       voiceprint_contributions: "id, person_id, ts",
+    });
+    // === Tier 1: feedback loop ===
+    // Add `person_id` and `[person_id+ignored]` index to suggestions_log
+    // so we can bucket picks per person and filter cross-session dead
+    // phrases cheaply. Introduces caches for style evidence + distill runs.
+    this.version(8).stores({
+      suggestions_log: "id, conversation_id, shown_at, person_id, [person_id+ignored]",
+      style_evidence_cache: "id, person_id, computed_at",
+      style_distill_runs: "id, ran_at",
     });
   }
 }

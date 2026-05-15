@@ -99,6 +99,7 @@ import {
 } from "@/lib/aac.functions";
 import { getCurrentPosition } from "@/lib/geo";
 import { getPersonStats, groupMemories } from "@/lib/people-stats";
+import { runStyleDistillation } from "@/lib/style-distill";
 import { AccountCard } from "@/components/AccountCard";
 
 export const Route = createFileRoute("/settings")({
@@ -478,11 +479,75 @@ function SystemTab() {
           </AccordionContent>
         </AccordionItem>
       </Accordion>
+
+      {/* === Tier 1.2: style profile distillation === */}
+      <StyleProfileCard />
     </div>
   );
 }
 
 /* -------------------------- James Profile editor -------------------------- */
+
+/* === Tier 1.2: Style profile distillation ================================ */
+
+function StyleProfileCard() {
+  const [rebuilding, setRebuilding] = useState(false);
+  const profile = useLiveQuery(() => db.style_profile.get("singleton"), []);
+  const lastRun = useLiveQuery(() => db.style_distill_runs.orderBy("ran_at").reverse().first(), []);
+
+  let parsed: { generated_at?: number; source_sample_count?: number; notes?: string } = {};
+  if (profile?.json) {
+    try {
+      parsed = JSON.parse(profile.json);
+    } catch {
+      // ignore
+    }
+  }
+  const generatedLabel = parsed.generated_at
+    ? new Date(parsed.generated_at).toLocaleString()
+    : "Never";
+
+  async function rebuild() {
+    if (rebuilding) return;
+    setRebuilding(true);
+    try {
+      toast.loading("Rebuilding style profile…", { id: "style-distill" });
+      await runStyleDistillation({ force: true });
+      toast.success("Style profile rebuilt", { id: "style-distill" });
+    } catch (e: any) {
+      toast.error(e?.message ?? "Rebuild failed", { id: "style-distill" });
+    } finally {
+      setRebuilding(false);
+    }
+  }
+
+  return (
+    <Card className="p-6">
+      <h2 className="text-lg font-semibold">Style profile</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        We periodically distil your picked vs. ignored suggestions into a compact style profile
+        (formality, openers, humor, taboo phrases) that steers future suggestions. The job runs in
+        the background after each conversation, capped at once every 12 hours.
+      </p>
+      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <dt className="text-muted-foreground">Last generated</dt>
+          <dd className="font-medium">{generatedLabel}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Samples used</dt>
+          <dd className="font-medium">{parsed.source_sample_count ?? "—"}</dd>
+        </div>
+      </dl>
+      {lastRun && !lastRun.ok && lastRun.error ? (
+        <p className="mt-3 text-xs text-amber-700">Last attempt: {lastRun.error}</p>
+      ) : null}
+      <Button variant="secondary" className="mt-4 h-11" onClick={rebuild} disabled={rebuilding}>
+        {rebuilding ? "Rebuilding…" : "Rebuild style profile"}
+      </Button>
+    </Card>
+  );
+}
 
 /* ---------------------------- Voice Designer ----------------------------- */
 
