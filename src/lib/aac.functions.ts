@@ -1180,3 +1180,146 @@ ${data.candidates
       return { decisions: [], error: "Parse error" };
     }
   });
+/* ---------- 2.3: per-person profile enrichment ---------- */
+
+const enrichPersonSchema = z.object({
+  personName: z.string().min(1),
+  personId: z.string().min(1),
+  relationship: z.string().optional(),
+  currentProfile: z.object({
+    interests: z.array(z.string()).optional(),
+    style_notes: z.string().optional(),
+    topics_loved: z.string().optional(),
+    topics_avoided: z.string().optional(),
+    relationship_dynamics: z.string().optional(),
+    dynamic_tags: z.array(z.string()).optional(),
+  }),
+  filteredTranscript: z.array(z.object({ speaker: z.string(), text: z.string() })).max(200),
+  model: z.string().optional(),
+});
+
+const ENRICH_ALLOWED_TAGS = [
+  "teases",
+  "interrupts",
+  "formal",
+  "warm",
+  "directive",
+  "questions-a-lot",
+  "stories-a-lot",
+  "short-replies",
+  "follows-up",
+];
+
+export const enrichPersonProfile = createServerFn({ method: "POST" })
+  .inputValidator((d) => enrichPersonSchema.parse(d))
+  .handler(async ({ data }) => {
+    if (data.filteredTranscript.length === 0) {
+      return {
+        proposals: [] as Array<{
+          field: string;
+          value: string;
+          op: "add" | "replace";
+          reasoning?: string;
+        }>,
+        error: null as string | null,
+      };
+    }
+    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
+    const system = `You analyse a transcript filtered to a SINGLE pair: James (a non-speaking AAC user) and ONE other person. You propose small, conservative updates to your stored profile of that person so future AI replies feel more attuned to them.
+
+Categories (only propose what is strongly evidenced — skip categories with no evidence):
+- interests (array): hobbies / subjects they clearly care about, each <= 5 words.
+- style_notes (text, append): how James interacts with THIS person specifically.
+- topics_loved (text, append): topics they brought up enthusiastically.
+- topics_avoided (text, append): topics they steered away from.
+- relationship_dynamics (text, append): freeform observation about the dynamic.
+- dynamic_tags (array): tags from ONLY: [${ENRICH_ALLOWED_TAGS.map((t) => `"${t}"`).join(", ")}]. Max 3 new tags per proposal.
+
+NEVER propose anything already present (verbatim or paraphrased). Be terse. Each value <= 25 words. Return empty proposals if nothing meaningful to add.`;
+
+    const profileText = JSON.stringify(data.currentProfile, null, 2);
+    const transcriptText = data.filteredTranscript.map((s) => `${s.speaker}: ${s.text}`).join("\n");
+    const user = `Person: ${data.personName}${data.relationship ? ` (${data.relationship})` : ""}
+
+Current stored profile:
+${profileText}
+
+Filtered transcript (only turns by James and ${data.personName}):
+${transcriptText}`;
+
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_proposals",
+              parameters: {
+                type: "object",
+                properties: {
+                  proposals: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        field: {
+                          type: "string",
+                          enum: [
+                            "interests",
+                            "style_notes",
+                            "topics_loved",
+                            "topics_avoided",
+                            "relationship_dynamics",
+                            "dynamic_tags",
+                          ],
+                        },
+                        value: { type: "string" },
+                        op: { type: "string", enum: ["add", "replace"] },
+                        reasoning: { type: "string" },
+                      },
+                      required: ["field", "value", "op"],
+                    },
+                  },
+                },
+                required: ["proposals"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_proposals" } },
+      }),
+    });
+
+    if (!res.ok) return { proposals: [], error: `AI error ${res.status}` };
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) return { proposals: [], error: "No tool call" };
+    try {
+      const parsed = JSON.parse(argStr) as {
+        proposals: Array<{
+          field: string;
+          value: string;
+          op: "add" | "replace";
+          reasoning?: string;
+        }>;
+      };
+      const proposals = (parsed.proposals ?? []).filter((p) => {
+        if (!p.value || !p.value.trim()) return false;
+        if (p.field === "dynamic_tags") {
+          return ENRICH_ALLOWED_TAGS.includes(p.value.trim().toLowerCase());
+        }
+        return true;
+      });
+      return { proposals, error: null };
+    } catch {
+      return { proposals: [], error: "Parse error" };
+    }
+  });
+

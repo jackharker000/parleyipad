@@ -19,15 +19,17 @@
 
 import {
   db,
+  newId,
   getJamesProfile,
   type Person,
   type Voiceprint,
+  type ProfileProposal,
   type TranscriptSegment,
   MFCC_COEFFS,
 } from "./db";
 import { cosineSim, rebuildVoiceprintFromContributions } from "./voiceprint";
 import { kmeansRediarize, type UtteranceVec } from "./rediarize";
-import { aiRediarizeTieBreaker } from "./aac.functions";
+import { aiRediarizeTieBreaker, enrichPersonProfile } from "./aac.functions";
 import { toast } from "sonner";
 
 export type Tier2Ctx = {
@@ -299,8 +301,117 @@ export async function rebuildVoiceprintsAfterStop(ctx: Tier2Ctx): Promise<void> 
   }
 }
 
-export async function enrichProfilesAfterStop(_ctx: Tier2Ctx): Promise<void> {
-  /* Implemented in 2.3 commit. */
+/* -------------------------------------------------------------------------- */
+/* 2.3 — Per-person profile enrichment                                        */
+/* -------------------------------------------------------------------------- */
+
+const MAX_PROPOSALS_PER_PERSON_PER_CONV = 5;
+const MIN_PERSON_TURNS_FOR_ENRICH = 4;
+
+export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
+  // Re-read transcript fresh in case 2.1 just rewrote person_ids.
+  const allSegs = await db.transcript_segments
+    .where("conversation_id")
+    .equals(ctx.conversationId)
+    .toArray();
+  allSegs.sort((a, b) => a.ts - b.ts);
+
+  const conv = await db.conversations.get(ctx.conversationId);
+  const speakerMap = conv?.speaker_map ?? {};
+  const profile = await getJamesProfile();
+  const jamesName = profile.display_name ?? "James";
+
+  const labelToPerson = new Map<string, string>(Object.entries(speakerMap));
+
+  for (const personId of ctx.personIds) {
+    try {
+      const person = await db.people.get(personId);
+      if (!person) continue;
+      if (person.name.toLowerCase() === jamesName.toLowerCase()) continue;
+
+      // Find indices of segments belonging to this person.
+      const indices: number[] = [];
+      for (let i = 0; i < allSegs.length; i++) {
+        const s = allSegs[i];
+        const pid = s.person_id ?? labelToPerson.get(s.speaker_label);
+        if (pid === personId) indices.push(i);
+      }
+      if (indices.length < MIN_PERSON_TURNS_FOR_ENRICH) continue;
+
+      // Build filtered transcript: person's turns + 2 surrounding segments
+      // (but only emit James/person turns into the LLM input, for privacy).
+      const keep = new Set<number>();
+      for (const i of indices) {
+        for (let j = Math.max(0, i - 2); j <= Math.min(allSegs.length - 1, i + 2); j++) {
+          keep.add(j);
+        }
+      }
+      // Pre-resolve speaker identities for filtered slots so we don't do
+      // async lookups inside the loop in a hot path.
+      const slotIsPerson = new Array<boolean>(allSegs.length).fill(false);
+      const slotIsJames = new Array<boolean>(allSegs.length).fill(false);
+      for (let i = 0; i < allSegs.length; i++) {
+        if (!keep.has(i)) continue;
+        const s = allSegs[i];
+        const pid = s.person_id ?? labelToPerson.get(s.speaker_label);
+        if (pid === personId) slotIsPerson[i] = true;
+        else if (pid) {
+          const other = await db.people.get(pid);
+          if (other && other.name?.toLowerCase() === jamesName.toLowerCase()) {
+            slotIsJames[i] = true;
+          }
+        }
+      }
+      const filtered: { speaker: string; text: string }[] = [];
+      for (let i = 0; i < allSegs.length; i++) {
+        if (!keep.has(i)) continue;
+        const s = allSegs[i];
+        if (slotIsPerson[i]) {
+          filtered.push({ speaker: person.name, text: s.text });
+        } else if (slotIsJames[i]) {
+          filtered.push({ speaker: jamesName, text: s.text });
+        }
+      }
+      if (filtered.length === 0) continue;
+
+      const r = await enrichPersonProfile({
+        data: {
+          personName: person.name,
+          personId: person.id,
+          relationship: person.relationship,
+          currentProfile: {
+            interests: person.interests,
+            style_notes: person.style_notes,
+            topics_loved: person.topics_loved,
+            topics_avoided: person.topics_avoided,
+            relationship_dynamics: person.relationship_dynamics,
+            dynamic_tags: person.dynamic_tags,
+          },
+          filteredTranscript: filtered.slice(0, 200),
+          model: ctx.smartModel,
+        },
+      });
+
+      const capped = (r.proposals ?? []).slice(0, MAX_PROPOSALS_PER_PERSON_PER_CONV);
+      if (capped.length === 0) continue;
+
+      const now = Date.now();
+      const rows: ProfileProposal[] = capped.map((p) => ({
+        id: newId(),
+        person_id: personId,
+        conversation_id: ctx.conversationId,
+        field: p.field as ProfileProposal["field"],
+        value: p.value,
+        op: p.op,
+        status: "auto",
+        reasoning: p.reasoning,
+        created_at: now,
+      }));
+      await db.profile_proposals.bulkAdd(rows);
+    } catch (e) {
+      console.warn("[tier2.3] enrich failed for", personId, e);
+    }
+  }
 }
 
 export async function detectIntroductionsAfterStop(

@@ -64,6 +64,7 @@ import {
   type JamesDocument,
   type Person,
   type PersonDocument,
+  type ProfileProposal,
   type Place,
   type Memory,
   type EventItem,
@@ -922,6 +923,14 @@ function PeopleTab() {
     () => db.people.orderBy("name").toArray(),
     [],
   );
+  // Pending profile-update proposals (Tier 2.3) keyed by person_id, so the
+  // sidebar can show a badge per person.
+  const pendingCounts = useLiveQuery(async () => {
+    const all = await db.profile_proposals.where("status").equals("auto").toArray();
+    const m = new Map<string, number>();
+    for (const p of all) m.set(p.person_id, (m.get(p.person_id) ?? 0) + 1);
+    return m;
+  }, []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Person | null>(null);
   const [adding, setAdding] = useState(false);
@@ -1001,29 +1010,50 @@ function PeopleTab() {
                 : "No matches."}
             </p>
           )}
-          {filtered.map((p) => (
-            <button
-              key={p.id}
-              onClick={() => {
-                setSelectedId(p.id);
-                setEditing(null);
-              }}
-              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition ${
-                selectedId === p.id
-                  ? "bg-primary/10 ring-1 ring-primary/40"
-                  : "hover:bg-secondary"
-              }`}
-            >
-              <div>
-                <div className="font-medium">{p.name}</div>
-                {p.relationship && (
-                  <div className="text-xs text-muted-foreground">
-                    {p.relationship}
+          {filtered.map((p) => {
+            const pending = pendingCounts?.get(p.id) ?? 0;
+            const isAuto = p.status === "auto";
+            return (
+              <button
+                key={p.id}
+                onClick={() => {
+                  setSelectedId(p.id);
+                  setEditing(null);
+                }}
+                className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition ${
+                  selectedId === p.id
+                    ? "bg-primary/10 ring-1 ring-primary/40"
+                    : isAuto
+                      ? "ring-1 ring-amber-400/60 hover:bg-secondary"
+                      : "hover:bg-secondary"
+                }`}
+              >
+                <div>
+                  <div className="font-medium">
+                    {p.name}
+                    {isAuto && (
+                      <span className="ml-2 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                        auto
+                      </span>
+                    )}
                   </div>
+                  {p.relationship && (
+                    <div className="text-xs text-muted-foreground">
+                      {p.relationship}
+                    </div>
+                  )}
+                </div>
+                {pending > 0 && (
+                  <span
+                    className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+                    aria-label={`${pending} pending profile update${pending === 1 ? "" : "s"}`}
+                  >
+                    {pending}
+                  </span>
                 )}
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </div>
       </Card>
 
@@ -1185,6 +1215,35 @@ function PersonDetail({
           <p className="whitespace-pre-wrap text-sm">{person.style_notes}</p>
         </Section>
       )}
+      {person.topics_loved && (
+        <Section title="Topics they love">
+          <p className="whitespace-pre-wrap text-sm">{person.topics_loved}</p>
+        </Section>
+      )}
+      {person.topics_avoided && (
+        <Section title="Topics they avoid">
+          <p className="whitespace-pre-wrap text-sm">{person.topics_avoided}</p>
+        </Section>
+      )}
+      {person.relationship_dynamics && (
+        <Section title="Relationship dynamics">
+          <p className="whitespace-pre-wrap text-sm">{person.relationship_dynamics}</p>
+        </Section>
+      )}
+      {person.dynamic_tags && person.dynamic_tags.length > 0 && (
+        <Section title="Dynamic tags">
+          <div className="flex flex-wrap gap-1.5">
+            {person.dynamic_tags.map((t) => (
+              <span key={t} className="rounded-full bg-secondary px-3 py-1 text-xs">
+                {t}
+              </span>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {/* Tier 2.3 — review queue of LLM-proposed profile updates */}
+      <ProfileProposalsSection personId={personId} />
 
       {/* Voiceprint — on-device voice fingerprint built up over conversations */}
       <VoiceprintSection personId={personId} />
@@ -1728,6 +1787,161 @@ function VoiceprintSection({ personId }: { personId: string }) {
       empty=""
     >
       <VoiceSampleRecorder personId={personId} />
+    </Section>
+  );
+}
+
+/**
+ * Review queue for LLM-proposed updates to this person's profile (Tier 2.3).
+ *
+ * Status flow: "auto" → user decides {Accept|Edit|Reject}.
+ *   * Accept → apply value to Person row + mark "applied".
+ *   * Edit   → open textarea; save mutates value + marks "edited" + applies.
+ *   * Reject → mark "hidden" without touching the Person.
+ */
+function ProfileProposalsSection({ personId }: { personId: string }) {
+  const pending = useLiveQuery(
+    () =>
+      db.profile_proposals
+        .where("person_id")
+        .equals(personId)
+        .filter((p) => p.status === "auto")
+        .reverse()
+        .sortBy("created_at"),
+    [personId],
+  );
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftValue, setDraftValue] = useState<string>("");
+
+  if (!pending || pending.length === 0) return null;
+
+  const fieldLabel: Record<ProfileProposal["field"], string> = {
+    interests: "Interest",
+    style_notes: "Style note",
+    topics_loved: "Topic they love",
+    topics_avoided: "Topic they avoid",
+    relationship_dynamics: "Relationship dynamic",
+    dynamic_tags: "Dynamic tag",
+  };
+
+  async function apply(p: ProfileProposal, value: string) {
+    const person = await db.people.get(personId);
+    if (!person) return;
+    const patch: Partial<Person> = {};
+    if (p.field === "interests" || p.field === "dynamic_tags") {
+      const list = (person[p.field] ?? []) as string[];
+      const next = list.includes(value) ? list : [...list, value];
+      patch[p.field] = next as Person["interests"] & Person["dynamic_tags"];
+    } else if (p.op === "replace") {
+      patch[p.field] = value;
+    } else {
+      const cur = (person[p.field] as string | undefined) ?? "";
+      patch[p.field] = cur ? `${cur}\n${value}` : value;
+    }
+    await db.people.update(personId, patch);
+  }
+
+  return (
+    <Section
+      icon={<Sparkles className="size-4" />}
+      title="Pending profile updates (AI proposals)"
+    >
+      <ul className="space-y-2">
+        {pending.map((p) => {
+          const isEditing = editingId === p.id;
+          return (
+            <li
+              key={p.id}
+              className="rounded-lg border border-amber-400/40 bg-amber-50/40 p-3 dark:bg-amber-950/20"
+            >
+              <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                {fieldLabel[p.field]}
+                {p.op === "replace" ? " · replace" : ""}
+              </div>
+              {isEditing ? (
+                <Textarea
+                  rows={2}
+                  value={draftValue}
+                  onChange={(e) => setDraftValue(e.target.value)}
+                  className="mt-1"
+                />
+              ) : (
+                <p className="mt-1 whitespace-pre-wrap text-sm">{p.value}</p>
+              )}
+              {p.reasoning && !isEditing && (
+                <p className="mt-1 text-xs text-muted-foreground italic">
+                  {p.reasoning}
+                </p>
+              )}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {isEditing ? (
+                  <>
+                    <Button
+                      size="sm"
+                      onClick={async () => {
+                        const val = draftValue.trim();
+                        if (!val) return;
+                        await apply(p, val);
+                        await db.profile_proposals.update(p.id, {
+                          value: val,
+                          status: "edited",
+                        });
+                        toast.success("Saved");
+                        setEditingId(null);
+                      }}
+                    >
+                      <Check className="size-4" /> Save & apply
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setEditingId(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      onClick={async () => {
+                        await apply(p, p.value);
+                        await db.profile_proposals.update(p.id, {
+                          status: "applied",
+                        });
+                        toast.success("Applied");
+                      }}
+                    >
+                      <Check className="size-4" /> Accept
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        setDraftValue(p.value);
+                        setEditingId(p.id);
+                      }}
+                    >
+                      <Pencil className="size-4" /> Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={async () => {
+                        await db.profile_proposals.update(p.id, {
+                          status: "hidden",
+                        });
+                      }}
+                    >
+                      <X className="size-4" /> Reject
+                    </Button>
+                  </>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </Section>
   );
 }
