@@ -403,7 +403,7 @@ Return 10 ranked suggestions in James's voice. Provide a wide variety so James h
                   suggestions: {
                     type: "array",
                     minItems: 6,
-                    maxItems: 10,
+                    maxItems: 9,
                     items: {
                       type: "object",
                       properties: {
