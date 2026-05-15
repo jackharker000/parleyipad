@@ -42,6 +42,10 @@ export type TranscriptSegment = {
   person_id?: string;
   text: string;
   ts: number;
+  /** Tier 3.1 — optional semantic embedding (text-embedding-3-small, 1536 dims). */
+  embedding?: number[];
+  /** Tier 3.1 — model name used to produce `embedding`. */
+  embedding_model?: string;
 };
 
 export type SuggestionLog = {
@@ -75,6 +79,11 @@ export type Memory = {
   kind: "fact" | "preference" | "event" | "todo";
   status: "auto" | "edited" | "hidden";
   created_at: number;
+  /** Tier 3.1 — semantic embedding for retrieval (text-embedding-3-small). */
+  embedding?: number[];
+  /** Tier 3.1 — model name used to produce `embedding`. Compare only across
+   *  memories produced with the same model. */
+  embedding_model?: string;
 };
 
 export type FollowUp = {
@@ -119,11 +128,11 @@ export const IPAD_PRESETS: Record<
   Exclude<IPadModel, "auto">,
   { label: string; width: number; height: number }
 > = {
-  ipad_mini:     { label: "iPad mini (8.3\")",   width: 1133, height: 744 },
-  ipad_10_9:     { label: "iPad 10.9\"",         width: 1180, height: 820 },
-  ipad_air_11:   { label: "iPad Air / Pro 11\"", width: 1194, height: 834 },
-  ipad_pro_12_9: { label: "iPad Pro 12.9\"",     width: 1366, height: 1024 },
-  ipad_pro_13:   { label: "iPad Pro 13\" (M4)",  width: 1376, height: 1032 },
+  ipad_mini: { label: 'iPad mini (8.3")', width: 1133, height: 744 },
+  ipad_10_9: { label: 'iPad 10.9"', width: 1180, height: 820 },
+  ipad_air_11: { label: 'iPad Air / Pro 11"', width: 1194, height: 834 },
+  ipad_pro_12_9: { label: 'iPad Pro 12.9"', width: 1366, height: 1024 },
+  ipad_pro_13: { label: 'iPad Pro 13" (M4)', width: 1376, height: 1032 },
 };
 
 export type StyleProfile = {
@@ -266,6 +275,14 @@ class AacDb extends Dexie {
     this.version(6).stores({
       person_documents: "id, person_id, created_at",
     });
+    // Tier 3.1 — added `embedding` and `embedding_model` fields on Memory
+    // and TranscriptSegment. No new indexes (embeddings are scanned
+    // in-memory by retrieval.ts), so the stores strings are unchanged from
+    // version 1. Declaring v8 explicitly lets Dexie know schema is current.
+    this.version(8).stores({
+      memories: "id, person_id, place_id, conversation_id, created_at",
+      transcript_segments: "id, conversation_id, ts",
+    });
   }
 }
 
@@ -296,18 +313,78 @@ export type ModelOption = {
 // Models served via Lovable AI Gateway (no extra key needed) plus
 // "openai-direct/*" options that use the user's own OPENAI_API_KEY.
 export const MODEL_OPTIONS: ModelOption[] = [
-  { id: "openai-direct/gpt-5.5-pro", label: "GPT-5.5 Pro (your key)", hint: "Premium · deepest reasoning", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5.5", label: "GPT-5.5 (your key)", hint: "Most capable · state of the art", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5.4-pro", label: "GPT-5.4 Pro (your key)", hint: "Premium reasoning", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5.4", label: "GPT-5.4 (your key)", hint: "Advanced reasoning · code", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5.4-mini", label: "GPT-5.4 mini (your key)", hint: "Faster · balanced 5.4", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5.4-nano", label: "GPT-5.4 nano (your key)", hint: "Fastest · cheapest 5.4", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5.2", label: "GPT-5.2 (your key)", hint: "Enhanced reasoning", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5", label: "GPT-5 (your key)", hint: "Powerful all-rounder", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5-mini", label: "GPT-5 mini (your key)", hint: "Fast · balanced · your OpenAI key", provider: "openai-direct" },
-  { id: "openai-direct/gpt-5-nano", label: "GPT-5 nano (your key)", hint: "Fastest · cheapest · your OpenAI key", provider: "openai-direct" },
-  { id: "openai-direct/gpt-4o", label: "GPT-4o (your key)", hint: "Legacy · uses your OpenAI key", provider: "openai-direct" },
-  { id: "openai-direct/gpt-4o-mini", label: "GPT-4o mini (your key)", hint: "Legacy · fast · your OpenAI key", provider: "openai-direct" },
+  {
+    id: "openai-direct/gpt-5.5-pro",
+    label: "GPT-5.5 Pro (your key)",
+    hint: "Premium · deepest reasoning",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5.5",
+    label: "GPT-5.5 (your key)",
+    hint: "Most capable · state of the art",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5.4-pro",
+    label: "GPT-5.4 Pro (your key)",
+    hint: "Premium reasoning",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5.4",
+    label: "GPT-5.4 (your key)",
+    hint: "Advanced reasoning · code",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5.4-mini",
+    label: "GPT-5.4 mini (your key)",
+    hint: "Faster · balanced 5.4",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5.4-nano",
+    label: "GPT-5.4 nano (your key)",
+    hint: "Fastest · cheapest 5.4",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5.2",
+    label: "GPT-5.2 (your key)",
+    hint: "Enhanced reasoning",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5",
+    label: "GPT-5 (your key)",
+    hint: "Powerful all-rounder",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5-mini",
+    label: "GPT-5 mini (your key)",
+    hint: "Fast · balanced · your OpenAI key",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-5-nano",
+    label: "GPT-5 nano (your key)",
+    hint: "Fastest · cheapest · your OpenAI key",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-4o",
+    label: "GPT-4o (your key)",
+    hint: "Legacy · uses your OpenAI key",
+    provider: "openai-direct",
+  },
+  {
+    id: "openai-direct/gpt-4o-mini",
+    label: "GPT-4o mini (your key)",
+    hint: "Legacy · fast · your OpenAI key",
+    provider: "openai-direct",
+  },
 ];
 
 export async function getSettings(): Promise<Settings> {
@@ -317,8 +394,7 @@ export async function getSettings(): Promise<Settings> {
     if (!existing.fast_model || !existing.smart_model) {
       const migrated = {
         ...existing,
-        fast_model:
-          existing.fast_model ?? existing.suggestion_model ?? DEFAULT_SETTINGS.fast_model,
+        fast_model: existing.fast_model ?? existing.suggestion_model ?? DEFAULT_SETTINGS.fast_model,
         smart_model: existing.smart_model ?? DEFAULT_SETTINGS.smart_model,
       };
       await db.settings.put(migrated);

@@ -49,6 +49,8 @@ import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
 import { seedJamesIfNeeded } from "@/lib/seed";
 import { loadRecentBias, type CategoryBiasLabel } from "@/lib/suggestion-stats";
+import { embedOne } from "@/lib/embeddings";
+import { backfillMemoryEmbeddings, embedNewMemories } from "@/lib/embed-backfill";
 import {
   VoiceCapture,
   computeMfccMean,
@@ -268,9 +270,9 @@ function Home() {
   }, [speakerMap]);
   useEffect(() => {
     seedJamesIfNeeded();
-    // Tier 3 mount-time setup: load category bias (3.4) in parallel with
-    // any other background bootstrap. Embedding backfill (3.1) wires in
-    // separately once it lands.
+    // Tier 3 mount-time setup: in parallel, load category bias (3.4) and
+    // backfill any historical memories that don't yet have an embedding
+    // (3.1). Both are fire-and-forget — failures are logged inside.
     void Promise.all([
       loadRecentBias()
         .then((bias) => {
@@ -279,6 +281,9 @@ function Home() {
         .catch(() => {
           /* non-critical */
         }),
+      backfillMemoryEmbeddings().catch(() => {
+        /* non-critical — next mount will retry */
+      }),
     ]);
   }, []);
 
@@ -609,20 +614,23 @@ function Home() {
           });
           if (r.memories?.length) {
             const primary = personIdsRef.current[0];
-            await db.memories.bulkAdd(
-              r.memories.map(
-                (m: { text: string; kind: "fact" | "preference" | "event" | "todo" }) => ({
-                  id: newId(),
-                  conversation_id: cid,
-                  place_id: placeIdRef.current,
-                  person_id: primary,
-                  text: m.text,
-                  kind: m.kind,
-                  status: "auto" as const,
-                  created_at: Date.now(),
-                }),
-              ),
+            const newMems = r.memories.map(
+              (m: { text: string; kind: "fact" | "preference" | "event" | "todo" }) => ({
+                id: newId(),
+                conversation_id: cid,
+                place_id: placeIdRef.current,
+                person_id: primary,
+                text: m.text,
+                kind: m.kind,
+                status: "auto" as const,
+                created_at: Date.now(),
+              }),
             );
+            await db.memories.bulkAdd(newMems);
+            // Tier 3.1 — embed the new memories in the background so the
+            // next conversation can retrieve them semantically. Failure
+            // is non-fatal; the next mount's backfill will pick them up.
+            void embedNewMemories(newMems.map((m) => m.id));
           }
           if (r.followUps?.length) {
             const primary = personIdsRef.current[0];
@@ -750,14 +758,24 @@ function Home() {
           });
       }
 
-      const [ctx, arc] = await Promise.all([
-        buildConversationContext({
-          personIds: personIdsRef.current,
-          place: placeRef.current,
-          event: selectedEventRef.current ?? undefined,
-        }),
-        arcPromise,
-      ]);
+      // Tier 3.1 — embed the recent turns so the context builder can
+      // retrieve semantically-relevant memories instead of just the
+      // most recent. Failure here is non-fatal: fall back to recency.
+      const queryText =
+        recent.length > 0 ? recent.map((r) => `${r.speaker}: ${r.text}`).join("\n") : "";
+      const queryEmbeddingPromise: Promise<number[] | undefined> = queryText
+        ? embedOne(queryText)
+            .then((v) => v ?? undefined)
+            .catch(() => undefined)
+        : Promise.resolve(undefined);
+
+      const [queryEmbedding, arc] = await Promise.all([queryEmbeddingPromise, arcPromise]);
+      const ctx = await buildConversationContext({
+        personIds: personIdsRef.current,
+        place: placeRef.current,
+        event: selectedEventRef.current ?? undefined,
+        queryEmbedding,
+      });
       const r = await suggestFn({
         data: {
           recentTranscript: recent,
@@ -771,6 +789,7 @@ function Home() {
           mood: effectiveMoodRef.current,
           categoryBias: categoryBiasRef.current,
           arc: arc ?? undefined,
+          retrievedMemories: ctx.retrievedMemories,
         },
       });
       if (r.suggestions?.length) {
