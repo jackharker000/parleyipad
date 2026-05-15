@@ -276,6 +276,23 @@ function Home() {
   const participantVoiceprintsRef = useRef<
     Array<{ personId: string; centroid: number[] }>
   >([]);
+  // Refresh participant voiceprints if the participant list changes mid-conversation
+  // (e.g. user confirms a new speaker who gets added to selectedPersonIds).
+  useEffect(() => {
+    if (!active || selectedPersonIds.length === 0) return;
+    db.voiceprints
+      .where("person_id")
+      .anyOf(selectedPersonIds)
+      .toArray()
+      .then((prints: import("@/lib/db").Voiceprint[]) => {
+        participantVoiceprintsRef.current = prints.map((vp) => ({
+          personId: vp.person_id,
+          centroid: vp.centroid,
+        }));
+      })
+      .catch(() => {});
+  }, [active, selectedPersonIds]);
+
   // Keep a fresh copy of `committed` accessible inside stale scribe callback.
   const committedRef = useRef<TranscriptSegment[]>([]);
   useEffect(() => {
@@ -355,7 +372,7 @@ function Home() {
         !opts.forceNewCluster &&
         participantVoiceprintsRef.current.length > 0
       ) {
-        const PARTICIPANT_OVERRIDE_THRESHOLD = 0.78;
+        const PARTICIPANT_OVERRIDE_THRESHOLD = 0.84;
         for (const pvp of participantVoiceprintsRef.current) {
           if (pvp.centroid.length !== mfcc.length) continue;
           const sim = cosineSim(mfcc, pvp.centroid);
@@ -517,11 +534,13 @@ function Home() {
       // If the label is still a new cluster AND participants were declared,
       // prevent runaway cluster creation by merging into the best-matching
       // existing cluster when we're already at the cap.
-      if (mfcc && assignNew && !clusterStatusRef.current[speakerLabel] && peopleInConvo.length > 0) {
+      if (mfcc && assignNew && !clusterStatusRef.current[speakerLabel] && personIdsRef.current.length > 0) {
         const existingClusters = diarizerRef.current.clusters();
-        // Count clusters that existed before this new one was created
+        // Count clusters that existed before this new one was created.
+        // Use personIdsRef (snapshot at start) not peopleInConvo (reactive) so the
+        // cap doesn't shift mid-conversation when the user confirms a new person.
         const priorCount = existingClusters.length - 1; // new cluster already added
-        if (priorCount >= peopleInConvo.length + 1) {
+        if (priorCount >= personIdsRef.current.length + 1) {
           // Find the existing cluster (excluding the new one) with best cosine sim
           let bestExistingLabel: string | null = null;
           let bestExistingSim = -1;
@@ -905,25 +924,27 @@ function Home() {
               const postPcm = totalPcm.subarray(splitSampleFromStart);
               const preMfcc = computeMfccMean(prePcm, cap.sampleRate);
               const postMfcc = computeMfccMean(postPcm, cap.sampleRate);
+              const preText = d.words
+                .slice(0, splitWordIdx)
+                .map((w: any) => w.text ?? "")
+                .join(" ")
+                .trim();
+              const postText = d.words
+                .slice(splitWordIdx)
+                .map((w: any) => w.text ?? "")
+                .join(" ")
+                .trim();
+              // Consume the timestamp unconditionally — even if MFCC fails for
+              // one half, this shift is gone. Prevents a stale timestamp from
+              // mis-triggering on the next Scribe chunk.
+              speakerShiftTimestampsRef.current =
+                speakerShiftTimestampsRef.current.filter((t) => t !== shiftTs);
               if (preMfcc && postMfcc) {
-                const preText = d.words
-                  .slice(0, splitWordIdx)
-                  .map((w: any) => w.text ?? "")
-                  .join(" ")
-                  .trim();
-                const postText = d.words
-                  .slice(splitWordIdx)
-                  .map((w: any) => w.text ?? "")
-                  .join(" ")
-                  .trim();
                 console.debug("[diarize] split chunk at shift", {
                   shiftAtSec: shiftSecFromUtteranceStart.toFixed(2),
                   preText,
                   postText,
                 });
-                // Consume the shift timestamp
-                speakerShiftTimestampsRef.current =
-                  speakerShiftTimestampsRef.current.filter((t) => t !== shiftTs);
                 if (preText) await processUtterance(preText, preMfcc, {});
                 if (postText)
                   await processUtterance(postText, postMfcc, {
@@ -931,6 +952,10 @@ function Home() {
                     allowSelfIntroOverride: false,
                   });
                 return;
+              } else {
+                // MFCC failed for one or both halves — fall through to single-
+                // utterance processing below. Timestamp is already consumed.
+                console.debug("[diarize] split MFCC failed, processing as single utterance");
               }
             }
           }
@@ -1044,21 +1069,20 @@ function Home() {
       speakerShiftTimestampsRef.current = [];
       pendingClustersRef.current.clear();
       participantVoiceprintsRef.current = [];
-      // Pre-load voiceprints for declared participants so the first utterance
-      // from each gets an immediate suggestion chip rather than waiting for
-      // 2+ utterances or a high-confidence standalone match.
+      // Pre-load voiceprints for declared participants BEFORE connecting Scribe
+      // so the very first utterance gets participant matching. A fire-and-forget
+      // load races with the first transcript chunk and misses it.
       if (selectedPersonIds.length > 0) {
-        db.voiceprints
-          .where("person_id")
-          .anyOf(selectedPersonIds)
-          .toArray()
-          .then((prints) => {
-            participantVoiceprintsRef.current = prints.map((vp) => ({
-              personId: vp.person_id,
-              centroid: vp.centroid,
-            }));
-          })
-          .catch(() => {});
+        try {
+          const prints = await db.voiceprints
+            .where("person_id")
+            .anyOf(selectedPersonIds)
+            .toArray();
+          participantVoiceprintsRef.current = (prints as import("@/lib/db").Voiceprint[]).map((vp) => ({
+            personId: vp.person_id,
+            centroid: vp.centroid,
+          }));
+        } catch {}
       }
 
       const conv: Conversation = {
@@ -1119,10 +1143,12 @@ function Home() {
       } catch {}
       // Re-persist confirmed voiceprints with the latest centroids (we may
       // have collected many more samples since the user pressed Confirm).
+      // Require ≥3 utterances before persisting — a centroid from 1–2 utterances
+      // is often noisy and can contaminate the stored voiceprint.
       try {
         for (const [label, personId] of Object.entries(speakerMapRef.current)) {
           const cluster = diarizerRef.current.get(label);
-          if (cluster && cluster.count >= 1) {
+          if (cluster && cluster.count >= 3) {
             await recordVoiceprint(personId, cluster.centroid);
             const examples = committedRef.current
               .filter((s) => s.speaker_label === label)
@@ -1556,10 +1582,12 @@ function Home() {
     const prevExcluded =
       cur?.kind === "unknown" ? (cur.excludedPersonIds ?? []) : [];
     const rejectedId = cur?.kind === "suggested" ? cur.personId : null;
+    // Cap excluded list at 3 so a cluster doesn't get permanently locked out of
+    // all candidates if the user mis-rejects a few suggestions.
     const excludedPersonIds = rejectedId
-      ? [...prevExcluded, rejectedId].filter(
-          (id, i, arr) => arr.indexOf(id) === i,
-        )
+      ? [...prevExcluded, rejectedId]
+          .filter((id, i, arr) => arr.indexOf(id) === i)
+          .slice(-3)
       : prevExcluded;
     const next = {
       ...clusterStatusRef.current,
@@ -1571,6 +1599,9 @@ function Home() {
     };
     clusterStatusRef.current = next;
     setClusterStatus(next);
+    // Clear pending voiceprint match so the rejection actually takes effect and
+    // the next utterance is re-evaluated rather than inheriting the old match.
+    pendingVoiceprintMatchRef.current.delete(label);
   }, []);
 
   const confirmNewSpeaker = useCallback(
@@ -1616,6 +1647,9 @@ function Home() {
     };
     clusterStatusRef.current = nextStatus;
     setClusterStatus(nextStatus);
+    // Clear pending match state so the cluster is re-evaluated cleanly.
+    pendingVoiceprintMatchRef.current.delete(label);
+    aiSpeakerIdSentRef.current.delete(label);
     if (conversationIdRef.current) {
       await db.conversations.update(conversationIdRef.current, {
         speaker_map: nextMap,
@@ -1625,6 +1659,21 @@ function Home() {
 
   const mergeSpeakerClusters = useCallback(
     async (fromLabel: string, toLabel: string) => {
+      // Warn if both clusters are confirmed to different people — this is almost
+      // certainly a mistake and would silently overwrite one person's voiceprint.
+      {
+        const preFromStatus = clusterStatusRef.current[fromLabel];
+        const preToStatus = clusterStatusRef.current[toLabel];
+        if (
+          preFromStatus?.kind === "confirmed" &&
+          preToStatus?.kind === "confirmed" &&
+          preFromStatus.personId !== preToStatus.personId
+        ) {
+          const fromName = allPeople.find((p) => p.id === preFromStatus.personId)?.name ?? fromLabel;
+          const toName = allPeople.find((p) => p.id === preToStatus.personId)?.name ?? toLabel;
+          toast.warning(`Merging ${fromName} → ${toName}: both were confirmed to different people`);
+        }
+      }
       const ok = diarizerRef.current.mergeClusters(fromLabel, toLabel);
       if (!ok) return;
       // Drop any pending/aux tracking for the dissolved label.
@@ -1689,7 +1738,7 @@ function Home() {
       setClusterTick((n) => n + 1);
       toast.success(`Merged ${fromLabel} → ${toLabel}`);
     },
-    [],
+    [allPeople],
   );
 
   // Reassign a single transcript segment to a specific person — affects ONLY

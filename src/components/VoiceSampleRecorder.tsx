@@ -85,13 +85,23 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
         return;
       }
       if (replaceModeRef.current) {
-        await deleteVoiceprint(personId);
+        // Write the new voiceprint first so we always have a valid record.
+        // Only then delete the old contributions so a failure here doesn't
+        // leave the person with no voiceprint at all.
+        await db.voiceprints.put({
+          id: personId,
+          person_id: personId,
+          centroid: mfcc.slice(),
+          sample_count: 1,
+          updated_at: Date.now(),
+        });
         await db.voiceprint_contributions
           .where("person_id")
           .equals(personId)
           .delete();
+      } else {
+        await recordVoiceprint(personId, mfcc);
       }
-      await recordVoiceprint(personId, mfcc);
       await db.voiceprint_contributions.add({
         id: crypto.randomUUID(),
         person_id: personId,

@@ -72,8 +72,8 @@ export function SpeakerPanel({
   const peopleById = new Map(people.map((p) => [p.id, p] as const));
   const tail = segments.slice(-30);
 
-  // People available in the reassign popover: declared participants +
-  // anyone already confirmed to a cluster in this session. Deduplicated.
+  // People available in the reassign popover: James ("Me") always first, then
+  // declared participants + anyone already confirmed to a cluster. Deduplicated.
   const reassignOptions = useMemo(() => {
     const confirmedPeople = clusters
       .filter((c) => c.status.kind === "confirmed")
@@ -82,7 +82,21 @@ export function SpeakerPanel({
     const declaredPeople = (participantIds ?? [])
       .map((pid) => people.find((p) => p.id === pid))
       .filter((p): p is NonNullable<typeof p> => Boolean(p));
-    const all = [...confirmedPeople, ...declaredPeople];
+    // Find the "James" cluster (the confirmed cluster for __james_self__) so
+    // the user can correct a mis-attributed line back to themselves.
+    const jamesCluster = clusters.find(
+      (c) => c.status.kind === "confirmed" && c.label === JAMES_SELF_LABEL,
+    );
+    const jamesPerson = jamesCluster
+      ? people.find((p) => p.id === (jamesCluster.status as any).personId)
+      : undefined;
+    const all = [
+      // Put James's person first if found; otherwise a synthetic placeholder
+      // so "Me" is always an option even before James is confirmed.
+      ...(jamesPerson ? [jamesPerson] : []),
+      ...confirmedPeople,
+      ...declaredPeople,
+    ];
     const seen = new Set<string>();
     return all.filter((p) => {
       if (seen.has(p.id)) return false;

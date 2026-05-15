@@ -260,11 +260,16 @@ export function computeMfccMean(signal: Float32Array, sampleRate: number): numbe
     frames++;
   }
   if (frames < 4) return null;
-  return sum.map((v) => v / frames);
+  // Sanitize: replace any NaN/Infinity with 0 so downstream cosine similarity
+  // never produces NaN from a divide-by-zero on a degenerate frame.
+  return sum.map((v) => {
+    const val = v / frames;
+    return Number.isFinite(val) ? val : 0;
+  });
 }
 
 export function cosineSim(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0;
+  if (a.length !== b.length) return NaN;
   let dot = 0,
     na = 0,
     nb = 0;
@@ -273,7 +278,7 @@ export function cosineSim(a: number[], b: number[]): number {
     na += a[i] * a[i];
     nb += b[i] * b[i];
   }
-  if (na === 0 || nb === 0) return 0;
+  if (na === 0 || nb === 0) return NaN;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 
@@ -285,6 +290,10 @@ export function mergeIntoCentroid(
   nextWeight = 1,
 ): { centroid: number[]; count: number } {
   if (!prev || prevCount === 0) {
+    return { centroid: next.slice(), count: nextWeight };
+  }
+  // Dimension mismatch — start fresh rather than producing a garbled centroid.
+  if (prev.length !== next.length) {
     return { centroid: next.slice(), count: nextWeight };
   }
   const total = prevCount + nextWeight;
@@ -330,11 +339,12 @@ export function bestMatch(
     if (p.centroid.length !== vector.length) continue;
     if (excludedPersonIds?.has(p.person_id)) continue;
     let sim = cosineSim(vector, p.centroid);
+    if (!Number.isFinite(sim)) continue;
     if (p.sub_centroids?.length) {
       for (const sub of p.sub_centroids) {
         if (sub.centroid.length !== vector.length) continue;
         const subSim = cosineSim(vector, sub.centroid);
-        if (subSim > sim) sim = subSim;
+        if (Number.isFinite(subSim) && subSim > sim) sim = subSim;
       }
     }
     if (!best || sim > best.sim) best = { print: p, sim };
@@ -599,6 +609,7 @@ export class Diarizer {
     let bestSim = -1;
     for (const [label, cluster] of this.clustersMap.entries()) {
       const sim = cosineSim(mfcc, cluster.centroid);
+      if (!Number.isFinite(sim)) continue;
       if (sim > bestSim) {
         bestSim = sim;
         bestLabel = label;
@@ -620,13 +631,23 @@ export class Diarizer {
       label = `Speaker ${this.counter}`;
       isNew = true;
     }
-    // Centroid guard: only update the running centroid when the utterance is
-    // sufficiently similar to the current centroid. This prevents drift from
-    // noisy or misassigned utterances while still assigning the cluster label.
-    const cluster = this.clustersMap.get(label);
-    const preMergeSim = cluster ? cosineSim(mfcc, cluster.centroid) : 1.0;
-    if (preMergeSim >= CENTROID_UPDATE_THRESHOLD) {
-      this.mergeUtterance(label, mfcc);
+    if (isNew) {
+      // Seed the new cluster once with count=1. Never call mergeUtterance for a
+      // freshly-created cluster — that would inflate count to 2 immediately,
+      // skipping the count<3 guard in thresholdFor and triggering spread tracking
+      // before we have a meaningful centroid estimate.
+      this.clustersMap.set(label, { centroid: mfcc.slice(), count: 1, spread: 0 });
+    } else {
+      // Centroid guard: only update the running centroid when the utterance is
+      // sufficiently similar to the current centroid. This prevents drift from
+      // noisy or misassigned utterances while still assigning the cluster label.
+      const cluster = this.clustersMap.get(label);
+      if (cluster) {
+        const preMergeSim = cosineSim(mfcc, cluster.centroid);
+        if (Number.isFinite(preMergeSim) && preMergeSim >= CENTROID_UPDATE_THRESHOLD) {
+          this.mergeUtterance(label, mfcc);
+        }
+      }
     }
     return { label, sim: bestSim, isNew };
   }
@@ -637,6 +658,7 @@ export class Diarizer {
     let bestSim = -1;
     for (const [label, cluster] of this.clustersMap.entries()) {
       const sim = cosineSim(mfcc, cluster.centroid);
+      if (!Number.isFinite(sim)) continue;
       if (sim > bestSim) {
         bestSim = sim;
         bestLabel = label;
@@ -695,9 +717,15 @@ export class Diarizer {
     const merged = mergeIntoCentroid(prev?.centroid, prev?.count ?? 0, mfcc);
     const simToCentroid = prev ? cosineSim(mfcc, prev.centroid) : 1.0;
     const prevCount = prev?.count ?? 0;
-    const newSpread = prevCount > 0
-      ? ((prev!.spread * prevCount) + (1 - simToCentroid)) / (prevCount + 1)
+    const rawSpread = prevCount > 0
+      ? ((prev!.spread * prevCount) + (1 - (Number.isFinite(simToCentroid) ? simToCentroid : 0))) / (prevCount + 1)
       : 0;
+    // Clamp spread to [0, 0.15] to prevent threshold blow-out when a single
+    // noisy utterance produces an anomalously low similarity to the centroid.
+    // Without the clamp, spread can reach 0.4+ which pushes thresholdFor() to
+    // its 0.93 max, making subsequent utterances from the same speaker always
+    // create new clusters.
+    const newSpread = Math.min(0.15, Math.max(0, rawSpread));
     this.clustersMap.set(label, { centroid: merged.centroid, count: merged.count, spread: newSpread });
   }
 
@@ -717,9 +745,11 @@ export class Diarizer {
     const to = this.clustersMap.get(toLabel);
     if (!from || !to) return false;
     const totalCount = from.count + to.count;
-    const merged = to.centroid.map((v, i) =>
-      (v * to.count + from.centroid[i] * from.count) / totalCount,
-    );
+    // Dimension mismatch: keep the 'to' centroid unchanged rather than
+    // producing a garbled vector.
+    const merged = from.centroid.length === to.centroid.length
+      ? to.centroid.map((v, i) => (v * to.count + from.centroid[i] * from.count) / totalCount)
+      : to.centroid.slice();
     const newSpread =
       (to.spread * to.count + from.spread * from.count) / totalCount;
     this.clustersMap.set(toLabel, {
