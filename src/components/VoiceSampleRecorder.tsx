@@ -163,7 +163,7 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
       )}
       {!recording && (
         <p className="text-xs text-muted-foreground">
-          Tap record and have {} the person speak normally for {MIN_SECS}–
+          Tap record and have the person speak normally for {MIN_SECS}–
           {MAX_SECS} seconds. The recording stays on this device.
         </p>
       )}
