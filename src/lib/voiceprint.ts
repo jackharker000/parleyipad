@@ -229,11 +229,12 @@ export function bestMatch(
   vector: number[],
   prints: Voiceprint[],
   threshold = 0.86,
+  excludedPersonIds?: ReadonlySet<string>,
 ): { print: Voiceprint; sim: number } | null {
   let best: { print: Voiceprint; sim: number } | null = null;
   for (const p of prints) {
-    // Skip voiceprints stored with a different MFCC dimensionality (after an upgrade).
     if (p.centroid.length !== vector.length) continue;
+    if (excludedPersonIds?.has(p.person_id)) continue;
     const sim = cosineSim(vector, p.centroid);
     if (!best || sim > best.sim) best = { print: p, sim };
   }
@@ -257,6 +258,7 @@ type ClusterEntry = { centroid: number[]; count: number; spread: number };
 export class Diarizer {
   private clustersMap = new Map<string, ClusterEntry>();
   private counter = 0;
+  private _forceNewOnNext = false;
   // mergeThreshold is the baseline; actual threshold per cluster adapts to its spread.
   constructor(public mergeThreshold = 0.82) {}
 
@@ -267,6 +269,10 @@ export class Diarizer {
 
   /** Assign an MFCC mean to a cluster (existing or new). Returns the label. */
   assign(mfcc: number[]): { label: string; sim: number; isNew: boolean } {
+    if (this._forceNewOnNext) {
+      this._forceNewOnNext = false;
+      return this.assignNew(mfcc);
+    }
     let bestLabel: string | null = null;
     let bestSim = -1;
     for (const [label, cluster] of this.clustersMap.entries()) {
@@ -343,6 +349,36 @@ export class Diarizer {
       ? ((prev!.spread * prevCount) + (1 - simToCentroid)) / (prevCount + 1)
       : 0;
     this.clustersMap.set(label, { centroid: merged.centroid, count: merged.count, spread: newSpread });
+  }
+
+  /** Mark that the next `assign()` call should create a new cluster
+   *  regardless of cosine similarity (e.g. James signals a new speaker
+   *  is about to talk). */
+  forceNextNew() {
+    this._forceNewOnNext = true;
+  }
+
+  /** Merge cluster `fromLabel` into `toLabel` (weighted centroid blend).
+   *  Returns false if either label doesn't exist. After merging, all
+   *  utterances previously labelled `fromLabel` should be relabelled
+   *  `toLabel` by the caller. */
+  mergeClusters(fromLabel: string, toLabel: string): boolean {
+    const from = this.clustersMap.get(fromLabel);
+    const to = this.clustersMap.get(toLabel);
+    if (!from || !to) return false;
+    const totalCount = from.count + to.count;
+    const merged = to.centroid.map((v, i) =>
+      (v * to.count + from.centroid[i] * from.count) / totalCount,
+    );
+    const newSpread =
+      (to.spread * to.count + from.spread * from.count) / totalCount;
+    this.clustersMap.set(toLabel, {
+      centroid: merged,
+      count: totalCount,
+      spread: newSpread,
+    });
+    this.clustersMap.delete(fromLabel);
+    return true;
   }
 
   /** Snapshot of all live clusters. */

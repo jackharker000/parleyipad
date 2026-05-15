@@ -39,6 +39,7 @@ import {
   summarizeConversation,
   synthesizeSpeech,
   expandUtterance,
+  identifySpeakerFromContext,
 } from "@/lib/aac.functions";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
@@ -238,6 +239,13 @@ function Home() {
   // Require 2 consecutive voiceprint matches before suggesting a speaker to
   // reduce false positives from short or noisy utterances.
   const pendingVoiceprintMatchRef = useRef<Map<string, { personId: string; matchCount: number }>>(new Map());
+  // Track which unknown clusters have already had AI context-ID fired (once per cluster).
+  const aiSpeakerIdSentRef = useRef<Set<string>>(new Set());
+  // Keep a fresh copy of `committed` accessible inside stale scribe callback.
+  const committedRef = useRef<TranscriptSegment[]>([]);
+  useEffect(() => {
+    committedRef.current = committed;
+  }, [committed]);
   useEffect(() => {
     speakerMapRef.current = speakerMap;
   }, [speakerMap]);
@@ -251,6 +259,7 @@ function Home() {
   const suggestFn = useServerFn(generateSuggestions);
   const summarizeFn = useServerFn(summarizeConversation);
   const expandFn = useServerFn(expandUtterance);
+  const identifyFn = useServerFn(identifySpeakerFromContext);
 
   const scribe = useScribe({
     modelId: "scribe_v2_realtime",
@@ -389,19 +398,25 @@ function Home() {
             const candidates = allPrints.filter(
               (p) => !confirmedIds.has(p.person_id),
             );
+            const excludedIds = new Set(
+              status?.kind === "unknown" ? (status.excludedPersonIds ?? []) : [],
+            );
             const match = bestMatch(
               cluster.centroid,
               candidates,
               VOICEPRINT_MATCH_THRESHOLD,
+              excludedIds,
             );
             if (match) {
-              // Require 2 consecutive matches for the same person before surfacing
-              // a suggestion — avoids false-positive chips from single noisy utterances.
+              // High-confidence (≥ 0.88): surface suggestion immediately.
+              // Lower confidence (0.80–0.88): require 2 consecutive matches to
+              // avoid false-positive chips from single noisy utterances.
+              const highConf = match.sim >= 0.88;
               const pending = pendingVoiceprintMatchRef.current.get(speakerLabel);
               if (pending?.personId === match.print.person_id) {
                 const newCount = pending.matchCount + 1;
                 pendingVoiceprintMatchRef.current.set(speakerLabel, { personId: match.print.person_id, matchCount: newCount });
-                if (newCount >= 2) {
+                if (highConf || newCount >= 2) {
                   nextStatus = {
                     kind: "suggested",
                     personId: match.print.person_id,
@@ -410,8 +425,15 @@ function Home() {
                   };
                 }
               } else {
-                // First match or different person — reset counter
                 pendingVoiceprintMatchRef.current.set(speakerLabel, { personId: match.print.person_id, matchCount: 1 });
+                if (highConf) {
+                  nextStatus = {
+                    kind: "suggested",
+                    personId: match.print.person_id,
+                    sim: match.sim,
+                    suggestions: status?.suggestions ?? [],
+                  };
+                }
               }
             } else {
               pendingVoiceprintMatchRef.current.delete(speakerLabel);
@@ -452,6 +474,59 @@ function Home() {
             };
             clusterStatusRef.current = next;
             setClusterStatus(next);
+          }
+
+          // After 3+ utterances on an unknown cluster, fire a one-shot AI
+          // context identification in the background.
+          const clusterCount = cluster?.count ?? 0;
+          const curStatusKind = (nextStatus ?? clusterStatusRef.current[speakerLabel])?.kind;
+          if (
+            clusterCount >= 3 &&
+            curStatusKind !== "confirmed" &&
+            curStatusKind !== "suggested" &&
+            !aiSpeakerIdSentRef.current.has(speakerLabel)
+          ) {
+            aiSpeakerIdSentRef.current.add(speakerLabel);
+            // Build confirmed speaker name map
+            const confirmedNames: Record<string, string> = {};
+            for (const [lbl, pid] of Object.entries(speakerMapRef.current)) {
+              const p = allPeople.find((pp) => pp.id === pid);
+              if (p) confirmedNames[lbl] = p.name;
+            }
+            // Use fresh committed via ref
+            const recentForAI = committedRef.current.slice(-15).map((s) => {
+              const pid = speakerMapRef.current[s.speaker_label];
+              const p = pid ? allPeople.find((pp) => pp.id === pid) : null;
+              return { speaker: p?.name ?? s.speaker_label, text: s.text };
+            });
+            identifyFn({
+              data: {
+                unknownLabel: speakerLabel,
+                recentTranscript: recentForAI,
+                confirmedSpeakers: confirmedNames,
+                candidateNames: allPeople.map((p) => p.name),
+                model: fastModelRef.current,
+              },
+            })
+              .then((result) => {
+                if (result.personName && result.confidence >= 0.65) {
+                  const cur = clusterStatusRef.current[speakerLabel];
+                  if (cur && cur.kind !== "confirmed") {
+                    const chip: SuggestedName = {
+                      name: result.personName,
+                      source: "context-ai",
+                    };
+                    const merged = mergeSuggestion(cur, chip);
+                    const next = {
+                      ...clusterStatusRef.current,
+                      [speakerLabel]: merged,
+                    };
+                    clusterStatusRef.current = next;
+                    setClusterStatus(next);
+                  }
+                }
+              })
+              .catch(() => {});
           }
         }
         setClusterTick((n) => n + 1);
@@ -547,6 +622,7 @@ function Home() {
       setClusterStatus({});
       clusterStatusRef.current = {};
       pendingVoiceprintMatchRef.current.clear();
+      aiSpeakerIdSentRef.current.clear();
 
       const conv: Conversation = {
         id,
@@ -900,9 +976,22 @@ function Home() {
       cur && (cur.kind === "suggested" || cur.kind === "unknown")
         ? cur.suggestions
         : undefined;
+    // Remember the rejected person so we skip them in future voiceprint matches.
+    const prevExcluded =
+      cur?.kind === "unknown" ? (cur.excludedPersonIds ?? []) : [];
+    const rejectedId = cur?.kind === "suggested" ? cur.personId : null;
+    const excludedPersonIds = rejectedId
+      ? [...prevExcluded, rejectedId].filter(
+          (id, i, arr) => arr.indexOf(id) === i,
+        )
+      : prevExcluded;
     const next = {
       ...clusterStatusRef.current,
-      [label]: { kind: "unknown" as const, suggestions: carried },
+      [label]: {
+        kind: "unknown" as const,
+        suggestions: carried,
+        excludedPersonIds,
+      },
     };
     clusterStatusRef.current = next;
     setClusterStatus(next);
@@ -956,6 +1045,76 @@ function Home() {
         speaker_map: nextMap,
       });
     }
+  }, []);
+
+  const mergeSpeakerClusters = useCallback(
+    async (fromLabel: string, toLabel: string) => {
+      const ok = diarizerRef.current.mergeClusters(fromLabel, toLabel);
+      if (!ok) return;
+
+      // Relabel all transcript segments in state and DB.
+      setCommitted((prev) =>
+        prev.map((s) =>
+          s.speaker_label === fromLabel ? { ...s, speaker_label: toLabel } : s,
+        ),
+      );
+      const cid = conversationIdRef.current;
+      if (cid) {
+        const segs = await db.transcript_segments
+          .where("conversation_id")
+          .equals(cid)
+          .and((s) => s.speaker_label === fromLabel)
+          .toArray();
+        for (const seg of segs) {
+          await db.transcript_segments.update(seg.id, {
+            speaker_label: toLabel,
+          });
+        }
+      }
+
+      // Merge cluster status: prefer confirmed over other states.
+      const fromStatus = clusterStatusRef.current[fromLabel];
+      const toStatus = clusterStatusRef.current[toLabel];
+      let newToStatus: ClusterStatus = toStatus ?? { kind: "unknown" as const };
+      if (fromStatus?.kind === "confirmed" && newToStatus.kind !== "confirmed") {
+        newToStatus = fromStatus;
+      }
+      const nextStatus = { ...clusterStatusRef.current };
+      nextStatus[toLabel] = newToStatus;
+      delete nextStatus[fromLabel];
+      clusterStatusRef.current = nextStatus;
+      setClusterStatus(nextStatus);
+
+      // Merge speaker map.
+      const nextMap = { ...speakerMapRef.current };
+      if (nextMap[fromLabel] && !nextMap[toLabel]) {
+        nextMap[toLabel] = nextMap[fromLabel];
+      }
+      delete nextMap[fromLabel];
+      speakerMapRef.current = nextMap;
+      setSpeakerMap(nextMap);
+
+      // Re-persist voiceprint for the merged cluster if it's confirmed.
+      const mergedCluster = diarizerRef.current.get(toLabel);
+      const confirmedPersonId =
+        nextMap[toLabel] ??
+        (newToStatus.kind === "confirmed" ? newToStatus.personId : null);
+      if (mergedCluster && confirmedPersonId) {
+        await recordVoiceprint(confirmedPersonId, mergedCluster.centroid);
+      }
+
+      if (cid) {
+        await db.conversations.update(cid, { speaker_map: nextMap });
+      }
+      setClusterTick((n) => n + 1);
+      toast.success(`Merged ${fromLabel} → ${toLabel}`);
+    },
+    [],
+  );
+
+  const forceNewSpeaker = useCallback(() => {
+    diarizerRef.current.forceNextNew();
+    toast.info("Ready — next utterance will start a new speaker");
   }, []);
 
   const askSpeakerName = useCallback(
@@ -1256,6 +1415,8 @@ function Home() {
             onConfirmNew={confirmNewSpeaker}
             onAskName={askSpeakerName}
             onClearConfirmed={clearConfirmedSpeaker}
+            onMerge={mergeSpeakerClusters}
+            onForceNew={forceNewSpeaker}
           />
         </div>
       </div>
