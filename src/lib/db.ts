@@ -59,6 +59,10 @@ export type TranscriptSegment = {
   confidence?: number;
   /** Timestamp of last re-diarization pass that touched this segment. */
   rediarized_at?: number;
+  /** Tier 3.1 — optional semantic embedding (text-embedding-3-small, 1536 dims). */
+  embedding?: number[];
+  /** Tier 3.1 — model name used to produce `embedding`. */
+  embedding_model?: string;
 };
 
 export type SuggestionLog = {
@@ -99,6 +103,11 @@ export type Memory = {
   kind: "fact" | "preference" | "event" | "todo";
   status: "auto" | "edited" | "hidden";
   created_at: number;
+  /** Tier 3.1 — semantic embedding for retrieval (text-embedding-3-small). */
+  embedding?: number[];
+  /** Tier 3.1 — model name used to produce `embedding`. Compare only across
+   *  memories produced with the same model. */
+  embedding_model?: string;
 };
 
 export type FollowUp = {
@@ -425,6 +434,8 @@ class AacDb extends Dexie {
     // Adds profile_proposals (per-person review queue), segment_mfccs
     // (per-utterance MFCC for re-diarize), and extends people/voiceprints
     // with new queryable indexes.
+    // Tier 3.1's `embedding` / `embedding_model` fields on Memory and
+    // TranscriptSegment are non-indexed properties — no version bump needed.
     this.version(9).stores({
       people: "id, name, status, created_at",
       voiceprints: "id, person_id, updated_at, confidence",

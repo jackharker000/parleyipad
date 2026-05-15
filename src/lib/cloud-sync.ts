@@ -8,6 +8,12 @@ import { supabase } from "@/integrations/supabase/client";
  * Dexie table from it. After that, any local Dexie write triggers a debounced
  * push of a fresh full snapshot back to the cloud. Dexie remains the in-session
  * source of truth so the UI stays fast and works offline.
+ *
+ * Tier 3.1 note: `memories` and `transcript_segments` rows now carry an
+ * optional `embedding` array (1536 floats ≈ 6 KB per row). At ~500 memories
+ * this adds ~3 MB to the snapshot. Acceptable for now; if a future user
+ * hits the JSONB size limit, strip embeddings from the snapshot here and
+ * re-derive them on the next mount via `backfillMemoryEmbeddings()`.
  */
 
 const TABLES = [

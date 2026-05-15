@@ -1,5 +1,6 @@
 import { db, getJamesProfile, type EventItem, type Person, type Place } from "./db";
 import { getStyleEvidence, type StyleEvidence } from "./style-evidence";
+import { formatMemoryForPrompt, retrieveTopK } from "./retrieval";
 
 export type ConversationContext = {
   jamesProfile: {
@@ -44,6 +45,10 @@ export type ConversationContext = {
   /** Aggregated per-person picks / edits / dead phrases, used to calibrate
    *  the suggestion prompt. Populated by `buildConversationContext`. */
   styleEvidence?: StyleEvidence;
+  /** Tier 3.1 — semantically-retrieved memory snippets across all scopes,
+   *  populated only when `queryEmbedding` was supplied. The route passes
+   *  this verbatim to the suggestion prompt as a top-level block. */
+  retrievedMemories?: string[];
 };
 
 const RECENT_MEMORY_LIMIT = 4;
@@ -78,12 +83,19 @@ export async function suggestPeopleAtPlace(placeId: string, limit = 6): Promise<
   return people.filter((p): p is Person => !!p);
 }
 
-async function memoriesForPerson(personId: string): Promise<string[]> {
-  const mems = await db.memories
-    .where("person_id")
-    .equals(personId)
-    .reverse()
-    .sortBy("created_at");
+async function memoriesForPerson(personId: string, queryEmbedding?: number[]): Promise<string[]> {
+  // Tier 3.1 — when we have a query embedding, prefer semantic top-K
+  // (with recency fallback inside retrieveTopK). Otherwise keep the
+  // original behaviour of "most recent N".
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const top = await retrieveTopK({
+      queryEmbedding,
+      personId,
+      k: RECENT_MEMORY_LIMIT,
+    });
+    return top.map(formatMemoryForPrompt);
+  }
+  const mems = await db.memories.where("person_id").equals(personId).reverse().sortBy("created_at");
   return mems
     .filter((m) => m.status !== "hidden")
     .slice(0, RECENT_MEMORY_LIMIT)
@@ -96,7 +108,10 @@ async function followUpsForPerson(personId: string): Promise<string[]> {
     .equals(personId)
     .reverse()
     .sortBy("created_at");
-  return fs.filter((f) => !f.used).slice(0, FOLLOW_UP_LIMIT).map((f) => f.text);
+  return fs
+    .filter((f) => !f.used)
+    .slice(0, FOLLOW_UP_LIMIT)
+    .map((f) => f.text);
 }
 
 const PERSON_DOC_PER = 3000;
@@ -105,10 +120,7 @@ async function notesWithDocsForPerson(
   personId: string,
   baseNotes: string | undefined,
 ): Promise<string | undefined> {
-  const docs = await db.person_documents
-    .where("person_id")
-    .equals(personId)
-    .toArray();
+  const docs = await db.person_documents.where("person_id").equals(personId).toArray();
   if (!docs.length) return baseNotes;
   let block = "";
   let used = 0;
@@ -127,19 +139,27 @@ async function notesWithDocsForPerson(
 async function memoriesForPlace(
   placeId: string,
   presentPersonIds: Set<string>,
+  queryEmbedding?: number[],
 ): Promise<string[]> {
-  const mems = await db.memories
-    .where("place_id")
-    .equals(placeId)
-    .reverse()
-    .sortBy("created_at");
-  return mems
-    .filter((m) => m.status !== "hidden")
-    // Privacy: skip place memories tied to a specific person who is NOT in
-    // this conversation. Generic place memories (no person_id) are kept.
-    .filter((m) => !m.person_id || presentPersonIds.has(m.person_id))
-    .slice(0, RECENT_MEMORY_LIMIT)
-    .map((m) => `[${m.kind}] ${m.text}`);
+  if (queryEmbedding && queryEmbedding.length > 0) {
+    const top = await retrieveTopK({
+      queryEmbedding,
+      placeId,
+      presentPersonIds,
+      k: RECENT_MEMORY_LIMIT,
+    });
+    return top.map(formatMemoryForPrompt);
+  }
+  const mems = await db.memories.where("place_id").equals(placeId).reverse().sortBy("created_at");
+  return (
+    mems
+      .filter((m) => m.status !== "hidden")
+      // Privacy: skip place memories tied to a specific person who is NOT in
+      // this conversation. Generic place memories (no person_id) are kept.
+      .filter((m) => !m.person_id || presentPersonIds.has(m.person_id))
+      .slice(0, RECENT_MEMORY_LIMIT)
+      .map((m) => `[${m.kind}] ${m.text}`)
+  );
 }
 
 async function followUpsForPlace(
@@ -162,6 +182,9 @@ export async function buildConversationContext(opts: {
   personIds: string[];
   place?: Place;
   event?: EventItem;
+  /** Tier 3.1 — when provided, person/place memories are retrieved by
+   *  semantic similarity (top-K cosine) rather than pure recency. */
+  queryEmbedding?: number[];
 }): Promise<ConversationContext> {
   const fingerprint = [
     [...opts.personIds].sort().join(","),
@@ -169,7 +192,15 @@ export async function buildConversationContext(opts: {
     opts.event?.id ?? "",
   ].join(":");
   const now = Date.now();
-  if (_ctxCache && _ctxCache.fingerprint === fingerprint && now - _ctxCache.builtAt < CTX_CACHE_TTL_MS) {
+  // Skip the cache when a query embedding is supplied — semantic retrieval
+  // results depend on the live transcript window, so cached entries would be
+  // stale.
+  if (
+    !opts.queryEmbedding &&
+    _ctxCache &&
+    _ctxCache.fingerprint === fingerprint &&
+    now - _ctxCache.builtAt < CTX_CACHE_TTL_MS
+  ) {
     return _ctxCache.context;
   }
 
@@ -191,13 +222,14 @@ export async function buildConversationContext(opts: {
     docsBlock += `\n\n## Reference document: ${d.name}${d.note ? ` — ${d.note}` : ""}\n${slice}`;
     used += slice.length;
   }
-  const freeformCombined = [profile.freeform_notes, docsBlock.trim() ? `Reference documents about James:${docsBlock}` : ""]
+  const freeformCombined = [
+    profile.freeform_notes,
+    docsBlock.trim() ? `Reference documents about James:${docsBlock}` : "",
+  ]
     .filter(Boolean)
     .join("\n\n");
 
-  const peopleRows = (await db.people.bulkGet(opts.personIds)).filter(
-    (p): p is Person => !!p,
-  );
+  const peopleRows = (await db.people.bulkGet(opts.personIds)).filter((p): p is Person => !!p);
   const people = await Promise.all(
     peopleRows.map(async (p) => ({
       name: p.name,
@@ -205,7 +237,7 @@ export async function buildConversationContext(opts: {
       interests: p.interests,
       notes: await notesWithDocsForPerson(p.id, p.notes),
       style_notes: p.style_notes,
-      recentMemories: await memoriesForPerson(p.id),
+      recentMemories: await memoriesForPerson(p.id, opts.queryEmbedding),
       followUps: await followUpsForPerson(p.id),
     })),
   );
@@ -216,7 +248,7 @@ export async function buildConversationContext(opts: {
     place = {
       name: opts.place.name,
       notes: opts.place.notes,
-      recentMemories: await memoriesForPlace(opts.place.id, presentIds),
+      recentMemories: await memoriesForPlace(opts.place.id, presentIds, opts.queryEmbedding),
       followUps: await followUpsForPlace(opts.place.id, presentIds),
     };
   }
@@ -227,10 +259,7 @@ export async function buildConversationContext(opts: {
     const eventPeople = (await db.people.bulkGet(ev.person_ids ?? []))
       .filter((p): p is Person => !!p)
       .map((p) => p.name);
-    const evDocs = await db.event_documents
-      .where("event_id")
-      .equals(ev.id)
-      .toArray();
+    const evDocs = await db.event_documents.where("event_id").equals(ev.id).toArray();
     const PER_DOC = 3000;
     const TOTAL = 12000;
     let used = 0;
@@ -266,6 +295,33 @@ export async function buildConversationContext(opts: {
     console.warn("style evidence lookup failed", err);
   }
 
+  // Tier 3.1 — when a query embedding was supplied, hoist the per-person
+  // and place semantic top-K into a deduped top-level block so the model
+  // sees the cross-scope picture at a glance. Capped to keep token budget
+  // identical to today (≤12 entries).
+  let retrievedMemories: string[] | undefined;
+  if (opts.queryEmbedding && opts.queryEmbedding.length > 0) {
+    const seen = new Set<string>();
+    const flat: string[] = [];
+    for (const p of people) {
+      for (const m of p.recentMemories) {
+        if (!seen.has(m)) {
+          seen.add(m);
+          flat.push(m);
+        }
+      }
+    }
+    if (place) {
+      for (const m of place.recentMemories) {
+        if (!seen.has(m)) {
+          seen.add(m);
+          flat.push(m);
+        }
+      }
+    }
+    if (flat.length > 0) retrievedMemories = flat.slice(0, 12);
+  }
+
   const context: ConversationContext = {
     jamesProfile: {
       name: profile.display_name || "James",
@@ -287,6 +343,7 @@ export async function buildConversationContext(opts: {
     event,
     styleProfileJson: styleProfile?.json,
     styleEvidence,
+    retrievedMemories,
   };
   _ctxCache = { fingerprint, context, builtAt: Date.now() };
   return context;

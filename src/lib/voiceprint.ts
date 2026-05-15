@@ -164,6 +164,56 @@ export class VoiceCapture {
     return total.subarray(total.length - want);
   }
 
+  /**
+   * Tier 3.3 — coarse prosody summary over the last `durationSec` of audio.
+   * Returns mean RMS, RMS variance and mean spectral centroid across frames
+   * loud enough to be voiced. Returns `null` when there isn't enough audio
+   * yet. Used to give the mood predictor a hint about how the conversation
+   * partner sounds (energetic, flat, agitated, ...).
+   */
+  recentProsody(
+    durationSec: number,
+  ): { meanRms: number; rmsVariance: number; spectralCentroid: number; frames: number } | null {
+    if (this.bufferLen < this.sampleRate * 0.5) return null;
+    const pcm = this.recentSlice(durationSec, 0);
+    if (pcm.length < FRAME * 4) return null;
+    (Meyda as any).sampleRate = this.sampleRate;
+
+    const rmsValues: number[] = [];
+    const centroidValues: number[] = [];
+    for (let i = 0; i + FRAME <= pcm.length; i += FRAME) {
+      const slice = pcm.subarray(i, i + FRAME);
+      let sumSq = 0;
+      for (let j = 0; j < slice.length; j++) sumSq += slice[j] * slice[j];
+      const rms = Math.sqrt(sumSq / slice.length);
+      if (rms < RMS_GATE) continue;
+      rmsValues.push(rms);
+      try {
+        const feats = (Meyda as any).extract(["spectralCentroid"], slice) as {
+          spectralCentroid?: number;
+        } | null;
+        if (feats && typeof feats.spectralCentroid === "number") {
+          centroidValues.push(feats.spectralCentroid);
+        }
+      } catch {
+        // Meyda can throw on edge buffers — skip and continue.
+      }
+    }
+    if (rmsValues.length < 4) return null;
+    const meanRms = rmsValues.reduce((a, b) => a + b, 0) / rmsValues.length;
+    const rmsVariance =
+      rmsValues.reduce((sum, v) => sum + (v - meanRms) ** 2, 0) / rmsValues.length;
+    const spectralCentroid = centroidValues.length
+      ? centroidValues.reduce((a, b) => a + b, 0) / centroidValues.length
+      : 0;
+    return {
+      meanRms,
+      rmsVariance,
+      spectralCentroid,
+      frames: rmsValues.length,
+    };
+  }
+
   stop() {
     this.stopShiftMonitor();
     try {
@@ -188,10 +238,7 @@ export class VoiceCapture {
 }
 
 /** Compute mean MFCC vector across a PCM signal. Returns null if too quiet/short. */
-export function computeMfccMean(
-  signal: Float32Array,
-  sampleRate: number,
-): number[] | null {
+export function computeMfccMean(signal: Float32Array, sampleRate: number): number[] | null {
   if (signal.length < FRAME * 4) return null;
   (Meyda as any).sampleRate = sampleRate;
   const sum = new Array(MFCC_COEFFS).fill(0);
@@ -251,11 +298,7 @@ export function mergeIntoCentroid(
 /** Persist (or update) the voiceprint for a person. */
 export async function recordVoiceprint(personId: string, vector: number[]) {
   const existing = await db.voiceprints.get(personId);
-  const merged = mergeIntoCentroid(
-    existing?.centroid,
-    existing?.sample_count ?? 0,
-    vector,
-  );
+  const merged = mergeIntoCentroid(existing?.centroid, existing?.sample_count ?? 0, vector);
   const vp: Voiceprint = {
     id: personId,
     person_id: personId,
