@@ -39,7 +39,9 @@ import {
   summarizeConversation,
   synthesizeSpeech,
   expandUtterance,
+  classifyConversationArc,
 } from "@/lib/aac.functions";
+import { type ConversationArc, type ArcCacheEntry, isArcDue, ARC_MIN_CONFIDENCE } from "@/lib/arc";
 import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
@@ -208,6 +210,8 @@ function Home() {
   // Tier 3.4 — per-category performance bias loaded from suggestion logs.
   // Refreshed on mount and after each conversation ends.
   const categoryBiasRef = useRef<Record<string, CategoryBiasLabel>>({});
+  // Tier 3.2 — current conversation-arc tag (cached every few turns).
+  const arcCacheRef = useRef<ArcCacheEntry | null>(null);
 
   // Speech
   const [draft, setDraft] = useState("");
@@ -269,6 +273,8 @@ function Home() {
   const suggestFn = useServerFn(generateSuggestions);
   const summarizeFn = useServerFn(summarizeConversation);
   const expandFn = useServerFn(expandUtterance);
+  // Tier 3.2 — conversation-arc classifier (fast model).
+  const classifyArcFn = useServerFn(classifyConversationArc);
 
   const scribe = useScribe({
     modelId: "scribe_v2_realtime",
@@ -494,6 +500,8 @@ function Home() {
       diarizerRef.current.reset();
       setClusterStatus({});
       clusterStatusRef.current = {};
+      // Tier 3 — reset per-conversation prediction caches.
+      arcCacheRef.current = null;
 
       const conv: Conversation = {
         id,
@@ -654,11 +662,39 @@ function Home() {
         peopleById,
         jamesLabelRef.current,
       );
-      const ctx = await buildConversationContext({
-        personIds: personIdsRef.current,
-        place: placeRef.current,
-        event: selectedEventRef.current ?? undefined,
-      });
+
+      // Tier 3.2 — classify the conversation arc in parallel with context
+      // assembly. We only refresh every few turns; otherwise reuse cache.
+      const arcDue = isArcDue(committed.length, arcCacheRef.current);
+      const arcPromise: Promise<ConversationArc | null> = arcDue
+        ? classifyArcFn({
+            data: {
+              recentTranscript: recent,
+              previousArc: arcCacheRef.current?.arc,
+              model: fastModelRef.current,
+            },
+          })
+            .then((result) => {
+              if (result?.arc && result.confidence >= ARC_MIN_CONFIDENCE) {
+                arcCacheRef.current = {
+                  arc: result.arc as ConversationArc,
+                  atTurn: committed.length,
+                };
+                return result.arc as ConversationArc;
+              }
+              return arcCacheRef.current?.arc ?? null;
+            })
+            .catch(() => arcCacheRef.current?.arc ?? null)
+        : Promise.resolve(arcCacheRef.current?.arc ?? null);
+
+      const [ctx, arc] = await Promise.all([
+        buildConversationContext({
+          personIds: personIdsRef.current,
+          place: placeRef.current,
+          event: selectedEventRef.current ?? undefined,
+        }),
+        arcPromise,
+      ]);
       const r = await suggestFn({
         data: {
           recentTranscript: recent,
@@ -671,6 +707,7 @@ function Home() {
           model: fastModelRef.current,
           mood: moodRef.current,
           categoryBias: categoryBiasRef.current,
+          arc: arc ?? undefined,
         },
       });
       if (r.suggestions?.length) {

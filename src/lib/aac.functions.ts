@@ -1121,3 +1121,258 @@ Return 0-3 suggested profile additions.`;
       return { suggestions: [], error: "Parse error" };
     }
   });
+
+// === Tier 3: real-time signals ===
+
+/* ------------------------------ 3.2: Arc ----------------------------------- */
+
+const CONVERSATION_ARC_VALUES = [
+  "greeting",
+  "catching_up",
+  "decision",
+  "venting",
+  "wrapping_up",
+  "logistics",
+  "small_talk",
+] as const;
+
+const arcSchema = z.object({
+  recentTranscript: z.array(z.object({ speaker: z.string(), text: z.string() })).max(20),
+  previousArc: z.enum(CONVERSATION_ARC_VALUES).optional(),
+  model: z.string().optional(),
+});
+
+export const classifyConversationArc = createServerFn({ method: "POST" })
+  .inputValidator((d) => arcSchema.parse(d))
+  .handler(async ({ data }) => {
+    const transcriptText = data.recentTranscript
+      .slice(-12)
+      .map((s) => `${s.speaker}: ${s.text}`)
+      .join("\n");
+    if (!transcriptText.trim()) {
+      return { arc: null, confidence: 0, error: null };
+    }
+
+    const system = `You classify the current arc of a live spoken conversation in real time. Read the recent turns and return the SINGLE tag that best describes what the conversation is doing RIGHT NOW.
+
+Tags:
+- greeting: opening, hellos, initial pleasantries.
+- catching_up: trading recent news, life updates.
+- decision: deciding something concrete.
+- venting: one person expressing frustration/sadness, wants to be heard.
+- wrapping_up: signing off, goodbyes.
+- logistics: practical coordination — times, addresses, scheduling.
+- small_talk: light topical chat with no decision/update.
+
+Prefer the tag for the LAST 3-5 turns. If conversation just shifted, use new tag. If ambiguous, prefer the previous arc (stickiness).`;
+
+    const user = `${data.previousArc ? `Previous arc: ${data.previousArc}\n\n` : ""}Recent turns:
+${transcriptText}`;
+
+    const target = resolveChatTarget(data.model);
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_arc",
+              description: "Emit a single conversation-arc tag with confidence",
+              parameters: {
+                type: "object",
+                properties: {
+                  arc: { type: "string", enum: [...CONVERSATION_ARC_VALUES] },
+                  confidence: { type: "number", minimum: 0, maximum: 1 },
+                },
+                required: ["arc", "confidence"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_arc" } },
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("Arc classification failed:", res.status, err);
+      return { arc: null, confidence: 0, error: `AI error ${res.status}` };
+    }
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) return { arc: null, confidence: 0, error: "No tool call" };
+    try {
+      const parsed = JSON.parse(argStr) as {
+        arc: (typeof CONVERSATION_ARC_VALUES)[number];
+        confidence: number;
+      };
+      return { arc: parsed.arc, confidence: parsed.confidence ?? 0, error: null };
+    } catch {
+      return { arc: null, confidence: 0, error: "Parse error" };
+    }
+  });
+
+/* ----------------------------- 3.3: Mood ----------------------------------- */
+
+const MOOD_VALUES = ["normal", "calm", "excited", "sad", "upset", "empathetic", "amused"] as const;
+
+const moodPredictSchema = z.object({
+  recentTranscript: z.array(z.object({ speaker: z.string(), text: z.string() })).max(20),
+  prosody: z
+    .object({
+      jamesMeanRms: z.number().optional(),
+      otherMeanRms: z.number().optional(),
+      otherRmsVariance: z.number().optional(),
+      otherSpectralCentroid: z.number().optional(),
+    })
+    .optional(),
+  previousMood: z.enum(MOOD_VALUES).optional(),
+  model: z.string().optional(),
+});
+
+export const predictMood = createServerFn({ method: "POST" })
+  .inputValidator((d) => moodPredictSchema.parse(d))
+  .handler(async ({ data }) => {
+    const transcriptText = data.recentTranscript
+      .slice(-12)
+      .map((s) => `${s.speaker}: ${s.text}`)
+      .join("\n");
+    if (!transcriptText.trim()) {
+      return { mood: null, confidence: 0, reasoning: "", error: null };
+    }
+
+    const prosodyText = data.prosody
+      ? `Acoustic prosody summary (OTHER speaker; James is non-speaking):\n` +
+        `- mean RMS: ${data.prosody.otherMeanRms?.toFixed(3) ?? "n/a"}\n` +
+        `- RMS variance: ${data.prosody.otherRmsVariance?.toFixed(4) ?? "n/a"}\n` +
+        `- spectral centroid: ${data.prosody.otherSpectralCentroid?.toFixed(1) ?? "n/a"}\n`
+      : "";
+
+    const system = `You infer the current emotional MOOD of James, a non-speaking AAC user, based on the live conversation he is in.
+
+You DO NOT have his voice — he is non-speaking. Read:
+1. What the OTHER person/people just said (lexical cues — upset, joking, asking for help?).
+2. The conversational turn-by-turn dynamic.
+3. Optional acoustic prosody summary of the OTHER speaker.
+4. The previous mood (for stickiness — don't flip without evidence).
+
+Output ONE mood tag for the tone James should likely reply in:
+- normal: neutral, default register.
+- calm: measured, gentle, low-energy.
+- excited: high-energy, animated, positive.
+- sad: quiet, reflective, low.
+- upset: frustrated, blunt, push-back.
+- empathetic: the OTHER person is venting/struggling — James should support them.
+- amused: playful, joking, light.
+
+Be CONSERVATIVE. "normal" when nothing strongly suggests another tag. Confidence below 0.55 → return "normal". This auto-fills James's mood pill but he can override with one tap — prefer humility.`;
+
+    const user = `${data.previousMood ? `Previous mood: ${data.previousMood}\n\n` : ""}${prosodyText ? `${prosodyText}\n` : ""}Recent turns:
+${transcriptText}`;
+
+    const target = resolveChatTarget(data.model);
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: target.headers,
+      body: JSON.stringify({
+        model: target.model,
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "emit_mood",
+              description: "Emit a single predicted mood for James's next reply",
+              parameters: {
+                type: "object",
+                properties: {
+                  mood: { type: "string", enum: [...MOOD_VALUES] },
+                  confidence: { type: "number", minimum: 0, maximum: 1 },
+                  reasoning: { type: "string" },
+                },
+                required: ["mood", "confidence"],
+              },
+            },
+          },
+        ],
+        tool_choice: { type: "function", function: { name: "emit_mood" } },
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("Mood prediction failed:", res.status, err);
+      return {
+        mood: null,
+        confidence: 0,
+        reasoning: "",
+        error: `AI error ${res.status}`,
+      };
+    }
+    const json = (await res.json()) as any;
+    const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+    if (!argStr) {
+      return { mood: null, confidence: 0, reasoning: "", error: "No tool call" };
+    }
+    try {
+      const parsed = JSON.parse(argStr) as {
+        mood: (typeof MOOD_VALUES)[number];
+        confidence: number;
+        reasoning?: string;
+      };
+      return {
+        mood: parsed.mood,
+        confidence: parsed.confidence ?? 0,
+        reasoning: parsed.reasoning ?? "",
+        error: null,
+      };
+    } catch {
+      return { mood: null, confidence: 0, reasoning: "", error: "Parse error" };
+    }
+  });
+
+/* --------------------------- 3.1: Embeddings ------------------------------- */
+
+const embedSchema = z.object({
+  texts: z.array(z.string().min(1).max(8000)).min(1).max(64),
+});
+
+export const embedTexts = createServerFn({ method: "POST" })
+  .inputValidator((d) => embedSchema.parse(d))
+  .handler(async ({ data }) => {
+    const apiKey = requireOpenAIApiKey();
+    const res = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: data.texts,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Embed failed: ${res.status} ${err}`);
+    }
+    const json = (await res.json()) as {
+      data: Array<{ embedding: number[] }>;
+    };
+    return {
+      embeddings: json.data.map((d) => d.embedding),
+      model: "text-embedding-3-small",
+    };
+  });
