@@ -225,7 +225,7 @@ function Home() {
   // ---- On-device voice fingerprinting ----
   const captureRef = useRef<VoiceCapture | null>(null);
   // Single source of truth for diarization this session.
-  const diarizerRef = useRef<Diarizer>(new Diarizer(0.82));
+  const diarizerRef = useRef<Diarizer>(new Diarizer(0.87));
   // Cluster status (suggested / confirmed) keyed by diarizer label.
   const [clusterStatus, setClusterStatus] = useState<Record<string, ClusterStatus>>({});
   const clusterStatusRef = useRef<Record<string, ClusterStatus>>({});
@@ -295,7 +295,68 @@ function Home() {
       let assignNew = false;
       let introOverride = false;
 
-      if (mfcc) {
+      // -------- Participant-override path --------
+      // When the user has declared participants AND their voiceprints are
+      // pre-loaded, use those voiceprints as the PRIMARY signal for cluster
+      // assignment instead of in-session MFCC similarity. Stored voiceprints
+      // are recorded under controlled conditions and are more discriminative
+      // than centroids that drift during a live conversation.
+      //
+      // Threshold 0.78 is chosen above the typical inter-speaker range
+      // (0.50–0.75) so we only override when we're confident which participant
+      // is speaking. Below 0.78 we fall back to the diarizer's normal logic.
+      let participantOverridePersonId: string | null = null;
+      let participantOverrideSim = 0;
+      if (
+        mfcc &&
+        !opts.forceNewCluster &&
+        participantVoiceprintsRef.current.length > 0
+      ) {
+        const PARTICIPANT_OVERRIDE_THRESHOLD = 0.78;
+        for (const pvp of participantVoiceprintsRef.current) {
+          if (pvp.centroid.length !== mfcc.length) continue;
+          const sim = cosineSim(mfcc, pvp.centroid);
+          if (sim >= PARTICIPANT_OVERRIDE_THRESHOLD && sim > participantOverrideSim) {
+            participantOverridePersonId = pvp.personId;
+            participantOverrideSim = sim;
+          }
+        }
+      }
+
+      if (mfcc && participantOverridePersonId) {
+        // Look for any existing cluster for this participant — both confirmed
+        // (in speakerMap) and suggested-but-unconfirmed (in clusterStatus) — to
+        // avoid creating a duplicate cluster for the same person.
+        let existingLabel: string | undefined;
+        for (const [label, pid] of Object.entries(speakerMapRef.current)) {
+          if (pid === participantOverridePersonId) {
+            existingLabel = label;
+            break;
+          }
+        }
+        if (!existingLabel) {
+          for (const [label, status] of Object.entries(clusterStatusRef.current)) {
+            if (
+              (status.kind === "suggested" || status.kind === "confirmed") &&
+              status.personId === participantOverridePersonId
+            ) {
+              existingLabel = label;
+              break;
+            }
+          }
+        }
+        if (existingLabel && diarizerRef.current.get(existingLabel)) {
+          const r = diarizerRef.current.forceAssign(existingLabel, mfcc);
+          speakerLabel = r.label;
+          assignSim = participantOverrideSim;
+          assignNew = false;
+        } else {
+          const r = diarizerRef.current.assignNew(mfcc);
+          speakerLabel = r.label;
+          assignSim = participantOverrideSim;
+          assignNew = true;
+        }
+      } else if (mfcc) {
         if (opts.forceNewCluster) {
           const r = diarizerRef.current.assignNew(mfcc);
           speakerLabel = r.label;
@@ -465,11 +526,13 @@ function Home() {
             if (s > maxSimToOthers) maxSimToOthers = s;
           }
           const isStronglyIsolated = maxSimToOthers < ISOLATION_PROMOTE_THRESHOLD;
+          const matchedParticipant = !!participantOverridePersonId;
           const promoteNow =
             isFirstCluster ||
             userTriggered ||
             introOverride ||
-            isStronglyIsolated;
+            isStronglyIsolated ||
+            matchedParticipant;
           pendingClustersRef.current.set(speakerLabel, {
             firstSeenTs: Date.now(),
             utteranceCount: 1,
@@ -542,6 +605,7 @@ function Home() {
         isNew: assignNew,
         introOverride,
         forcedNew: !!opts.forceNewCluster,
+        participantOverride: participantOverridePersonId ?? undefined,
         clusters: diarizerRef.current.clusters().length,
       });
 

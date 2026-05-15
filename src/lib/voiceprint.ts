@@ -306,7 +306,12 @@ export class Diarizer {
   private counter = 0;
   private _forceNewOnNext = false;
   // mergeThreshold is the baseline; actual threshold per cluster adapts to its spread.
-  constructor(public mergeThreshold = 0.82) {}
+  // 0.87 is intentionally above the typical inter-speaker MFCC cosine similarity
+  // range (0.50–0.80) so that distinct voices reliably get their own cluster.
+  // Same-speaker variation (different mic distance, emotion, noise) typically
+  // stays in 0.78–0.95 — ghost-collapse and pending hysteresis at the caller
+  // layer handle one-off same-speaker ghosts that fall below 0.87.
+  constructor(public mergeThreshold = 0.87) {}
 
   reset() {
     this.clustersMap.clear();
@@ -382,15 +387,36 @@ export class Diarizer {
   }
 
   /** Compute the adaptive merge threshold for a given cluster.
-   *  - With <3 samples we use the conservative baseline (0.82 by default) —
+   *  - With <3 samples we use the conservative baseline (0.87 by default) —
    *    spread isn't meaningful yet, so don't relax.
    *  - With ≥3 samples we relax for tight clusters and tighten for broad ones,
-   *    but always stay within [0.78, 0.88]. */
+   *    but always stay within [0.83, 0.93]. */
   private thresholdFor(label: string): number {
     const c = this.clustersMap.get(label);
     if (!c || c.count < 3) return this.mergeThreshold;
     const adjusted = this.mergeThreshold + (c.spread - 0.08) * 0.6;
-    return Math.min(0.88, Math.max(0.78, adjusted));
+    return Math.min(0.93, Math.max(0.83, adjusted));
+  }
+
+  /** Force-assign an MFCC to a specific cluster label. If the cluster doesn't
+   *  exist, create it seeded with this MFCC. Otherwise update its centroid
+   *  with the new sample (subject to the centroid update guard).
+   *
+   *  Use this when external evidence (e.g. a participant's stored voiceprint)
+   *  determines the cluster identity more reliably than in-session MFCC
+   *  similarity. Returns the resolved label and the cluster's prior similarity
+   *  for caller bookkeeping. */
+  forceAssign(label: string, mfcc: number[]): { label: string; sim: number; isNew: boolean } {
+    const existing = this.clustersMap.get(label);
+    if (!existing) {
+      this.clustersMap.set(label, { centroid: mfcc.slice(), count: 1, spread: 0 });
+      return { label, sim: 1, isNew: true };
+    }
+    const preMergeSim = cosineSim(mfcc, existing.centroid);
+    if (preMergeSim >= CENTROID_UPDATE_THRESHOLD) {
+      this.mergeUtterance(label, mfcc);
+    }
+    return { label, sim: preMergeSim, isNew: false };
   }
 
   private mergeUtterance(label: string, mfcc: number[]) {
