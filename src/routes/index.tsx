@@ -52,7 +52,7 @@ import {
   Diarizer,
 } from "@/lib/voiceprint";
 import { VOICEPRINT_MATCH_THRESHOLD } from "@/lib/db";
-import { SpeakerPanel, type ClusterRow, type ClusterStatus } from "@/components/SpeakerPanel";
+import { SpeakerPanel, type ClusterRow, type ClusterStatus, type SuggestedName } from "@/components/SpeakerPanel";
 
 export const Route = createFileRoute("/")({
   component: Home,
@@ -82,6 +82,19 @@ const QUICK_PHRASES = [
   "Could you repeat that?",
   "Sorry, who am I speaking with?",
 ];
+
+/** Append a suggestion chip onto a cluster status, de-duped by name. */
+function mergeSuggestion(
+  status: ClusterStatus,
+  chip: SuggestedName,
+): ClusterStatus {
+  if (status.kind === "confirmed") return status;
+  const cur = status.suggestions ?? [];
+  if (cur.some((s) => s.name.toLowerCase() === chip.name.toLowerCase())) {
+    return status;
+  }
+  return { ...status, suggestions: [...cur, chip] } as ClusterStatus;
+}
 
 function categoryClass(cat: string): string {
   switch (cat) {
@@ -219,6 +232,9 @@ function Home() {
   }, [clusterStatus]);
   // Force re-render when diarizer counts/clusters change.
   const [, setClusterTick] = useState(0);
+  // When James presses "Ask" on a specific cluster, the next time that
+  // cluster speaks we attribute any heard self-intro name back to it.
+  const expectingNameForClusterRef = useRef<string | null>(null);
   useEffect(() => {
     speakerMapRef.current = speakerMap;
   }, [speakerMap]);
@@ -306,36 +322,75 @@ function Home() {
       try {
         const cluster = diarizerRef.current.get(speakerLabel);
         const status = clusterStatusRef.current[speakerLabel];
-        if (cluster && (!status || status.kind === "unknown")) {
-          // Build candidates: stored prints minus already-confirmed people.
-          const confirmedIds = new Set(
-            Object.values(speakerMapRef.current),
-          );
-          const allPrints = await db.voiceprints.toArray();
-          const candidates = allPrints.filter(
-            (p) => !confirmedIds.has(p.person_id),
-          );
-          const match = bestMatch(
-            cluster.centroid,
-            candidates,
-            VOICEPRINT_MATCH_THRESHOLD,
-          );
-          // Look for a self-introduction in this segment as a hint.
+        if (cluster && status?.kind !== "confirmed") {
+          // Always look for self-introduction names in this segment.
           const introHere = extractIntroducedNames([
             { text, speaker_label: speakerLabel },
           ])[0]?.name;
+          // Determine source: ask-reply if this cluster matches the one we
+          // just asked, otherwise self-intro.
+          const askTarget = expectingNameForClusterRef.current;
+          const isAskReply =
+            askTarget !== null &&
+            (askTarget === speakerLabel || askTarget === "");
+          // Resolve attribution target: ask-reply attributes back to the
+          // cluster Ask was clicked on (if it was a per-cluster ask).
+          const attributionLabel =
+            isAskReply && askTarget && askTarget !== ""
+              ? askTarget
+              : speakerLabel;
+
           let nextStatus: ClusterStatus | undefined;
-          if (match) {
-            nextStatus = {
-              kind: "suggested",
-              personId: match.print.person_id,
-              sim: match.sim,
-            };
-          } else if (!status) {
-            nextStatus = { kind: "unknown", suggestedName: introHere };
-          } else if (introHere && !status.suggestedName) {
-            nextStatus = { kind: "unknown", suggestedName: introHere };
+          // Only run voiceprint match for unknown clusters that haven't been
+          // matched yet — keep stable suggestions once shown.
+          if (!status || status.kind === "unknown") {
+            const confirmedIds = new Set(Object.values(speakerMapRef.current));
+            const allPrints = await db.voiceprints.toArray();
+            const candidates = allPrints.filter(
+              (p) => !confirmedIds.has(p.person_id),
+            );
+            const match = bestMatch(
+              cluster.centroid,
+              candidates,
+              VOICEPRINT_MATCH_THRESHOLD,
+            );
+            if (match) {
+              nextStatus = {
+                kind: "suggested",
+                personId: match.print.person_id,
+                sim: match.sim,
+                suggestions: status?.suggestions ?? [],
+              };
+            }
           }
+
+          // Append intro name as a suggestion chip on the attribution target.
+          if (introHere) {
+            const targetStatus =
+              attributionLabel === speakerLabel
+                ? (nextStatus ?? status ?? { kind: "unknown" as const })
+                : (clusterStatusRef.current[attributionLabel] ?? {
+                    kind: "unknown" as const,
+                  });
+            const newChip: SuggestedName = {
+              name: introHere,
+              source: isAskReply ? "ask-reply" : "self-intro",
+            };
+            const merged = mergeSuggestion(targetStatus, newChip);
+            if (attributionLabel === speakerLabel) {
+              nextStatus = merged;
+            } else {
+              const next = {
+                ...clusterStatusRef.current,
+                [attributionLabel]: merged,
+              };
+              clusterStatusRef.current = next;
+              setClusterStatus(next);
+            }
+            // Consume the ask target if attribution succeeded.
+            if (isAskReply) expectingNameForClusterRef.current = null;
+          }
+
           if (nextStatus) {
             const next = {
               ...clusterStatusRef.current,
@@ -771,9 +826,14 @@ function Home() {
   );
 
   const rejectSuggestion = useCallback((label: string) => {
+    const cur = clusterStatusRef.current[label];
+    const carried =
+      cur && (cur.kind === "suggested" || cur.kind === "unknown")
+        ? cur.suggestions
+        : undefined;
     const next = {
       ...clusterStatusRef.current,
-      [label]: { kind: "unknown" as const },
+      [label]: { kind: "unknown" as const, suggestions: carried },
     };
     clusterStatusRef.current = next;
     setClusterStatus(next);
@@ -807,6 +867,35 @@ function Home() {
       await confirmKnownSpeaker(label, personId);
     },
     [allPeople, placeName, confirmKnownSpeaker],
+  );
+
+  // Drop a confirmed cluster back to unknown (does NOT delete the saved
+  // voiceprint of the previously-confirmed person — only this session's link).
+  const clearConfirmedSpeaker = useCallback(async (label: string) => {
+    const nextMap = { ...speakerMapRef.current };
+    delete nextMap[label];
+    speakerMapRef.current = nextMap;
+    setSpeakerMap(nextMap);
+    const nextStatus = {
+      ...clusterStatusRef.current,
+      [label]: { kind: "unknown" as const },
+    };
+    clusterStatusRef.current = nextStatus;
+    setClusterStatus(nextStatus);
+    if (conversationIdRef.current) {
+      await db.conversations.update(conversationIdRef.current, {
+        speaker_map: nextMap,
+      });
+    }
+  }, []);
+
+  const askSpeakerName = useCallback(
+    (label?: string) => {
+      // Empty string means "global ask"; null means "no pending ask".
+      expectingNameForClusterRef.current = label ?? "";
+      void speak("Sorry, who am I speaking with?");
+    },
+    [speak],
   );
 
 
@@ -1094,7 +1183,8 @@ function Home() {
             onConfirmKnown={confirmKnownSpeaker}
             onRejectSuggestion={rejectSuggestion}
             onConfirmNew={confirmNewSpeaker}
-            onAskName={() => speak("Sorry, who am I speaking with?")}
+            onAskName={askSpeakerName}
+            onClearConfirmed={clearConfirmedSpeaker}
           />
         </div>
       </div>
