@@ -1478,7 +1478,7 @@ Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRI
       const parsed = JSON.parse(call.function.arguments);
       return { profile: parsed, error: null };
     } catch {
-      return { profile: null as unknown, error: "Parse error" };
+      return { profile: null as any, error: "Parse error" };
     }
   });
 
