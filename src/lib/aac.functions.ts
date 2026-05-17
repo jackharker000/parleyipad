@@ -1379,7 +1379,7 @@ export const distillStyleProfile = createServerFn({ method: "POST" })
     const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
     if (data.samples.length < 20) {
       return {
-        profile: null as unknown,
+        profile: null as any,
         error: "insufficient samples",
       };
     }
@@ -1469,16 +1469,16 @@ Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRI
     if (!res.ok) {
       const err = await res.text();
       console.error("Distill failed:", res.status, err);
-      return { profile: null as unknown, error: `AI error ${res.status}` };
+      return { profile: null as any, error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
     const call = json.choices?.[0]?.message?.tool_calls?.[0];
-    if (!call) return { profile: null as unknown, error: "No tool call" };
+    if (!call) return { profile: null as any, error: "No tool call" };
     try {
       const parsed = JSON.parse(call.function.arguments);
       return { profile: parsed, error: null };
     } catch {
-      return { profile: null as unknown, error: "Parse error" };
+      return { profile: null as any, error: "Parse error" };
     }
   });
 

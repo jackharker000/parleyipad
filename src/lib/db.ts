@@ -295,18 +295,6 @@ export type VoiceprintContribution = {
   preview_text?: string;
 };
 
-export type VoiceprintContribution = {
-  id: string;
-  person_id: string;
-  conversation_id?: string;
-  source: "manual" | "auto"; // manual = recorded in settings; auto = learned during conversation
-  mfcc: number[];
-  ts: number;
-  // Optional preview text captured at the moment the contribution was learned,
-  // so the user can recognise what was being said.
-  preview_text?: string;
-};
-
 export type PersonDocument = {
   id: string;
   person_id: string;
