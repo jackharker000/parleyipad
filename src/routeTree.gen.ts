@@ -11,9 +11,12 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RecentRouteImport } from './routes/recent'
+import { Route as PeopleRouteImport } from './routes/people'
 import { Route as HelpersRouteImport } from './routes/helpers'
+import { Route as EventsRouteImport } from './routes/events'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ConversationNewRouteImport } from './routes/conversation.new'
+import { Route as SpikeSpeakerIdRouteImport } from './routes/spike.speaker-id'
+import { Route as ApiLlmAnthropicRouteImport } from './routes/api/llm/anthropic'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -25,9 +28,19 @@ const RecentRoute = RecentRouteImport.update({
   path: '/recent',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PeopleRoute = PeopleRouteImport.update({
+  id: '/people',
+  path: '/people',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const HelpersRoute = HelpersRouteImport.update({
   id: '/helpers',
   path: '/helpers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EventsRoute = EventsRouteImport.update({
+  id: '/events',
+  path: '/events',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -35,54 +48,90 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ConversationNewRoute = ConversationNewRouteImport.update({
-  id: '/conversation/new',
-  path: '/conversation/new',
+const SpikeSpeakerIdRoute = SpikeSpeakerIdRouteImport.update({
+  id: '/spike/speaker-id',
+  path: '/spike/speaker-id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiLlmAnthropicRoute = ApiLlmAnthropicRouteImport.update({
+  id: '/api/llm/anthropic',
+  path: '/api/llm/anthropic',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/events': typeof EventsRoute
   '/helpers': typeof HelpersRoute
+  '/people': typeof PeopleRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
-  '/conversation/new': typeof ConversationNewRoute
+  '/spike/speaker-id': typeof SpikeSpeakerIdRoute
+  '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/events': typeof EventsRoute
   '/helpers': typeof HelpersRoute
+  '/people': typeof PeopleRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
-  '/conversation/new': typeof ConversationNewRoute
+  '/spike/speaker-id': typeof SpikeSpeakerIdRoute
+  '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/events': typeof EventsRoute
   '/helpers': typeof HelpersRoute
+  '/people': typeof PeopleRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
-  '/conversation/new': typeof ConversationNewRoute
+  '/spike/speaker-id': typeof SpikeSpeakerIdRoute
+  '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/helpers' | '/recent' | '/settings' | '/conversation/new'
+  fullPaths:
+    | '/'
+    | '/events'
+    | '/helpers'
+    | '/people'
+    | '/recent'
+    | '/settings'
+    | '/spike/speaker-id'
+    | '/api/llm/anthropic'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/helpers' | '/recent' | '/settings' | '/conversation/new'
+  to:
+    | '/'
+    | '/events'
+    | '/helpers'
+    | '/people'
+    | '/recent'
+    | '/settings'
+    | '/spike/speaker-id'
+    | '/api/llm/anthropic'
   id:
     | '__root__'
     | '/'
+    | '/events'
     | '/helpers'
+    | '/people'
     | '/recent'
     | '/settings'
-    | '/conversation/new'
+    | '/spike/speaker-id'
+    | '/api/llm/anthropic'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  EventsRoute: typeof EventsRoute
   HelpersRoute: typeof HelpersRoute
+  PeopleRoute: typeof PeopleRoute
   RecentRoute: typeof RecentRoute
   SettingsRoute: typeof SettingsRoute
-  ConversationNewRoute: typeof ConversationNewRoute
+  SpikeSpeakerIdRoute: typeof SpikeSpeakerIdRoute
+  ApiLlmAnthropicRoute: typeof ApiLlmAnthropicRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -101,11 +150,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RecentRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/people': {
+      id: '/people'
+      path: '/people'
+      fullPath: '/people'
+      preLoaderRoute: typeof PeopleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/helpers': {
       id: '/helpers'
       path: '/helpers'
       fullPath: '/helpers'
       preLoaderRoute: typeof HelpersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/events': {
+      id: '/events'
+      path: '/events'
+      fullPath: '/events'
+      preLoaderRoute: typeof EventsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -115,11 +178,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/conversation/new': {
-      id: '/conversation/new'
-      path: '/conversation/new'
-      fullPath: '/conversation/new'
-      preLoaderRoute: typeof ConversationNewRouteImport
+    '/spike/speaker-id': {
+      id: '/spike/speaker-id'
+      path: '/spike/speaker-id'
+      fullPath: '/spike/speaker-id'
+      preLoaderRoute: typeof SpikeSpeakerIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/llm/anthropic': {
+      id: '/api/llm/anthropic'
+      path: '/api/llm/anthropic'
+      fullPath: '/api/llm/anthropic'
+      preLoaderRoute: typeof ApiLlmAnthropicRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -127,10 +197,13 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  EventsRoute: EventsRoute,
   HelpersRoute: HelpersRoute,
+  PeopleRoute: PeopleRoute,
   RecentRoute: RecentRoute,
   SettingsRoute: SettingsRoute,
-  ConversationNewRoute: ConversationNewRoute,
+  SpikeSpeakerIdRoute: SpikeSpeakerIdRoute,
+  ApiLlmAnthropicRoute: ApiLlmAnthropicRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
