@@ -31,6 +31,18 @@ export class SileroVAD {
     if (this.vad) return;
     const { MicVAD } = await import("@ricky0123/vad-web");
     this.vad = await MicVAD.new({
+      // Serve the worklet bundle, Silero ONNX, and ORT WASM glue from our
+      // own origin — copied into public/ by scripts/copy-vad-assets.mjs.
+      // The defaults load from cdn.jsdelivr.net which iPad Safari refuses
+      // (cross-origin module load).
+      baseAssetPath: "/",
+      onnxWASMBasePath: "/",
+      // Pin single-threaded WASM. Multi-threaded ORT needs COOP/COEP headers
+      // we don't set, and there's no benefit on iPad Safari which lacks
+      // SharedArrayBuffer in standard mode anyway.
+      ortConfig: (ort) => {
+        if (ort.env.wasm) ort.env.wasm.numThreads = 1;
+      },
       onSpeechStart: () => {
         for (const fn of this.speechListeners) fn();
       },

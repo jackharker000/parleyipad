@@ -35,3 +35,4 @@ dist-ssr
 # Re-fetched automatically by `bun install`; don't commit.
 public/vad.worklet.bundle.min.js
 public/silero_vad*.onnx
+public/ort-wasm-simd-threaded*
