@@ -50,7 +50,7 @@ export class TransformersSpeakerEmbedder implements SpeakerEmbedder {
   private async getExtractor(): Promise<EmbedFn> {
     if (this.extractorPromise) return this.extractorPromise;
     this.extractorPromise = (async () => {
-      const { AutoModel, AutoProcessor, RawAudio } = await import("@huggingface/transformers");
+      const { AutoModel, AutoProcessor } = await import("@huggingface/transformers");
       const device = this.preferWebGPU && hasWebGPU() ? "webgpu" : "wasm";
 
       const [processor, model] = await Promise.all([
@@ -62,8 +62,10 @@ export class TransformersSpeakerEmbedder implements SpeakerEmbedder {
       ]);
 
       return async (waveform: Float32Array) => {
-        const audio = new RawAudio(waveform, 16000);
-        const inputs = await processor(audio);
+        // Pass the raw Float32 array; the processor's Wav2Vec2FeatureExtractor
+        // does its own mel-spectrogram step internally. Wrapping in RawAudio
+        // would route through the file-loader path and reject the array.
+        const inputs = await processor(waveform, { sampling_rate: 16000 });
         const outputs = await model(inputs);
         return extractEmbedding(outputs);
       };
