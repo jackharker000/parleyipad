@@ -1,0 +1,89 @@
+import { createFileRoute } from "@tanstack/react-router";
+
+/**
+ * ElevenLabs Scribe (batch REST) proxy.
+ *
+ * Client posts multipart form-data with `audio` (a wav/webm/mp3 blob) and
+ * an optional `sampleRate` hint. We forward to ElevenLabs `/v1/speech-to-text`
+ * with our server-side key. Scribe responds with a transcript object that we
+ * normalise into the segment shape the client `STTProvider` returns.
+ *
+ * v1 of the live cockpit uses this batched path — Scribe also has a
+ * WebSocket streaming endpoint for partial transcripts, but proxying a
+ * WebSocket through Vercel functions is fiddlier and we don't need
+ * partials for the speaker-ID + turn-triggered suggestion loop yet.
+ */
+
+const SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text";
+
+export const Route = createFileRoute("/api/stt/elevenlabs")({
+  server: {
+    handlers: {
+      POST: async ({ request }) => {
+        const apiKey = process.env.ELEVENLABS_API_KEY;
+        if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
+
+        const form = await request.formData();
+        const audio = form.get("audio");
+        if (!(audio instanceof Blob)) {
+          return errorResponse(400, "Multipart field `audio` (Blob) is required");
+        }
+
+        const upstreamForm = new FormData();
+        upstreamForm.append("file", audio, "audio.webm");
+        upstreamForm.append("model_id", "scribe_v1");
+        upstreamForm.append("timestamps_granularity", "word");
+
+        const upstream = await fetch(SCRIBE_URL, {
+          method: "POST",
+          headers: { "xi-api-key": apiKey },
+          body: upstreamForm,
+        });
+
+        if (!upstream.ok) {
+          const text = await upstream.text();
+          return errorResponse(upstream.status, `Scribe ${upstream.status}: ${text}`);
+        }
+
+        type ScribeWord = {
+          text: string;
+          start: number;
+          end: number;
+          type?: string;
+          speaker_id?: string;
+        };
+        type ScribeResponse = {
+          language_code?: string;
+          text: string;
+          words?: ScribeWord[];
+        };
+        const data = (await upstream.json()) as ScribeResponse;
+
+        // Scribe returns the whole utterance as one block of text plus per-word
+        // timestamps. For the cockpit v1 we treat the whole post as a single
+        // segment — speaker-ID + turn boundaries already come from Silero VAD,
+        // and we're sending one VAD utterance at a time, so word-level
+        // splitting isn't worth the complexity yet.
+        const start = data.words?.[0]?.start ?? 0;
+        const end = data.words?.[data.words.length - 1]?.end ?? 0;
+        const segments = [
+          {
+            start,
+            end,
+            text: (data.text ?? "").trim(),
+            speaker: data.words?.[0]?.speaker_id,
+          },
+        ];
+
+        return Response.json({ segments });
+      },
+    },
+  },
+});
+
+function errorResponse(status: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}

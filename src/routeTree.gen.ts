@@ -16,6 +16,10 @@ import { Route as HelpersRouteImport } from './routes/helpers'
 import { Route as EventsRouteImport } from './routes/events'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SpikeSpeakerIdRouteImport } from './routes/spike.speaker-id'
+import { Route as ApiTtsElevenlabsRouteImport } from './routes/api/tts/elevenlabs'
+import { Route as ApiTtsCartesiaRouteImport } from './routes/api/tts/cartesia'
+import { Route as ApiSttElevenlabsRouteImport } from './routes/api/stt/elevenlabs'
+import { Route as ApiLlmOpenaiRouteImport } from './routes/api/llm/openai'
 import { Route as ApiLlmAnthropicRouteImport } from './routes/api/llm/anthropic'
 
 const SettingsRoute = SettingsRouteImport.update({
@@ -53,6 +57,26 @@ const SpikeSpeakerIdRoute = SpikeSpeakerIdRouteImport.update({
   path: '/spike/speaker-id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiTtsElevenlabsRoute = ApiTtsElevenlabsRouteImport.update({
+  id: '/api/tts/elevenlabs',
+  path: '/api/tts/elevenlabs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTtsCartesiaRoute = ApiTtsCartesiaRouteImport.update({
+  id: '/api/tts/cartesia',
+  path: '/api/tts/cartesia',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiSttElevenlabsRoute = ApiSttElevenlabsRouteImport.update({
+  id: '/api/stt/elevenlabs',
+  path: '/api/stt/elevenlabs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiLlmOpenaiRoute = ApiLlmOpenaiRouteImport.update({
+  id: '/api/llm/openai',
+  path: '/api/llm/openai',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiLlmAnthropicRoute = ApiLlmAnthropicRouteImport.update({
   id: '/api/llm/anthropic',
   path: '/api/llm/anthropic',
@@ -68,6 +92,10 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/spike/speaker-id': typeof SpikeSpeakerIdRoute
   '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
+  '/api/llm/openai': typeof ApiLlmOpenaiRoute
+  '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
+  '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
+  '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -78,6 +106,10 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/spike/speaker-id': typeof SpikeSpeakerIdRoute
   '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
+  '/api/llm/openai': typeof ApiLlmOpenaiRoute
+  '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
+  '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
+  '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -89,6 +121,10 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/spike/speaker-id': typeof SpikeSpeakerIdRoute
   '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
+  '/api/llm/openai': typeof ApiLlmOpenaiRoute
+  '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
+  '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
+  '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -101,6 +137,10 @@ export interface FileRouteTypes {
     | '/settings'
     | '/spike/speaker-id'
     | '/api/llm/anthropic'
+    | '/api/llm/openai'
+    | '/api/stt/elevenlabs'
+    | '/api/tts/cartesia'
+    | '/api/tts/elevenlabs'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -111,6 +151,10 @@ export interface FileRouteTypes {
     | '/settings'
     | '/spike/speaker-id'
     | '/api/llm/anthropic'
+    | '/api/llm/openai'
+    | '/api/stt/elevenlabs'
+    | '/api/tts/cartesia'
+    | '/api/tts/elevenlabs'
   id:
     | '__root__'
     | '/'
@@ -121,6 +165,10 @@ export interface FileRouteTypes {
     | '/settings'
     | '/spike/speaker-id'
     | '/api/llm/anthropic'
+    | '/api/llm/openai'
+    | '/api/stt/elevenlabs'
+    | '/api/tts/cartesia'
+    | '/api/tts/elevenlabs'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -132,6 +180,10 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   SpikeSpeakerIdRoute: typeof SpikeSpeakerIdRoute
   ApiLlmAnthropicRoute: typeof ApiLlmAnthropicRoute
+  ApiLlmOpenaiRoute: typeof ApiLlmOpenaiRoute
+  ApiSttElevenlabsRoute: typeof ApiSttElevenlabsRoute
+  ApiTtsCartesiaRoute: typeof ApiTtsCartesiaRoute
+  ApiTtsElevenlabsRoute: typeof ApiTtsElevenlabsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -185,6 +237,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SpikeSpeakerIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/tts/elevenlabs': {
+      id: '/api/tts/elevenlabs'
+      path: '/api/tts/elevenlabs'
+      fullPath: '/api/tts/elevenlabs'
+      preLoaderRoute: typeof ApiTtsElevenlabsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/tts/cartesia': {
+      id: '/api/tts/cartesia'
+      path: '/api/tts/cartesia'
+      fullPath: '/api/tts/cartesia'
+      preLoaderRoute: typeof ApiTtsCartesiaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/stt/elevenlabs': {
+      id: '/api/stt/elevenlabs'
+      path: '/api/stt/elevenlabs'
+      fullPath: '/api/stt/elevenlabs'
+      preLoaderRoute: typeof ApiSttElevenlabsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/llm/openai': {
+      id: '/api/llm/openai'
+      path: '/api/llm/openai'
+      fullPath: '/api/llm/openai'
+      preLoaderRoute: typeof ApiLlmOpenaiRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/llm/anthropic': {
       id: '/api/llm/anthropic'
       path: '/api/llm/anthropic'
@@ -204,6 +284,10 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   SpikeSpeakerIdRoute: SpikeSpeakerIdRoute,
   ApiLlmAnthropicRoute: ApiLlmAnthropicRoute,
+  ApiLlmOpenaiRoute: ApiLlmOpenaiRoute,
+  ApiSttElevenlabsRoute: ApiSttElevenlabsRoute,
+  ApiTtsCartesiaRoute: ApiTtsCartesiaRoute,
+  ApiTtsElevenlabsRoute: ApiTtsElevenlabsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
