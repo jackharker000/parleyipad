@@ -8,11 +8,38 @@
  *
  * Sample-rate handling: we request 16 kHz, but iPad Safari often hands
  * back 44.1/48 kHz regardless. We always resample to 16 kHz on stop().
+ *
+ * Worklet delivery: the processor source is embedded as a string and
+ * loaded via a blob: URL. The previous `new URL("./worklets/...", import.meta.url)`
+ * approach trips Safari's AudioWorklet CORS check on Vercel-built assets
+ * ("Cross-origin script load denied by Cross-Origin Resource Sharing policy"),
+ * even though the file is same-origin. Blob URLs are always same-origin.
  */
 
 const TARGET_RATE = 16000;
 
-const captureProcessorUrl = new URL("./worklets/capture-processor.ts", import.meta.url).href;
+const CAPTURE_PROCESSOR_SOURCE = `
+class ParleyCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const channel = inputs[0] && inputs[0][0];
+    if (channel && channel.length > 0) {
+      // Slice (copy) — the input buffer is reused by the audio thread for
+      // the next render quantum, so transferring would invalidate it.
+      this.port.postMessage(channel.slice());
+    }
+    return true;
+  }
+}
+registerProcessor("parley-capture", ParleyCaptureProcessor);
+`;
+
+let captureProcessorUrl: string | null = null;
+function getCaptureProcessorUrl(): string {
+  if (captureProcessorUrl) return captureProcessorUrl;
+  const blob = new Blob([CAPTURE_PROCESSOR_SOURCE], { type: "application/javascript" });
+  captureProcessorUrl = URL.createObjectURL(blob);
+  return captureProcessorUrl;
+}
 
 export type Capture = {
   /** Stop recording and return the audio resampled to 16 kHz mono. */
@@ -36,7 +63,7 @@ export async function startCapture(): Promise<Capture> {
   if (audioContext.state === "suspended") await audioContext.resume();
 
   try {
-    await audioContext.audioWorklet.addModule(captureProcessorUrl);
+    await audioContext.audioWorklet.addModule(getCaptureProcessorUrl());
   } catch (err) {
     stream.getTracks().forEach((t) => t.stop());
     await audioContext.close();
