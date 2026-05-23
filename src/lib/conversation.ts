@@ -91,8 +91,13 @@ export class LiveConversation {
   private lastResetAt = 0;
   private dropped = 0;
   private static readonly MAX_IN_FLIGHT = 1;
-  private static readonly EMBEDDER_RESET_AFTER_N_SEGMENTS = 25;
-  private static readonly EMBEDDER_RESET_INTERVAL_MS = 3 * 60 * 1000;
+  // Tighter than before — the previous run was still hitting the OOM eviction
+  // every ~2 min, which means activations were accumulating between resets.
+  // With a real model.dispose() releasing the ORT session, resetting more
+  // often is cheap (model files stay in the browser cache, so re-warm is
+  // ~5–10 s, not the original ~30 s).
+  private static readonly EMBEDDER_RESET_AFTER_N_SEGMENTS = 12;
+  private static readonly EMBEDDER_RESET_INTERVAL_MS = 90 * 1000;
   private static readonly TRANSCRIPT_CACHE_MAX = 10;
 
   constructor(private deps: ConversationDeps) {

@@ -38,6 +38,12 @@ export class TransformersSpeakerEmbedder implements SpeakerEmbedder {
   private modelId: string;
   private preferWebGPU: boolean;
   private extractorPromise: Promise<EmbedFn> | null = null;
+  // Hold references to the underlying transformers.js model + processor so
+  // dispose() can actually release the ORT session. Without these the WASM
+  // heap stays pinned for the life of the tab and the iPad evicts after a
+  // few minutes of continuous recording.
+  private model: TransformersModel | null = null;
+  private processor: TransformersProcessor | null = null;
 
   constructor(config: EmbedderConfig = {}) {
     this.modelId = config.modelId ?? "Xenova/wavlm-base-plus-sv";
@@ -65,8 +71,17 @@ export class TransformersSpeakerEmbedder implements SpeakerEmbedder {
       }
       const device = chooseDevice(this.preferWebGPU);
 
-      const processor = await AutoProcessor.from_pretrained(this.modelId);
-      const model = await loadModelWithDtypeFallback(AutoModel, this.modelId, device);
+      const processor = (await AutoProcessor.from_pretrained(
+        this.modelId,
+      )) as unknown as TransformersProcessor;
+      const model = (await loadModelWithDtypeFallback(
+        AutoModel,
+        this.modelId,
+        device,
+      )) as unknown as TransformersModel;
+
+      this.processor = processor;
+      this.model = model;
 
       return async (waveform: Float32Array) => {
         // Pass the raw Float32 array; the processor's Wav2Vec2FeatureExtractor
@@ -93,10 +108,39 @@ export class TransformersSpeakerEmbedder implements SpeakerEmbedder {
     return l2Normalize(raw);
   }
 
+  /**
+   * Actually release the ORT session. transformers.js's PreTrainedModel has
+   * a dispose() that walks its internal `sessions` map and calls
+   * `release()` on each onnxruntime-web InferenceSession — that's the only
+   * thing that lets the ORT WASM tensors be reclaimed. Without this dispose
+   * is a no-op and the WASM heap grows until Safari OOM-kills the tab.
+   */
   async dispose(): Promise<void> {
+    const model = this.model;
+    this.model = null;
+    this.processor = null;
     this.extractorPromise = null;
+    if (model && typeof model.dispose === "function") {
+      try {
+        await model.dispose();
+      } catch {
+        /* ignore — best-effort release */
+      }
+    }
   }
 }
+
+/** Minimal structural type for the transformers.js model surface we use. */
+type TransformersModel = {
+  (inputs: unknown): Promise<unknown>;
+  dispose?: () => Promise<void>;
+};
+
+/** Minimal structural type for the transformers.js processor. */
+type TransformersProcessor = (
+  waveform: Float32Array,
+  opts: { sampling_rate: number },
+) => Promise<unknown>;
 
 type EmbedFn = (waveform: Float32Array) => Promise<Float32Array>;
 
