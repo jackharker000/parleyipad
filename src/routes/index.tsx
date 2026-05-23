@@ -93,6 +93,7 @@ function Cockpit() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [mood, setMood] = useState<Mood>("normal");
   const [speakingText, setSpeakingText] = useState<string | null>(null);
+  const [missingKeys, setMissingKeys] = useState<Set<string>>(new Set());
 
   const conversationRef = useRef<LiveConversation | null>(null);
 
@@ -114,7 +115,19 @@ function Cockpit() {
         setSuggestionsLoading(generating);
       },
       onSpeakerCandidates: setCandidates,
-      onError: (err) => toast.error(err.message),
+      onError: (err) => {
+        const key = detectMissingKey(err.message);
+        if (key) {
+          setMissingKeys((prev) => {
+            if (prev.has(key)) return prev;
+            const next = new Set(prev);
+            next.add(key);
+            return next;
+          });
+          return;
+        }
+        toast.error(err.message);
+      },
     });
     conversationRef.current = conv;
     return conv;
@@ -203,6 +216,8 @@ function Cockpit() {
         </div>
       </header>
 
+      {missingKeys.size > 0 && <MissingKeysBanner keys={missingKeys} />}
+
       <div className="grid gap-5 lg:grid-cols-[1fr_2fr_1fr]">
         <SpeakerColumn
           candidates={candidates}
@@ -224,6 +239,38 @@ function Cockpit() {
 }
 
 // --------------------------------------------------------------------------
+
+/**
+ * Server proxy errors of the form "X_API_KEY not set on the server" are not
+ * runtime bugs — they mean Vercel env vars need filling in. Detect them and
+ * surface a sticky banner with the exact key name instead of buzz-toasting.
+ */
+function detectMissingKey(message: string): string | null {
+  const m = message.match(/\b([A-Z][A-Z0-9_]+_API_KEY)\b[^"]*not set/);
+  return m ? m[1] : null;
+}
+
+function MissingKeysBanner({ keys }: { keys: Set<string> }) {
+  const list = Array.from(keys);
+  return (
+    <div className="rounded-2xl border border-destructive/40 bg-destructive/10 p-4 text-sm">
+      <p className="font-medium text-destructive">
+        Missing server env var{list.length === 1 ? "" : "s"}:{" "}
+        {list.map((k, i) => (
+          <span key={k}>
+            <code className="rounded bg-destructive/15 px-1.5 py-0.5">{k}</code>
+            {i < list.length - 1 ? ", " : ""}
+          </span>
+        ))}
+      </p>
+      <p className="mt-2 text-muted-foreground">
+        Set them in Vercel → ipad-aac-buddy → Settings → Environment Variables → Production, then
+        trigger a redeploy (env changes don't auto-rebuild). Until then the cockpit can record +
+        match speakers but can't transcribe, generate suggestions, or speak.
+      </p>
+    </div>
+  );
+}
 
 function StateBadge({
   state,
@@ -301,7 +348,7 @@ function SuggestionGrid({
           Generating…
         </div>
       )}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
         {cards.map((s, i) => (
           <SuggestionCard
             key={s ? `${s.text}-${i}` : `empty-${i}`}
@@ -346,7 +393,7 @@ function SuggestionCard({
 }) {
   if (!suggestion) {
     return (
-      <div className="min-h-[110px] rounded-2xl border border-dashed border-border bg-muted/30" />
+      <div className="min-h-[180px] rounded-2xl border border-dashed border-border bg-muted/30" />
     );
   }
   return (
@@ -354,12 +401,14 @@ function SuggestionCard({
       type="button"
       onClick={() => onSpeak(suggestion)}
       className={cn(
-        "group flex min-h-[110px] flex-col justify-between rounded-2xl border border-border bg-card p-4 text-left shadow-sm transition active:scale-[0.99]",
+        "group flex min-h-[180px] flex-col justify-between rounded-2xl border border-border bg-card p-5 text-left shadow-sm transition active:scale-[0.99]",
         speaking && "ring-2 ring-accent",
       )}
     >
-      <span className="text-base font-medium leading-snug text-foreground">{suggestion.text}</span>
-      <span className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+      <span className="text-xl font-medium leading-snug text-foreground sm:text-2xl">
+        {suggestion.text}
+      </span>
+      <span className="mt-3 inline-flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
         <span className={cn("h-2 w-2 rounded-full", CATEGORY_DOT[suggestion.category])} />
         {CATEGORY_LABEL[suggestion.category]}
       </span>
