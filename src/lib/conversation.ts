@@ -76,6 +76,25 @@ export class LiveConversation {
   private recentSpeakers: string[] = [];
   private transcriptCache: LiveTranscriptSegment[] = [];
 
+  // Memory-pressure mitigations for iPad Safari. The tab gets OOM-killed
+  // after ~60 s of continuous recording because (a) ONNX Runtime's WASM
+  // heap grows monotonically per inference call and never shrinks, and
+  // (b) when STT + LLM run slower than VAD segments arrive, in-flight
+  // segments stack up, each holding a Float32 audio buffer.
+  //
+  //  - inFlight + MAX_IN_FLIGHT: only one segment processes at a time;
+  //    new ones that arrive mid-flight get dropped (with a soft warning).
+  //  - segmentCount + lastResetAt: every N segments or M ms, dispose the
+  //    embedder and warm it back up to release the WASM heap.
+  private inFlight = 0;
+  private segmentCount = 0;
+  private lastResetAt = 0;
+  private dropped = 0;
+  private static readonly MAX_IN_FLIGHT = 1;
+  private static readonly EMBEDDER_RESET_AFTER_N_SEGMENTS = 25;
+  private static readonly EMBEDDER_RESET_INTERVAL_MS = 3 * 60 * 1000;
+  private static readonly TRANSCRIPT_CACHE_MAX = 10;
+
   constructor(private deps: ConversationDeps) {
     this.tts = new TTSPlayer(makeTTS(deps.settings.ttsProvider));
   }
@@ -110,6 +129,10 @@ export class LiveConversation {
         speakerMap: {},
       };
       await db().conversations.add(this.conversation);
+
+      this.segmentCount = 0;
+      this.lastResetAt = Date.now();
+      this.dropped = 0;
 
       const vad = new SileroVAD();
       await vad.start();
@@ -203,6 +226,30 @@ export class LiveConversation {
   // -----------------------------------------------------------------------
 
   private async handleSegment(segment: VADSegment): Promise<void> {
+    // Throttle: skip if a previous segment is still being processed. The
+    // user-perceived loss is small (Silero VAD's segments are full
+    // utterances, and the embedder + STT round-trip is ~2 s) and it stops
+    // the WASM heap from spiralling into an iPad-Safari OOM kill.
+    if (this.inFlight >= LiveConversation.MAX_IN_FLIGHT) {
+      this.dropped++;
+      return;
+    }
+    this.inFlight++;
+    try {
+      await this.processSegment(segment);
+    } finally {
+      this.inFlight--;
+    }
+
+    // After processing, recycle the embedder periodically to release the
+    // ORT WASM heap. We don't do this mid-segment so we never collide with
+    // the throttle above.
+    if (this.shouldResetEmbedder()) {
+      await this.resetEmbedder();
+    }
+  }
+
+  private async processSegment(segment: VADSegment): Promise<void> {
     this.setState("listening");
     const conversation = this.conversation;
     if (!conversation) return;
@@ -246,6 +293,8 @@ export class LiveConversation {
 
     const [candidates, text] = await Promise.all([embedAndMatch, transcribe]);
 
+    this.segmentCount++;
+
     if (!text || text.length === 0) return;
 
     const top = candidates?.[0];
@@ -282,7 +331,9 @@ export class LiveConversation {
     await db().transcriptSegments.add(persisted);
 
     this.transcriptCache.push(liveSegment);
-    if (this.transcriptCache.length > 20) this.transcriptCache.shift();
+    if (this.transcriptCache.length > LiveConversation.TRANSCRIPT_CACHE_MAX) {
+      this.transcriptCache.shift();
+    }
     this.callbacks.onTranscriptSegment?.(liveSegment);
 
     if (isConfirmed && personId) {
@@ -293,6 +344,36 @@ export class LiveConversation {
     }
 
     void this.regenerateSuggestions(segmentId);
+  }
+
+  private shouldResetEmbedder(): boolean {
+    if (this.state === "idle" || this.state === "stopping") return false;
+    if (this.inFlight > 0) return false;
+    const elapsed = Date.now() - this.lastResetAt;
+    return (
+      this.segmentCount >= LiveConversation.EMBEDDER_RESET_AFTER_N_SEGMENTS ||
+      elapsed >= LiveConversation.EMBEDDER_RESET_INTERVAL_MS
+    );
+  }
+
+  /**
+   * Dispose the embedder's ONNX session and warm it back up. This is the
+   * only reliable way to release ORT's WASM heap on iPad Safari before it
+   * gets large enough for Safari to OOM-kill the tab. The user feels a
+   * one-time ~30 s pause but the conversation keeps going.
+   */
+  private async resetEmbedder(): Promise<void> {
+    const embedder = this.deps.embedderRef.current;
+    if (!embedder) return;
+    try {
+      await embedder.dispose?.();
+      await embedder.warmup?.();
+    } catch (err) {
+      this.emitError(err);
+    } finally {
+      this.segmentCount = 0;
+      this.lastResetAt = Date.now();
+    }
   }
 
   private async regenerateSuggestions(triggeringSegmentId: string): Promise<void> {
