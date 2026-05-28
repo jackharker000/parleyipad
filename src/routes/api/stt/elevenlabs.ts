@@ -41,6 +41,33 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
         // suggestion prompts.
         upstreamForm.append("tag_audio_events", "false");
 
+        // Optional keyterm biasing — the client sends `keyTerms` as a JSON
+        // array string. Scribe batch accepts `keyterms` as repeated multipart
+        // fields (one entry per term). Batch caps at 1000 terms of 50 chars
+        // each; we cap at 50 for parity with realtime so a switch to the
+        // batch fallback doesn't suddenly inflate cost.
+        // Source: https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/batch/keyterm-prompting
+        const keyTermsField = form.get("keyTerms");
+        if (typeof keyTermsField === "string" && keyTermsField.length > 0) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(keyTermsField);
+          } catch {
+            parsed = null;
+          }
+          if (Array.isArray(parsed)) {
+            const terms = parsed
+              .filter((t): t is string => typeof t === "string")
+              .map((t) => t.trim())
+              .filter((t) => t.length > 0)
+              .map((t) => (t.length > 50 ? t.slice(0, 50) : t))
+              .slice(0, 50);
+            for (const term of terms) {
+              upstreamForm.append("keyterms", term);
+            }
+          }
+        }
+
         const upstream = await fetch(SCRIBE_URL, {
           method: "POST",
           headers: { "xi-api-key": apiKey },

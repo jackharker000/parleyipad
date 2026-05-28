@@ -52,6 +52,17 @@ export type ScribeStreamOptions = {
   /** Sample rate of the audio you'll feed. Must match what you actually
    * send. Defaults to 16000 (Parley's VAD output). */
   sampleRate?: number;
+  /**
+   * Pass through to Scribe's `keyterms` biasing. Improves recognition of
+   * proper nouns + jargon (names, place names, project nicknames). Order
+   * matters — higher-priority terms first. Scribe v2 realtime caps the
+   * list at 50 terms of up to 20 chars each and sends them as repeated
+   * `keyterms` query params on the WebSocket URL.
+   *
+   * Source: https://elevenlabs.io/docs/api-reference/speech-to-text/v-1-speech-to-text-realtime
+   * (also confirmed via the May 2026 changelog announcing keyterm support).
+   */
+  keyTerms?: string[];
 };
 
 export type ScribeStreamCallbacks = {
@@ -139,6 +150,19 @@ export async function transcribeSegmentStreaming(args: {
   if (includeTimestamps) url.searchParams.set("include_timestamps", "true");
   if (noVerbatim) url.searchParams.set("no_verbatim", "true");
   if (languageCode) url.searchParams.set("language_code", languageCode);
+  // Scribe v2 realtime accepts `keyterms` as repeated URL query parameters
+  // (not a single JSON array). Up to 50 entries of 20 chars each. We cap +
+  // truncate defensively because the upstream errors are awkward to surface.
+  if (options.keyTerms && options.keyTerms.length > 0) {
+    const trimmed = options.keyTerms
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0)
+      .map((t) => (t.length > 20 ? t.slice(0, 20) : t))
+      .slice(0, 50);
+    for (const term of trimmed) {
+      url.searchParams.append("keyterms", term);
+    }
+  }
 
   return new Promise<string>((resolve, reject) => {
     let finalText = "";

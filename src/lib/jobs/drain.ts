@@ -1,6 +1,7 @@
 import { db, type LLMProviderId, type PendingJob, type TTSProviderId } from "@/lib/db";
 import { makeAI } from "@/lib/ai";
 import { getSettingsSnapshot } from "@/lib/settings";
+import { updatePersonLexicon } from "@/lib/learning/lexicon-extract";
 
 /**
  * Tier-2 / post-conversation job drainer. Jobs are queued in IndexedDB by
@@ -96,11 +97,17 @@ async function runJob(
       case "summariseConversation":
         await runSummariseConversation(job, llmProvider);
         break;
+      case "updateLexicon":
+        await runUpdateLexicon(job, llmProvider);
+        break;
       case "rediarize":
       case "rebuildVoiceprints":
       case "enrichProfiles":
-        // Stubs for now — the legacy implementations will be ported in a
-        // later PR. Marking the job done so the queue doesn't loop on it.
+      case "distillStyle":
+      case "extractMemories":
+      case "detectIntroductions":
+        // Stubs for now — the legacy implementations will be ported in
+        // later PRs. Marking the job done so the queue doesn't loop on it.
         break;
     }
 
@@ -176,4 +183,11 @@ async function runSummariseConversation(
     summary: result.summary,
     highlights: result.highlights,
   });
+}
+
+async function runUpdateLexicon(job: PendingJob, llmProvider: LLMProviderId): Promise<void> {
+  const conv = await db().conversations.get(job.conversationId);
+  if (!conv) return;
+  const ai = makeAI(llmProvider);
+  await updatePersonLexicon(job.conversationId, ai);
 }

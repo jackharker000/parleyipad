@@ -22,6 +22,7 @@ import { TTSPlayer } from "@/lib/audio/tts-player";
 import type { DomainAI, Mood, SuggestionDraft } from "@/lib/ai";
 import { makeTTS } from "@/lib/providers";
 import { enqueueJob } from "@/lib/jobs/drain";
+import { buildKeyterms } from "@/lib/learning/keyterms";
 
 /**
  * Drives one live cockpit session: starts VAD, transcribes each utterance,
@@ -110,6 +111,13 @@ export class LiveConversation {
   private eventKeyInfo: string | null = null;
 
   /**
+   * Cached Scribe `keyterms` list for this conversation. Rebuilt at start()
+   * and whenever the roster / closed-set changes mid-conversation. Empty
+   * outside of an active session.
+   */
+  private keyTerms: string[] = [];
+
+  /**
    * If true, the next incoming VAD segment should be labelled "Unknown"
    * regardless of similarity — used by the SpeakerColumn "New" button when
    * James knows the next utterance is a new person the matcher would
@@ -167,6 +175,12 @@ export class LiveConversation {
   setRoster(args: { people: Person[]; voiceprints: Voiceprint[] }): void {
     this.people = args.people;
     this.voiceprints = args.voiceprints;
+    // Mid-conversation roster changes (e.g. someone newly enrolled while the
+    // mic is live) should grow the keyterm list. Fire and forget so the
+    // setter stays synchronous.
+    if (this.state !== "idle" && this.state !== "stopping") {
+      void this.refreshKeyterms();
+    }
   }
 
   /**
@@ -185,6 +199,9 @@ export class LiveConversation {
    * edits are rare and the user changing them wants the update visible. */
   setJamesProfile(profile: JamesProfile | undefined): void {
     this.deps = { ...this.deps, jamesProfile: profile };
+    if (this.state !== "idle" && this.state !== "stopping") {
+      void this.refreshKeyterms();
+    }
   }
 
   /**
@@ -193,6 +210,9 @@ export class LiveConversation {
    */
   setClosedSet(personIds: string[] | null): void {
     this.closedSet = personIds && personIds.length > 0 ? [...personIds] : null;
+    if (this.state !== "idle" && this.state !== "stopping") {
+      void this.refreshKeyterms();
+    }
   }
 
   /**
@@ -205,6 +225,7 @@ export class LiveConversation {
     if (this.closedSet === null) return;
     if (this.closedSet.includes(personId)) return;
     this.closedSet = [...this.closedSet, personId];
+    void this.refreshKeyterms();
   }
 
   getClosedSet(): string[] | null {
@@ -440,6 +461,11 @@ export class LiveConversation {
         }
       }
 
+      // Build the Scribe keyterm list from the active context. We do this
+      // after the place/event lookup so place + event names land in the
+      // tier-3 boost.
+      await this.refreshKeyterms();
+
       this.segmentCount = 0;
       this.lastResetAt = Date.now();
       this.dropped = 0;
@@ -479,6 +505,13 @@ export class LiveConversation {
       // meaningful to summarise.
       if (hadSegments) {
         await enqueueJob({ type: "summariseConversation", conversationId });
+        // Per-person lexicon extraction so future conversations bias Scribe
+        // toward the proper nouns/jargon this person actually used. Needs
+        // people in the roster — without any, there's no one to attach
+        // terms to.
+        if (this.people.length > 0) {
+          await enqueueJob({ type: "updateLexicon", conversationId });
+        }
       }
       this.conversation = null;
     }
@@ -489,6 +522,7 @@ export class LiveConversation {
     this.placeName = null;
     this.eventName = null;
     this.eventKeyInfo = null;
+    this.keyTerms = [];
     // Keep closedSet — the picker is a pre-Record control; the cockpit
     // resets it explicitly when the user reopens the picker.
     this.setState("idle");
@@ -630,10 +664,12 @@ export class LiveConversation {
     // entitlement on the account) fall back to the batch REST proxy so
     // James still gets a transcript — just a slower one.
     const transcribe = (async (): Promise<string> => {
+      const keyTerms = this.keyTerms.length > 0 ? this.keyTerms : undefined;
       if (this.deps.settings.sttProvider !== "elevenlabs-scribe") {
         return transcribeSegment({
           providerId: this.deps.settings.sttProvider,
           waveform16k: segment.audio,
+          keyTerms,
         }).catch((err) => {
           this.emitError(err);
           return "";
@@ -653,12 +689,14 @@ export class LiveConversation {
               });
             },
           },
+          options: { keyTerms },
         });
       } catch (err) {
         console.warn("[conversation] streaming STT failed, falling back to batch", err);
         return transcribeSegment({
           providerId: this.deps.settings.sttProvider,
           waveform16k: segment.audio,
+          keyTerms,
         }).catch((batchErr) => {
           this.emitError(batchErr);
           return "";
@@ -882,6 +920,29 @@ export class LiveConversation {
   private emitError(err: unknown): void {
     const e = err instanceof Error ? err : new Error(String(err));
     this.callbacks.onError?.(e);
+  }
+
+  /**
+   * Rebuild the cached Scribe keyterm list from the current roster, James
+   * profile, and active place/event. Safe to call repeatedly — short of a
+   * very large lexicon table the build cost is sub-millisecond. Soft-fails
+   * to an empty list so a transient Dexie hiccup never blocks transcription.
+   */
+  private async refreshKeyterms(): Promise<void> {
+    try {
+      const rosterPeople = this.closedSet
+        ? this.people.filter((p) => this.closedSet!.includes(p.id))
+        : this.people;
+      this.keyTerms = await buildKeyterms({
+        people: rosterPeople,
+        jamesProfile: this.deps.jamesProfile,
+        placeId: this.deps.placeId,
+        eventId: this.deps.eventId,
+      });
+    } catch (err) {
+      console.warn("[conversation] buildKeyterms failed; continuing without bias", err);
+      this.keyTerms = [];
+    }
   }
 
   /**

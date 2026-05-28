@@ -53,6 +53,12 @@ export type STTRequest = {
   audio: Blob;
   sampleRate: number;
   signal?: AbortSignal;
+  /**
+   * Optional list of proper-noun / jargon terms to bias the recognizer
+   * toward. Forwarded as Scribe's `keyterms` multipart field by the
+   * ElevenLabs adapter. Other providers may ignore.
+   */
+  keyTerms?: string[];
 };
 
 export interface STTProvider {
