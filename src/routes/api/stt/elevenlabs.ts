@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { corsPreflight, withCors } from "@/lib/api-cors";
+
 /**
  * ElevenLabs Scribe (batch REST) proxy.
  *
@@ -19,6 +21,7 @@ const SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 export const Route = createFileRoute("/api/stt/elevenlabs")({
   server: {
     handlers: {
+      OPTIONS: corsPreflight,
       POST: async ({ request }) => {
         const apiKey = process.env.ELEVENLABS_API_KEY;
         if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
@@ -31,8 +34,12 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
 
         const upstreamForm = new FormData();
         upstreamForm.append("file", audio, "audio.webm");
-        upstreamForm.append("model_id", "scribe_v1");
+        upstreamForm.append("model_id", "scribe_v2_realtime");
         upstreamForm.append("timestamps_granularity", "word");
+        // Suppress (laughs)/(pauses)/etc. event tags that Scribe injects into
+        // the transcript text and that James can't easily strip out of the
+        // suggestion prompts.
+        upstreamForm.append("tag_audio_events", "false");
 
         const upstream = await fetch(SCRIBE_URL, {
           method: "POST",
@@ -75,7 +82,7 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
           },
         ];
 
-        return Response.json({ segments });
+        return Response.json({ segments }, { headers: withCors() });
       },
     },
   },
@@ -84,6 +91,6 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
 function errorResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: withCors({ "content-type": "application/json" }),
   });
 }

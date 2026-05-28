@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { corsPreflight, withCors } from "@/lib/api-cors";
+
 /**
  * Anthropic Messages API proxy. The browser sends an `LLMRequest`
  * (see `src/lib/providers/types.ts`) plus `stream?: boolean`; we read
@@ -29,7 +31,7 @@ type RequestBody = {
 };
 
 function modelFor(tier: Tier): string {
-  const fast = process.env.PARLEY_ANTHROPIC_FAST_MODEL ?? "claude-haiku-4-5-20251001";
+  const fast = process.env.PARLEY_ANTHROPIC_FAST_MODEL ?? "claude-haiku-4-5";
   const smart = process.env.PARLEY_ANTHROPIC_SMART_MODEL ?? "claude-sonnet-4-6";
   return tier === "smart" ? smart : fast;
 }
@@ -63,6 +65,7 @@ function buildAnthropicPayload(body: RequestBody) {
 export const Route = createFileRoute("/api/llm/anthropic")({
   server: {
     handlers: {
+      OPTIONS: corsPreflight,
       POST: async ({ request }) => {
         const apiKey = process.env.ANTHROPIC_API_KEY;
         if (!apiKey) return errorResponse(500, "ANTHROPIC_API_KEY not set on the server");
@@ -106,16 +109,19 @@ export const Route = createFileRoute("/api/llm/anthropic")({
             .filter((b) => b.type === "text")
             .map((b) => b.text ?? "")
             .join("");
-          return Response.json({
-            text,
-            usage: data.usage
-              ? {
-                  inputTokens: data.usage.input_tokens ?? 0,
-                  outputTokens: data.usage.output_tokens ?? 0,
-                  cachedInputTokens: data.usage.cache_read_input_tokens,
-                }
-              : undefined,
-          });
+          return Response.json(
+            {
+              text,
+              usage: data.usage
+                ? {
+                    inputTokens: data.usage.input_tokens ?? 0,
+                    outputTokens: data.usage.output_tokens ?? 0,
+                    cachedInputTokens: data.usage.cache_read_input_tokens,
+                  }
+                : undefined,
+            },
+            { headers: withCors() },
+          );
         }
 
         // Stream re-emit: Anthropic sends SSE with several event types; we
@@ -157,10 +163,11 @@ export const Route = createFileRoute("/api/llm/anthropic")({
 
         return new Response(out, {
           status: 200,
-          headers: {
+          headers: withCors({
             "content-type": "text/event-stream",
             "cache-control": "no-cache",
-          },
+            "x-accel-buffering": "no",
+          }),
         });
       },
     },
@@ -170,6 +177,6 @@ export const Route = createFileRoute("/api/llm/anthropic")({
 function errorResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: withCors({ "content-type": "application/json" }),
   });
 }

@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { corsPreflight, withCors } from "@/lib/api-cors";
+
 /**
  * Cartesia Sonic 3 streaming TTS proxy — the latency fallback to
  * ElevenLabs Flash. Same browser-facing contract as the ElevenLabs
@@ -21,6 +23,7 @@ type RequestBody = {
 export const Route = createFileRoute("/api/tts/cartesia")({
   server: {
     handlers: {
+      OPTIONS: corsPreflight,
       POST: async ({ request }) => {
         const apiKey = process.env.CARTESIA_API_KEY;
         if (!apiKey) return errorResponse(500, "CARTESIA_API_KEY not set on the server");
@@ -61,7 +64,11 @@ export const Route = createFileRoute("/api/tts/cartesia")({
 
         return new Response(upstream.body, {
           status: 200,
-          headers: { "content-type": "audio/mpeg", "cache-control": "no-cache" },
+          headers: withCors({
+            "content-type": "audio/mpeg",
+            "cache-control": "no-cache",
+            "x-accel-buffering": "no",
+          }),
         });
       },
     },
@@ -71,6 +78,6 @@ export const Route = createFileRoute("/api/tts/cartesia")({
 function errorResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: withCors({ "content-type": "application/json" }),
   });
 }

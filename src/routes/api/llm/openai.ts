@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { corsPreflight, withCors } from "@/lib/api-cors";
+
 /**
  * OpenAI Chat Completions proxy. Same request shape as the Anthropic
  * proxy. OpenAI handles prompt-prefix caching implicitly so we don't
@@ -28,6 +30,7 @@ function modelFor(tier: Tier): string {
 export const Route = createFileRoute("/api/llm/openai")({
   server: {
     handlers: {
+      OPTIONS: corsPreflight,
       POST: async ({ request }) => {
         const apiKey = process.env.OPENAI_API_KEY;
         if (!apiKey) return errorResponse(500, "OPENAI_API_KEY not set on the server");
@@ -68,15 +71,18 @@ export const Route = createFileRoute("/api/llm/openai")({
             usage?: { prompt_tokens?: number; completion_tokens?: number };
           };
           const text = data.choices?.[0]?.message?.content ?? "";
-          return Response.json({
-            text,
-            usage: data.usage
-              ? {
-                  inputTokens: data.usage.prompt_tokens ?? 0,
-                  outputTokens: data.usage.completion_tokens ?? 0,
-                }
-              : undefined,
-          });
+          return Response.json(
+            {
+              text,
+              usage: data.usage
+                ? {
+                    inputTokens: data.usage.prompt_tokens ?? 0,
+                    outputTokens: data.usage.completion_tokens ?? 0,
+                  }
+                : undefined,
+            },
+            { headers: withCors() },
+          );
         }
 
         // Stream re-emit: OpenAI sends SSE with `choices[0].delta.content`.
@@ -114,7 +120,11 @@ export const Route = createFileRoute("/api/llm/openai")({
 
         return new Response(out, {
           status: 200,
-          headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+          headers: withCors({
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache",
+            "x-accel-buffering": "no",
+          }),
         });
       },
     },
@@ -124,6 +134,6 @@ export const Route = createFileRoute("/api/llm/openai")({
 function errorResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: withCors({ "content-type": "application/json" }),
   });
 }

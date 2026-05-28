@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { corsPreflight, withCors } from "@/lib/api-cors";
+
 /**
  * ElevenLabs Flash v2.5 streaming TTS proxy. The browser POSTs
  * `{ text, voiceId? }` and we stream MP3 chunks back as soon as
@@ -21,6 +23,7 @@ type RequestBody = {
 export const Route = createFileRoute("/api/tts/elevenlabs")({
   server: {
     handlers: {
+      OPTIONS: corsPreflight,
       POST: async ({ request }) => {
         const apiKey = process.env.ELEVENLABS_API_KEY;
         if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
@@ -63,10 +66,11 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
 
         return new Response(upstream.body, {
           status: 200,
-          headers: {
+          headers: withCors({
             "content-type": "audio/mpeg",
             "cache-control": "no-cache",
-          },
+            "x-accel-buffering": "no",
+          }),
         });
       },
     },
@@ -76,6 +80,6 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
 function errorResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: withCors({ "content-type": "application/json" }),
   });
 }
