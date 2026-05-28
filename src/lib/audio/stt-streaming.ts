@@ -278,9 +278,7 @@ export async function transcribeSegmentStreaming(args: {
       if (aborted) return;
       if (event.code === 1000 || event.code === 1005) return;
       // Abnormal close before we resolved.
-      const err = new Error(
-        `Scribe stream closed (${event.code}): ${event.reason || "no reason"}`,
-      );
+      const err = new Error(`Scribe stream closed (${event.code}): ${event.reason || "no reason"}`);
       callbacks.onError?.(err);
       cleanup();
       // If we already resolved or rejected, this is a no-op.
@@ -324,10 +322,7 @@ function float32ToBase64Pcm16(samples: Float32Array): string {
   let binary = "";
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(
-      null,
-      Array.from(bytes.subarray(i, i + chunk)),
-    );
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
   }
   return btoa(binary);
 }

@@ -6,19 +6,9 @@ import { toast } from "sonner";
 import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { db, type Person, type Voiceprint } from "@/lib/db";
-import {
-  makeEmbedder,
-  type EmbedderKind,
-  type SpeakerEmbedder,
-} from "@/lib/audio/embedder";
+import { makeEmbedder, type EmbedderKind, type SpeakerEmbedder } from "@/lib/audio/embedder";
 import { deleteAllContributionsForPerson } from "@/lib/audio/enrollment";
 import { useSettings } from "@/lib/settings";
 import { VoiceSampleRecorder } from "@/components/VoiceSampleRecorder";
@@ -40,9 +30,9 @@ function PeoplePage() {
         </p>
         <h1 className="text-3xl font-semibold tracking-tight">Roster &amp; voiceprints</h1>
         <p className="max-w-prose text-muted-foreground">
-          Everyone James talks to. Each person carries a voiceprint — a centroid of enrolled
-          samples that the matcher reads at runtime. Capture 2–3 clean samples per person in the
-          room where you actually talk; that beats any model upgrade.
+          Everyone James talks to. Each person carries a voiceprint — a centroid of enrolled samples
+          that the matcher reads at runtime. Capture 2–3 clean samples per person in the room where
+          you actually talk; that beats any model upgrade.
         </p>
       </header>
 
@@ -122,16 +112,8 @@ function PeopleApp() {
     };
   }, []);
 
-  const people = useLiveQuery(
-    () => db().people.orderBy("name").toArray(),
-    [],
-    EMPTY_PEOPLE,
-  );
-  const voiceprints = useLiveQuery(
-    () => db().voiceprints.toArray(),
-    [],
-    EMPTY_VOICEPRINTS,
-  );
+  const people = useLiveQuery(() => db().people.orderBy("name").toArray(), [], EMPTY_PEOPLE);
+  const voiceprints = useLiveQuery(() => db().voiceprints.toArray(), [], EMPTY_VOICEPRINTS);
 
   const voiceprintByPersonId = useMemo(() => {
     const m = new Map<string, Voiceprint>();
@@ -208,8 +190,8 @@ function AddPersonCard() {
       <CardHeader>
         <CardTitle>Add a person</CardTitle>
         <CardDescription>
-          Name them first; record their voice after. Relationship is optional but feeds the
-          persona prompt.
+          Name them first; record their voice after. Relationship is optional but feeds the persona
+          prompt.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -286,8 +268,8 @@ function PeopleList({
       <CardHeader>
         <CardTitle>Roster ({people.length})</CardTitle>
         <CardDescription>
-          Tap a row to expand and record voice samples. Each sample folds into the centroid the
-          live matcher reads.
+          Tap a row to expand and record voice samples. Each sample folds into the centroid the live
+          matcher reads.
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
@@ -337,7 +319,9 @@ function PersonRow({
     if (
       !confirm(
         `Delete ${person.name} and ${
-          sampleCount > 0 ? `their ${sampleCount} voice sample${sampleCount === 1 ? "" : "s"}` : "their (empty) voiceprint"
+          sampleCount > 0
+            ? `their ${sampleCount} voice sample${sampleCount === 1 ? "" : "s"}`
+            : "their (empty) voiceprint"
         }?`,
       )
     ) {

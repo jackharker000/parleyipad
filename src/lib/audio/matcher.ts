@@ -84,8 +84,7 @@ const UNKNOWN_LIKELIHOOD_FLOOR = 0.1;
 
 export function match(embedding: Float32Array, context: MatchContext): Candidate[] {
   const closedSet = context.closedSet;
-  const closedSetFilter =
-    closedSet && closedSet.length > 0 ? new Set(closedSet) : null;
+  const closedSetFilter = closedSet && closedSet.length > 0 ? new Set(closedSet) : null;
 
   const enrolled = context.people.filter(
     (p) =>

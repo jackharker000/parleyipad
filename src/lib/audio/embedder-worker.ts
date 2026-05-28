@@ -91,9 +91,7 @@ async function getExtractor(): Promise<EmbedFn> {
     }
     const device = chooseDevice(preferWebGPU);
 
-    const proc = (await AutoProcessor.from_pretrained(
-      modelId,
-    )) as unknown as TransformersProcessor;
+    const proc = (await AutoProcessor.from_pretrained(modelId)) as unknown as TransformersProcessor;
     const mdl = (await loadModelWithDtypeFallback(
       AutoModel,
       modelId,

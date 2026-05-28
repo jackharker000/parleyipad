@@ -39,10 +39,7 @@ export const Route = createFileRoute("/api/stt/scribe-token")({
 
         if (!upstream.ok) {
           const text = await upstream.text();
-          return errorResponse(
-            upstream.status,
-            `Scribe token ${upstream.status}: ${text}`,
-          );
+          return errorResponse(upstream.status, `Scribe token ${upstream.status}: ${text}`);
         }
 
         const data = (await upstream.json()) as { token?: string };

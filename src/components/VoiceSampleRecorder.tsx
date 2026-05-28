@@ -17,11 +17,7 @@ import { toast } from "sonner";
 import { useLiveQuery } from "dexie-react-hooks";
 
 import { Button } from "@/components/ui/button";
-import {
-  db,
-  type Voiceprint,
-  type VoiceprintContribution,
-} from "@/lib/db";
+import { db, type Voiceprint, type VoiceprintContribution } from "@/lib/db";
 import { startCapture, type Capture } from "@/lib/audio/capture";
 import { enrollSample, deleteContribution } from "@/lib/audio/enrollment";
 import type { SpeakerEmbedder } from "@/lib/audio/embedder";
@@ -46,11 +42,7 @@ export function VoiceSampleRecorder({
   );
   const contributions = useLiveQuery(
     () =>
-      db()
-        .voiceprintContributions.where("personId")
-        .equals(personId)
-        .reverse()
-        .sortBy("createdAt"),
+      db().voiceprintContributions.where("personId").equals(personId).reverse().sortBy("createdAt"),
     [personId],
     EMPTY_CONTRIBUTIONS,
   );
@@ -195,8 +187,8 @@ export function VoiceSampleRecorder({
 
       {!capture && (
         <p className="text-xs text-muted-foreground">
-          Tap record and have the person speak normally for {MIN_SECS}–{MAX_SECS}s. The
-          recording stays on this device.
+          Tap record and have the person speak normally for {MIN_SECS}–{MAX_SECS}s. The recording
+          stays on this device.
         </p>
       )}
 
@@ -206,10 +198,7 @@ export function VoiceSampleRecorder({
         </p>
       )}
 
-      <ContributionsList
-        contributions={contributions}
-        onRemove={removeContribution}
-      />
+      <ContributionsList contributions={contributions} onRemove={removeContribution} />
     </div>
   );
 }
@@ -228,8 +217,7 @@ function ContributionsList({
         Voice contributions ({contributions.length})
       </p>
       <p className="text-xs text-muted-foreground">
-        Remove any entry that isn't actually them — the voice profile is rebuilt from the
-        rest.
+        Remove any entry that isn't actually them — the voice profile is rebuilt from the rest.
       </p>
       <ul className="space-y-1">
         {contributions.slice(0, 20).map((c) => (
@@ -251,9 +239,7 @@ function ContributionsList({
                 <span className="text-muted-foreground">
                   {new Date(c.createdAt).toLocaleString()}
                 </span>
-                <span className="text-muted-foreground">
-                  · {c.durationSec.toFixed(1)}s
-                </span>
+                <span className="text-muted-foreground">· {c.durationSec.toFixed(1)}s</span>
               </div>
               {c.previewText && (
                 <p className="mt-0.5 truncate italic">&ldquo;{c.previewText}&rdquo;</p>

@@ -167,9 +167,7 @@ export const Route = createFileRoute("/api/llm/anthropic")({
                   if (event.type !== "content_block_delta" || !event.delta) continue;
                   const piece = event.delta.text ?? event.delta.partial_json;
                   if (typeof piece === "string" && piece.length > 0) {
-                    controller.enqueue(
-                      encoder.encode(`${JSON.stringify({ delta: piece })}\n`),
-                    );
+                    controller.enqueue(encoder.encode(`${JSON.stringify({ delta: piece })}\n`));
                   }
                 } catch {
                   /* ignore malformed events */

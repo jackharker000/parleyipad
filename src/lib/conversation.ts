@@ -20,6 +20,7 @@ import { transcribeSegmentStreaming } from "@/lib/audio/stt-streaming";
 import { TTSPlayer } from "@/lib/audio/tts-player";
 import type { DomainAI, Mood, SuggestionDraft } from "@/lib/ai";
 import { makeTTS } from "@/lib/providers";
+import { enqueueJob } from "@/lib/jobs/drain";
 
 /**
  * Drives one live cockpit session: starts VAD, transcribes each utterance,
@@ -248,7 +249,12 @@ export class LiveConversation {
     // see the corrected attribution.
     this.transcriptCache = this.transcriptCache.map((s) =>
       s.id === segmentId
-        ? { ...s, personId: person?.id, personName: person?.name, speakerLabel: person?.id ?? "unknown" }
+        ? {
+            ...s,
+            personId: person?.id,
+            personName: person?.name,
+            speakerLabel: person?.id ?? "unknown",
+          }
         : s,
     );
 
@@ -431,7 +437,17 @@ export class LiveConversation {
     await this.vad?.destroy();
     this.vad = null;
     if (this.conversation) {
-      await db().conversations.update(this.conversation.id, { endedAt: Date.now() });
+      const conversationId = this.conversation.id;
+      const hadSegments = this.transcriptCache.length > 0;
+      await db().conversations.update(conversationId, { endedAt: Date.now() });
+      // Queue Tier-2 jobs durably (Dexie write completes synchronously in the
+      // teardown window) so they survive a tab close before the drainer runs.
+      // The drainer fires on next app mount, or immediately if the cockpit
+      // route stays mounted. Skip if the conversation was empty — nothing
+      // meaningful to summarise.
+      if (hadSegments) {
+        await enqueueJob({ type: "summariseConversation", conversationId });
+      }
       this.conversation = null;
     }
     this.transcriptCache = [];
@@ -630,8 +646,7 @@ export class LiveConversation {
     // transcript line visible — just mark the speaker as Unknown so the
     // user has to repair it explicitly.
     const askInWindow =
-      this.awaitingIntroductionForCluster !== null &&
-      Date.now() < this.awaitingIntroductionUntil;
+      this.awaitingIntroductionForCluster !== null && Date.now() < this.awaitingIntroductionUntil;
     if (this.awaitingIntroductionForCluster !== null && !askInWindow) {
       // Window timed out without a tap; release the hold.
       this.clearAwaitingIntroduction();
@@ -641,8 +656,7 @@ export class LiveConversation {
       this.forceNextSegmentNewCluster = false;
     }
 
-    const isConfirmed =
-      !suppressMatch && !!top?.personId && (top.posterior ?? 0) >= accept;
+    const isConfirmed = !suppressMatch && !!top?.personId && (top.posterior ?? 0) >= accept;
     const personId = isConfirmed ? top!.personId! : undefined;
     const personName = isConfirmed ? this.people.find((p) => p.id === personId)?.name : undefined;
 

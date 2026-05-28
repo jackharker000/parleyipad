@@ -23,7 +23,10 @@ import {
   type ConversationState,
   type LiveTranscriptSegment,
 } from "@/lib/conversation";
-import { warmQuickPhraseCache, QUICK_PHRASES as CACHED_PHRASES } from "@/lib/audio/quick-phrase-cache";
+import {
+  warmQuickPhraseCache,
+  QUICK_PHRASES as CACHED_PHRASES,
+} from "@/lib/audio/quick-phrase-cache";
 import { speakText, stopAllPlayback } from "@/lib/audio/speak-text";
 import { getLastSegment, playLastSegment } from "@/lib/audio/last-segment-store";
 
@@ -47,10 +50,7 @@ const QUICK_PHRASES: { text: string; label?: string }[] = [
 // Sanity guard: keep the cockpit's display labels in lock-step with the cache's
 // canonical phrase strings. Cache hits use exact-string lookup, so any drift
 // (e.g. "Yes." vs "Yes") silently downgrades quick phrases to live TTS.
-if (
-  typeof window !== "undefined" &&
-  QUICK_PHRASES.some((p, i) => p.text !== CACHED_PHRASES[i])
-) {
+if (typeof window !== "undefined" && QUICK_PHRASES.some((p, i) => p.text !== CACHED_PHRASES[i])) {
   console.warn(
     "[cockpit] QUICK_PHRASES text drifted from cached set — quick phrases will miss cache",
   );
@@ -188,9 +188,7 @@ function Cockpit() {
           return [...prev, segment].slice(-40);
         }),
       onTranscriptSegmentUpdated: (updated) =>
-        setTranscript((prev) =>
-          prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)),
-        ),
+        setTranscript((prev) => prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s))),
       onSuggestions: (s, generating) => {
         setSuggestions(s);
         setSuggestionsLoading(generating);
@@ -288,16 +286,19 @@ function Cockpit() {
     toast.message("Next utterance will start a new cluster");
   }, []);
 
-  const mergeIntoPerson = useCallback(async (fromPersonId: string | undefined, toPersonId: string) => {
-    const conv = conversationRef.current;
-    if (!conv) return;
-    if (fromPersonId === toPersonId) return;
-    try {
-      await conv.mergeCluster({ fromPersonId, toPersonId });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
+  const mergeIntoPerson = useCallback(
+    async (fromPersonId: string | undefined, toPersonId: string) => {
+      const conv = conversationRef.current;
+      if (!conv) return;
+      if (fromPersonId === toPersonId) return;
+      try {
+        await conv.mergeCluster({ fromPersonId, toPersonId });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [],
+  );
 
   const stop = async () => {
     await conversationRef.current?.stop();
@@ -657,9 +658,7 @@ function TranscriptColumn({
                 <li key={t.id}>
                   <button
                     type="button"
-                    onClick={() =>
-                      canReassign && setReassigningId(isReassigning ? null : t.id)
-                    }
+                    onClick={() => canReassign && setReassigningId(isReassigning ? null : t.id)}
                     disabled={!canReassign}
                     className={cn(
                       "w-full rounded px-1 py-0.5 text-left leading-snug transition-colors",
@@ -671,7 +670,9 @@ function TranscriptColumn({
                     <span className="mr-2 text-xs font-semibold text-muted-foreground">
                       {t.speakerKind === "self" ? jamesName : (t.personName ?? "Speaker")}
                     </span>
-                    <span className={cn("text-foreground", isPartial && "italic text-muted-foreground")}>
+                    <span
+                      className={cn("text-foreground", isPartial && "italic text-muted-foreground")}
+                    >
                       {t.text}
                     </span>
                   </button>

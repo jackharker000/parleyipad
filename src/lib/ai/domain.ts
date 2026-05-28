@@ -55,6 +55,18 @@ export type ExpandContext = {
   recentTranscript?: Array<{ speaker: string; text: string }>;
 };
 
+export type SummarizeConversationContext = {
+  /** Already-formatted "Speaker: text" transcript, oldest first. */
+  transcript: string;
+  /** Optional people present for grounding the summary. */
+  peopleNames?: string[];
+};
+
+export type SummarizeConversationResult = {
+  summary: string;
+  highlights: string[];
+};
+
 export type DraftPlatform = "facebook" | "email" | "imessage";
 
 export type DraftReplyContext = {
@@ -186,6 +198,27 @@ export class DomainAI {
       ],
     });
     return response.text.trim().replace(/^"|"$/g, "");
+  }
+
+  /**
+   * Post-conversation summary. Smart tier, batch — runs in the background
+   * after Stop via the pendingJobs drainer. Returns a one-paragraph
+   * summary plus 3–6 bullet highlights for the Recent view.
+   */
+  async summarizeConversation(
+    ctx: SummarizeConversationContext,
+  ): Promise<SummarizeConversationResult> {
+    const response = await this.llm.complete({
+      tier: "smart",
+      maxTokens: 700,
+      temperature: 0.4,
+      cacheSystem: false,
+      messages: [
+        { role: "system", content: summarizeSystemPrompt() },
+        { role: "user", content: summarizeUserPrompt(ctx) },
+      ],
+    });
+    return parseSummary(response.text);
   }
 
   /**
@@ -481,8 +514,67 @@ function parseSingleSuggestion(objText: string): SuggestionDraft | null {
     text: parsed.text.trim(),
     category,
     why:
-      typeof parsed.why === "string" && parsed.why.trim().length > 0 ? parsed.why.trim() : undefined,
+      typeof parsed.why === "string" && parsed.why.trim().length > 0
+        ? parsed.why.trim()
+        : undefined,
   };
+}
+
+// --------------------------------------------------------------------------
+// Post-conversation summary prompts + parser
+// --------------------------------------------------------------------------
+
+function summarizeSystemPrompt(): string {
+  return `You summarise transcripts of conversations involving James, a non-verbal man with cerebral palsy who replies via an AAC iPad. Your summary appears in his Recent view so he can scan past chats at a glance.
+
+Output strictly as JSON, no commentary:
+
+{
+  "summary": "string (one short paragraph, 2-4 sentences, past tense)",
+  "highlights": ["string", "string", "..."]
+}
+
+Rules:
+- summary: who was there, what they talked about, any decisions or commitments. Past tense, third-person where natural ("James asked about...", "Mum mentioned..."). 2-4 sentences max.
+- highlights: 3-6 short bullets (each under 12 words). Concrete moments, not generic observations. Skip filler.
+- NEVER invent facts or details not present in the transcript. If the transcript is sparse, return a short summary and few highlights.`;
+}
+
+function summarizeUserPrompt(ctx: SummarizeConversationContext): string {
+  const peopleLine =
+    ctx.peopleNames && ctx.peopleNames.length > 0
+      ? `People present: ${ctx.peopleNames.join(", ")}\n\n`
+      : "";
+  return `${peopleLine}Transcript:
+"""
+${ctx.transcript}
+"""
+
+Return JSON only.`;
+}
+
+function parseSummary(raw: string): SummarizeConversationResult {
+  const json = extractJsonObject(raw);
+  if (!json) return { summary: raw.trim().slice(0, 600), highlights: [] };
+  let parsed: { summary?: unknown; highlights?: unknown };
+  try {
+    parsed = JSON.parse(json) as { summary?: unknown; highlights?: unknown };
+  } catch {
+    return { summary: raw.trim().slice(0, 600), highlights: [] };
+  }
+  const summary =
+    typeof parsed.summary === "string" && parsed.summary.trim().length > 0
+      ? parsed.summary.trim()
+      : "";
+  const highlights: string[] = [];
+  if (Array.isArray(parsed.highlights)) {
+    for (const item of parsed.highlights) {
+      if (typeof item === "string" && item.trim().length > 0) {
+        highlights.push(item.trim());
+      }
+    }
+  }
+  return { summary, highlights };
 }
 
 // --------------------------------------------------------------------------
