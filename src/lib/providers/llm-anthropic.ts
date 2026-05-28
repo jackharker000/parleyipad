@@ -36,27 +36,39 @@ export class AnthropicLLM implements LLMProvider {
       throw new Error(`Anthropic proxy ${res.status}: ${await res.text()}`);
     }
 
+    // NDJSON: one JSON object per line. Each `{"delta":"..."}` yields a
+    // string chunk; `{"done":true}` (or EOF) ends the stream.
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        if (buffer.trim().length > 0) {
+          const tail = parseDeltaLine(buffer);
+          if (tail) yield tail;
+        }
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const payload = trimmed.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const json = JSON.parse(payload) as { delta?: string };
-          if (json.delta) yield json.delta;
-        } catch {
-          /* ignore malformed lines */
-        }
+        const delta = parseDeltaLine(line);
+        if (delta) yield delta;
       }
     }
   }
+}
+
+function parseDeltaLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    const json = JSON.parse(trimmed) as { delta?: unknown; done?: unknown };
+    if (typeof json.delta === "string" && json.delta.length > 0) return json.delta;
+  } catch {
+    /* ignore malformed lines */
+  }
+  return null;
 }

@@ -100,19 +100,68 @@ export class DomainAI {
   /**
    * Live cockpit's bread-and-butter call. Returns 6 ready-to-tap replies.
    * Fast model, prompt-caching on the persona block.
+   *
+   * When `onUpdate` is supplied, the call streams: as each `{ text, category,
+   * why }` object closes inside the model's output, `onUpdate(drafts, true)`
+   * fires with the running list so the cockpit can paint progressively. The
+   * promise still resolves to the final `SuggestionDraft[]` for callers that
+   * want to await the complete result (and for the suggestions log write
+   * downstream). A final `onUpdate(drafts, false)` is NOT emitted here — the
+   * cockpit gets that from the resolved promise.
+   *
+   * When `onUpdate` is absent, falls back to the non-stream path.
    */
-  async generateSuggestions(ctx: SuggestionContext): Promise<SuggestionDraft[]> {
-    const response = await this.llm.complete({
-      tier: "fast",
+  async generateSuggestions(
+    ctx: SuggestionContext,
+    onUpdate?: (drafts: SuggestionDraft[], generating: boolean) => void,
+    options?: { signal?: AbortSignal },
+  ): Promise<SuggestionDraft[]> {
+    const request = {
+      tier: "fast" as const,
       maxTokens: 800,
       temperature: 0.8,
       cacheSystem: true,
       messages: [
-        { role: "system", content: suggestionsSystemPrompt(ctx) },
-        { role: "user", content: suggestionsUserPrompt(ctx) },
+        { role: "system" as const, content: suggestionsSystemPrompt(ctx) },
+        { role: "user" as const, content: suggestionsUserPrompt(ctx) },
       ],
-    });
-    return parseSuggestions(response.text);
+      signal: options?.signal,
+    };
+
+    if (!onUpdate) {
+      const response = await this.llm.complete(request);
+      return parseSuggestions(response.text);
+    }
+
+    let accumulated = "";
+    const scanner = new StreamingSuggestionScanner();
+    let emitted = 0;
+    for await (const chunk of this.llm.stream(request)) {
+      accumulated += chunk;
+      const drafts = scanner.consume(chunk);
+      if (drafts.length > emitted) {
+        emitted = drafts.length;
+        onUpdate(drafts.slice(), true);
+      }
+    }
+
+    // Final pass: parse the complete accumulated text so we capture any
+    // suggestion the streaming scanner couldn't close (e.g. trailing prose
+    // around the JSON, or the model truncating). If the final reparse
+    // succeeds and finds at least as many drafts as we streamed, prefer it
+    // — it's the canonical parse. Otherwise fall back to whatever the
+    // scanner managed to extract so we never throw away a successful stream.
+    try {
+      const finalDrafts = parseSuggestions(accumulated);
+      if (finalDrafts.length >= scanner.drafts.length) return finalDrafts;
+    } catch {
+      /* fall through to scanner output */
+    }
+    if (scanner.drafts.length === 0) {
+      // Re-raise so the caller's error path runs — we genuinely got nothing.
+      return parseSuggestions(accumulated);
+    }
+    return scanner.drafts;
   }
 
   /**
@@ -311,6 +360,129 @@ function extractJsonObject(s: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Stateful scanner that consumes streamed JSON text one chunk at a time and
+ * emits each `{ text, category, why }` object inside the top-level
+ * `"suggestions"` array as soon as that object closes.
+ *
+ * Why this exists: the live cockpit needs the first suggestion card visible
+ * at TTFT (~400–900 ms), not after the full response (~1.5–3.5 s). Pulling a
+ * streaming-JSON parser dependency would be overkill — the shape is fixed,
+ * so a small depth tracker with string/escape awareness is enough.
+ *
+ * Tolerance: malformed or unparsable objects are skipped silently. The final
+ * non-streaming reparse in `generateSuggestions` back-fills anything we
+ * missed (e.g. when the model's last object closes the same instant the
+ * containing array does and we never re-enter the scanner).
+ */
+class StreamingSuggestionScanner {
+  /** Drafts captured so far, in order of appearance. */
+  readonly drafts: SuggestionDraft[] = [];
+
+  private buffer = "";
+  /** Index in `buffer` we've already scanned up to (exclusive). */
+  private cursor = 0;
+  /** Brace depth inside the suggestions array (each suggestion object is 1). */
+  private depth = 0;
+  /** Are we currently inside a string literal? */
+  private inString = false;
+  /** Previous char was a backslash (so the next quote is escaped). */
+  private escape = false;
+  /** Index in `buffer` of the most recent `{` at depth 1 (i.e. an opening
+   * suggestion object). -1 when not currently inside a suggestion. */
+  private objStart = -1;
+  /** Are we past the `[` of the `"suggestions"` array? */
+  private inSuggestionsArray = false;
+  /** Where in `buffer` we last looked for the `[` (so we don't re-scan). */
+  private arraySearchCursor = 0;
+
+  consume(chunk: string): SuggestionDraft[] {
+    this.buffer += chunk;
+
+    if (!this.inSuggestionsArray) {
+      // Look for the `"suggestions"` key, then the `[` that follows it. We
+      // start tracking depth only after we see that opening bracket so we
+      // don't accidentally count braces in the surrounding object.
+      const keyIdx = this.buffer.indexOf('"suggestions"', this.arraySearchCursor);
+      if (keyIdx < 0) {
+        // Keep enough of a tail to catch a `"suggestions"` that straddles
+        // chunk boundaries.
+        this.arraySearchCursor = Math.max(0, this.buffer.length - '"suggestions"'.length);
+        return this.drafts;
+      }
+      const bracketIdx = this.buffer.indexOf("[", keyIdx);
+      if (bracketIdx < 0) {
+        this.arraySearchCursor = keyIdx;
+        return this.drafts;
+      }
+      this.inSuggestionsArray = true;
+      this.cursor = bracketIdx + 1;
+    }
+
+    for (let i = this.cursor; i < this.buffer.length; i++) {
+      const c = this.buffer[i];
+
+      if (this.inString) {
+        if (this.escape) {
+          this.escape = false;
+        } else if (c === "\\") {
+          this.escape = true;
+        } else if (c === '"') {
+          this.inString = false;
+        }
+        continue;
+      }
+
+      if (c === '"') {
+        this.inString = true;
+        continue;
+      }
+      if (c === "{") {
+        if (this.depth === 0) this.objStart = i;
+        this.depth++;
+        continue;
+      }
+      if (c === "}") {
+        this.depth--;
+        if (this.depth === 0 && this.objStart >= 0) {
+          const objText = this.buffer.slice(this.objStart, i + 1);
+          this.objStart = -1;
+          const draft = parseSingleSuggestion(objText);
+          if (draft) this.drafts.push(draft);
+        }
+        continue;
+      }
+      if (c === "]" && this.depth === 0) {
+        // End of suggestions array; nothing more to scan.
+        this.cursor = i + 1;
+        return this.drafts;
+      }
+    }
+
+    this.cursor = this.buffer.length;
+    return this.drafts;
+  }
+}
+
+function parseSingleSuggestion(objText: string): SuggestionDraft | null {
+  let parsed: { text?: unknown; category?: unknown; why?: unknown };
+  try {
+    parsed = JSON.parse(objText) as { text?: unknown; category?: unknown; why?: unknown };
+  } catch {
+    return null;
+  }
+  if (typeof parsed.text !== "string" || parsed.text.trim().length === 0) return null;
+  const category = SUGGESTION_CATEGORIES.has(parsed.category as SuggestionCategory)
+    ? (parsed.category as SuggestionCategory)
+    : "answer";
+  return {
+    text: parsed.text.trim(),
+    category,
+    why:
+      typeof parsed.why === "string" && parsed.why.trim().length > 0 ? parsed.why.trim() : undefined,
+  };
 }
 
 // --------------------------------------------------------------------------

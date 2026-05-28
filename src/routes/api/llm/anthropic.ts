@@ -11,8 +11,13 @@ import { corsPreflight, withCors } from "@/lib/api-cors";
  * with `cache_control: { type: "ephemeral" }` so the persona block gets
  * cached across turns. Anthropic charges ~10% of input cost on cache hits.
  *
- * Streaming: when `stream === true` we re-emit each `content_block_delta`
- * as `data: {"delta":"..."}\n\n` SSE lines, matching the client parser.
+ * Streaming wire format: NDJSON. One JSON object per line, `\n`-terminated.
+ * - `{"delta":"<text>"}` for each text chunk (from either `content_block_delta`
+ *   text events or tool_use `input_json_delta.partial_json` fragments — both
+ *   are forwarded as raw string deltas; the caller decides how to parse).
+ * - `{"done":true}` final line so the client can distinguish clean EOF from
+ *   a dropped connection.
+ * `x-accel-buffering: no` keeps Vercel / nitro v3 from buffering the body.
  */
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -124,38 +129,51 @@ export const Route = createFileRoute("/api/llm/anthropic")({
           );
         }
 
-        // Stream re-emit: Anthropic sends SSE with several event types; we
-        // only forward content_block_delta text. The client parser
-        // (`AnthropicLLM.stream`) reads `data: {"delta":"..."}` lines.
+        // Stream re-emit as NDJSON. Anthropic emits SSE events; we forward:
+        //   - `content_block_delta` with `delta.text` (plain text response)
+        //   - `content_block_delta` with `delta.partial_json` (tool_use input
+        //     fragments — concatenating these forms the assembled JSON input)
+        // Both surface as `{"delta":"<chunk>"}` lines so the client/domain
+        // layer can accumulate the same way regardless of generation mode.
         const reader = upstream.body!.getReader();
         const decoder = new TextDecoder();
         const encoder = new TextEncoder();
+        let sseBuffer = "";
 
         const out = new ReadableStream({
           async pull(controller) {
             const { done, value } = await reader.read();
             if (done) {
+              controller.enqueue(encoder.encode(`${JSON.stringify({ done: true })}\n`));
               controller.close();
               return;
             }
-            const chunk = decoder.decode(value, { stream: true });
-            for (const line of chunk.split("\n")) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data:")) continue;
-              const payloadText = trimmed.slice(5).trim();
-              if (!payloadText || payloadText === "[DONE]") continue;
-              try {
-                const event = JSON.parse(payloadText) as {
-                  type?: string;
-                  delta?: { type?: string; text?: string };
-                };
-                if (event.type === "content_block_delta" && event.delta?.text) {
-                  controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify({ delta: event.delta.text })}\n\n`),
-                  );
+            sseBuffer += decoder.decode(value, { stream: true });
+            // SSE events are separated by blank lines; keep the trailing
+            // partial event in `sseBuffer` for the next chunk.
+            const events = sseBuffer.split("\n\n");
+            sseBuffer = events.pop() ?? "";
+            for (const eventBlock of events) {
+              for (const line of eventBlock.split("\n")) {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith("data:")) continue;
+                const payloadText = trimmed.slice(5).trim();
+                if (!payloadText || payloadText === "[DONE]") continue;
+                try {
+                  const event = JSON.parse(payloadText) as {
+                    type?: string;
+                    delta?: { type?: string; text?: string; partial_json?: string };
+                  };
+                  if (event.type !== "content_block_delta" || !event.delta) continue;
+                  const piece = event.delta.text ?? event.delta.partial_json;
+                  if (typeof piece === "string" && piece.length > 0) {
+                    controller.enqueue(
+                      encoder.encode(`${JSON.stringify({ delta: piece })}\n`),
+                    );
+                  }
+                } catch {
+                  /* ignore malformed events */
                 }
-              } catch {
-                /* ignore malformed events */
               }
             }
           },
@@ -164,7 +182,7 @@ export const Route = createFileRoute("/api/llm/anthropic")({
         return new Response(out, {
           status: 200,
           headers: withCors({
-            "content-type": "text/event-stream",
+            "content-type": "application/x-ndjson",
             "cache-control": "no-cache",
             "x-accel-buffering": "no",
           }),

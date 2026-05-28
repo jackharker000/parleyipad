@@ -6,6 +6,9 @@ import { corsPreflight, withCors } from "@/lib/api-cors";
  * OpenAI Chat Completions proxy. Same request shape as the Anthropic
  * proxy. OpenAI handles prompt-prefix caching implicitly so we don't
  * need to mark anything explicitly.
+ *
+ * Streaming wire format matches the Anthropic proxy: NDJSON with
+ * `{"delta":"<chunk>"}` per line and a final `{"done":true}`.
  */
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
@@ -85,34 +88,42 @@ export const Route = createFileRoute("/api/llm/openai")({
           );
         }
 
-        // Stream re-emit: OpenAI sends SSE with `choices[0].delta.content`.
+        // Stream re-emit as NDJSON. OpenAI emits SSE with
+        // `choices[0].delta.content`; we forward each non-empty piece as a
+        // `{"delta":"<chunk>"}` line, terminating with `{"done":true}`.
         const reader = upstream.body!.getReader();
         const decoder = new TextDecoder();
         const encoder = new TextEncoder();
+        let sseBuffer = "";
 
         const out = new ReadableStream({
           async pull(controller) {
             const { done, value } = await reader.read();
             if (done) {
+              controller.enqueue(encoder.encode(`${JSON.stringify({ done: true })}\n`));
               controller.close();
               return;
             }
-            const chunk = decoder.decode(value, { stream: true });
-            for (const line of chunk.split("\n")) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data:")) continue;
-              const payloadText = trimmed.slice(5).trim();
-              if (!payloadText || payloadText === "[DONE]") continue;
-              try {
-                const event = JSON.parse(payloadText) as {
-                  choices?: Array<{ delta?: { content?: string } }>;
-                };
-                const delta = event.choices?.[0]?.delta?.content;
-                if (delta) {
-                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta })}\n\n`));
+            sseBuffer += decoder.decode(value, { stream: true });
+            const events = sseBuffer.split("\n\n");
+            sseBuffer = events.pop() ?? "";
+            for (const eventBlock of events) {
+              for (const line of eventBlock.split("\n")) {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith("data:")) continue;
+                const payloadText = trimmed.slice(5).trim();
+                if (!payloadText || payloadText === "[DONE]") continue;
+                try {
+                  const event = JSON.parse(payloadText) as {
+                    choices?: Array<{ delta?: { content?: string } }>;
+                  };
+                  const delta = event.choices?.[0]?.delta?.content;
+                  if (typeof delta === "string" && delta.length > 0) {
+                    controller.enqueue(encoder.encode(`${JSON.stringify({ delta })}\n`));
+                  }
+                } catch {
+                  /* ignore malformed events */
                 }
-              } catch {
-                /* ignore malformed events */
               }
             }
           },
@@ -121,7 +132,7 @@ export const Route = createFileRoute("/api/llm/openai")({
         return new Response(out, {
           status: 200,
           headers: withCors({
-            "content-type": "text/event-stream",
+            "content-type": "application/x-ndjson",
             "cache-control": "no-cache",
             "x-accel-buffering": "no",
           }),
