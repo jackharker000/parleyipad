@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, Mic, MicOff, Rewind, Send } from "lucide-react";
+import { HelpCircle, Loader2, Merge, Mic, MicOff, Rewind, Send, UserPlus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -172,6 +172,10 @@ function Cockpit() {
     conv.on({
       onStateChange: setState,
       onTranscriptSegment: (segment) => setTranscript((prev) => [...prev, segment].slice(-40)),
+      onTranscriptSegmentUpdated: (updated) =>
+        setTranscript((prev) =>
+          prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)),
+        ),
       onSuggestions: (s, generating) => {
         setSuggestions(s);
         setSuggestionsLoading(generating);
@@ -240,6 +244,44 @@ function Cockpit() {
     if (!conv) return;
     conv.addToRoster(personId);
     setSelectedPersonIds((prev) => (prev.includes(personId) ? prev : [...prev, personId]));
+  }, []);
+
+  const reassignSegment = useCallback(async (segmentId: string, personId: string | null) => {
+    const conv = conversationRef.current;
+    if (!conv) return;
+    try {
+      await conv.reassignSegment(segmentId, personId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const askWhoIsThis = useCallback(async () => {
+    const conv = conversationRef.current;
+    if (!conv) return;
+    try {
+      await conv.askWhoIsThis({ voiceId: settings.jamesVoiceId });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }, [settings.jamesVoiceId]);
+
+  const forceNewSpeaker = useCallback(() => {
+    const conv = conversationRef.current;
+    if (!conv) return;
+    conv.forceNewClusterNextSegment();
+    toast.message("Next utterance will start a new cluster");
+  }, []);
+
+  const mergeIntoPerson = useCallback(async (fromPersonId: string | undefined, toPersonId: string) => {
+    const conv = conversationRef.current;
+    if (!conv) return;
+    if (fromPersonId === toPersonId) return;
+    try {
+      await conv.mergeCluster({ fromPersonId, toPersonId });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
   }, []);
 
   const stop = async () => {
@@ -358,6 +400,9 @@ function Cockpit() {
           selectedPersonIds={selectedPersonIds}
           isLive={state === "listening" || state === "speech"}
           onAddToRoster={addToActiveRoster}
+          onAskWhoIsThis={askWhoIsThis}
+          onForceNew={forceNewSpeaker}
+          onMergeInto={mergeIntoPerson}
         />
         <div className="flex flex-col gap-4">
           <TypeAndSpeakInput speakingText={speakingText} onSpeak={(text) => speak({ text })} />
@@ -368,7 +413,12 @@ function Cockpit() {
             onSpeak={speak}
           />
         </div>
-        <TranscriptColumn transcript={transcript} jamesName={jamesProfile?.displayName ?? "Me"} />
+        <TranscriptColumn
+          transcript={transcript}
+          jamesName={jamesProfile?.displayName ?? "Me"}
+          rosterPeople={people.filter((p) => selectedPersonIds.includes(p.id))}
+          onReassign={reassignSegment}
+        />
       </div>
 
       <QuickPhrasesRow speakingText={speakingText} onSpeak={speak} onReplay={replay} />
@@ -560,11 +610,16 @@ function SuggestionCard({
 function TranscriptColumn({
   transcript,
   jamesName,
+  rosterPeople,
+  onReassign,
 }: {
   transcript: LiveTranscriptSegment[];
   jamesName: string;
+  rosterPeople: Person[];
+  onReassign: (segmentId: string, personId: string | null) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [reassigningId, setReassigningId] = useState<string | null>(null);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [transcript.length]);
@@ -579,14 +634,71 @@ function TranscriptColumn({
           <p className="text-sm text-muted-foreground">Live transcript appears here.</p>
         ) : (
           <ul className="space-y-2 text-sm">
-            {transcript.map((t) => (
-              <li key={t.id}>
-                <span className="mr-2 text-xs font-semibold text-muted-foreground">
-                  {t.speakerKind === "self" ? jamesName : (t.personName ?? "Speaker")}
-                </span>
-                <span className="text-foreground">{t.text}</span>
-              </li>
-            ))}
+            {transcript.map((t) => {
+              const isReassigning = reassigningId === t.id;
+              const isPartial = (t as { status?: string }).status === "partial";
+              const canReassign = t.speakerKind === "other";
+              return (
+                <li key={t.id}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      canReassign && setReassigningId(isReassigning ? null : t.id)
+                    }
+                    disabled={!canReassign}
+                    className={cn(
+                      "w-full rounded px-1 py-0.5 text-left leading-snug transition-colors",
+                      canReassign && "hover:bg-muted",
+                      isReassigning && "bg-muted ring-1 ring-accent/40",
+                    )}
+                    title={canReassign ? "Tap to reassign who said this" : undefined}
+                  >
+                    <span className="mr-2 text-xs font-semibold text-muted-foreground">
+                      {t.speakerKind === "self" ? jamesName : (t.personName ?? "Speaker")}
+                    </span>
+                    <span className={cn("text-foreground", isPartial && "italic text-muted-foreground")}>
+                      {t.text}
+                    </span>
+                  </button>
+                  {isReassigning && canReassign && (
+                    <div className="mt-1 flex flex-wrap gap-1 pl-2">
+                      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                        Who said this?
+                      </span>
+                      {rosterPeople.length === 0 ? (
+                        <span className="text-[10px] italic text-muted-foreground">
+                          Pick people in the roster first
+                        </span>
+                      ) : (
+                        rosterPeople.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              onReassign(t.id, p.id);
+                              setReassigningId(null);
+                            }}
+                            className="rounded-full border border-input bg-background px-2 py-0.5 text-[11px] hover:bg-accent hover:text-accent-foreground"
+                          >
+                            {p.name}
+                          </button>
+                        ))
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onReassign(t.id, null);
+                          setReassigningId(null);
+                        }}
+                        className="rounded-full border border-input bg-background px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted"
+                      >
+                        Unknown
+                      </button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -603,6 +715,9 @@ function SpeakerColumn({
   selectedPersonIds,
   isLive,
   onAddToRoster,
+  onAskWhoIsThis,
+  onForceNew,
+  onMergeInto,
 }: {
   candidates: Candidate[];
   acceptThreshold: number;
@@ -610,9 +725,13 @@ function SpeakerColumn({
   selectedPersonIds: string[];
   isLive: boolean;
   onAddToRoster: (personId: string) => void;
+  onAskWhoIsThis: () => void;
+  onForceNew: () => void;
+  onMergeInto: (fromPersonId: string | undefined, toPersonId: string) => void;
 }) {
   const top = candidates[0];
   const [showAddPicker, setShowAddPicker] = useState(false);
+  const [showMergePicker, setShowMergePicker] = useState(false);
 
   // People enrolled but not currently in the active roster — the candidates
   // for the "Add to roster" mid-conversation chip.
@@ -620,22 +739,59 @@ function SpeakerColumn({
     () => people.filter((p) => !selectedPersonIds.includes(p.id)),
     [people, selectedPersonIds],
   );
+  const rosterPeople = useMemo(
+    () => people.filter((p) => selectedPersonIds.includes(p.id)),
+    [people, selectedPersonIds],
+  );
 
   return (
     <div className="rounded-2xl border border-border bg-card">
-      <div className="flex items-center justify-between px-4 pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-1 px-4 pt-3">
         <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Speaker
         </span>
-        {isLive && offRoster.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowAddPicker((v) => !v)}
-            className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/70"
-            title="Add a person who walked in late"
-          >
-            + Add
-          </button>
+        {isLive && (
+          <div className="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              onClick={onAskWhoIsThis}
+              className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-xs hover:bg-muted"
+              title="Speak 'Sorry, who am I speaking with?' and hold the next utterance for manual attribution"
+            >
+              <HelpCircle className="h-3 w-3" />
+              Ask
+            </button>
+            <button
+              type="button"
+              onClick={onForceNew}
+              className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-xs hover:bg-muted"
+              title="Treat the next utterance as a new speaker"
+            >
+              <UserPlus className="h-3 w-3" />
+              New
+            </button>
+            {top?.personId && rosterPeople.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setShowMergePicker((v) => !v)}
+                className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-xs hover:bg-muted"
+                title="Merge this cluster into another person"
+              >
+                <Merge className="h-3 w-3" />
+                Merge
+              </button>
+            )}
+            {offRoster.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowAddPicker((v) => !v)}
+                className="rounded-md border border-input bg-background px-2 py-1 text-xs hover:bg-muted"
+                title="Add a person who walked in late"
+              >
+                + Add
+              </button>
+            )}
+          </div>
         )}
       </div>
       <div className="p-4">
@@ -674,6 +830,9 @@ function SpeakerColumn({
         )}
         {showAddPicker && offRoster.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1 border-t border-border pt-3">
+            <span className="w-full text-[10px] uppercase tracking-wider text-muted-foreground">
+              Add to roster
+            </span>
             {offRoster.map((p) => (
               <button
                 key={p.id}
@@ -687,6 +846,28 @@ function SpeakerColumn({
                 {p.name}
               </button>
             ))}
+          </div>
+        )}
+        {showMergePicker && top?.personId && (
+          <div className="mt-3 flex flex-wrap gap-1 border-t border-border pt-3">
+            <span className="w-full text-[10px] uppercase tracking-wider text-muted-foreground">
+              Merge {top.name} into…
+            </span>
+            {rosterPeople
+              .filter((p) => p.id !== top.personId)
+              .map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => {
+                    onMergeInto(top.personId ?? undefined, p.id);
+                    setShowMergePicker(false);
+                  }}
+                  className="rounded-full border border-input bg-background px-2.5 py-0.5 text-xs hover:bg-muted"
+                >
+                  {p.name}
+                </button>
+              ))}
           </div>
         )}
       </div>

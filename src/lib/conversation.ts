@@ -12,7 +12,7 @@ import {
 } from "@/lib/db";
 import { SileroVAD, type VADSegment } from "@/lib/audio/vad";
 import { centroidsFromVoiceprints, match, type Candidate } from "@/lib/audio/matcher";
-import { encodeEmbedding, rms } from "@/lib/audio/utils";
+import { cosine, decodeEmbedding, encodeEmbedding, l2Normalize, rms } from "@/lib/audio/utils";
 import { transcribeSegment } from "@/lib/audio/stt";
 import type { SpeakerEmbedder } from "@/lib/audio/embedder";
 import { setLastSegment } from "@/lib/audio/last-segment-store";
@@ -34,6 +34,14 @@ import { makeTTS } from "@/lib/providers";
 export type ConversationCallbacks = {
   onStateChange?: (state: ConversationState) => void;
   onTranscriptSegment?: (segment: LiveTranscriptSegment) => void;
+  /**
+   * Fired when an existing transcript segment is mutated in place — used
+   * by the tap-to-reassign repair flow. The append-only onTranscriptSegment
+   * callback can't carry edits because the cockpit's transcript state is
+   * keyed by segment id and won't dedupe. Callers should map over their
+   * cached transcript and replace by id.
+   */
+  onTranscriptSegmentUpdated?: (segment: LiveTranscriptSegment) => void;
   onSuggestions?: (suggestions: SuggestionDraft[], generating: boolean) => void;
   onSpeakerCandidates?: (candidates: Candidate[]) => void;
   onError?: (err: Error) => void;
@@ -84,6 +92,25 @@ export class LiveConversation {
   private closedSet: string[] | null = null;
   private placePersonIds: string[] | null = null;
   private eventPersonIds: string[] | null = null;
+
+  /**
+   * If true, the next incoming VAD segment should be labelled "Unknown"
+   * regardless of similarity — used by the SpeakerColumn "New" button when
+   * James knows the next utterance is a new person the matcher would
+   * otherwise force-fit onto an existing cluster.
+   */
+  private forceNextSegmentNewCluster = false;
+
+  /**
+   * If set, the next incoming segment(s) up to a 20 s timeout are held
+   * for manual confirmation rather than auto-assigned. Used by the
+   * "Ask" button — when James asks the room "Sorry, who am I speaking
+   * with?", the response should not be force-attributed to the cluster
+   * that was guessed pre-introduction. Cluster-scoped (legacy used a
+   * global flag, which fragile in multi-party rooms).
+   */
+  private awaitingIntroductionForCluster: string | null = null;
+  private awaitingIntroductionUntil = 0;
 
   // Memory-pressure mitigations for iPad Safari. The tab gets OOM-killed
   // after ~60 s of continuous recording because (a) ONNX Runtime's WASM
@@ -148,6 +175,184 @@ export class LiveConversation {
 
   getClosedSet(): string[] | null {
     return this.closedSet ? [...this.closedSet] : null;
+  }
+
+  /**
+   * Force the next incoming utterance to be labelled Unknown, ignoring
+   * the matcher's best guess. Cleared after the next segment lands.
+   */
+  forceNewClusterNextSegment(): void {
+    this.forceNextSegmentNewCluster = true;
+  }
+
+  /**
+   * Speak the "Sorry, who am I speaking with?" phrase and hold subsequent
+   * segments for manual confirmation. Held segments are still written to
+   * the transcript so James can see the response text, but the speaker
+   * attribution is left as "Unknown" until he taps reassign.
+   *
+   * Cluster scope: bound to the cluster that was just guessed (so a multi-
+   * party "go on, Jack, tell him your name" doesn't get force-attributed to
+   * Mum). 20 s timeout so a forgotten Ask doesn't permanently disable
+   * matcher decisions.
+   */
+  async askWhoIsThis(args: { aboutCluster?: string; voiceId?: string }): Promise<void> {
+    this.awaitingIntroductionForCluster = args.aboutCluster ?? "any";
+    this.awaitingIntroductionUntil = Date.now() + 20_000;
+    try {
+      await this.tts.speak({
+        text: "Sorry, who am I speaking with?",
+        voiceId: args.voiceId,
+      });
+    } catch (err) {
+      this.emitError(err);
+    }
+  }
+
+  clearAwaitingIntroduction(): void {
+    this.awaitingIntroductionForCluster = null;
+    this.awaitingIntroductionUntil = 0;
+  }
+
+  /**
+   * Re-attribute a transcript segment to a different person. Mutates the
+   * Dexie row, updates the in-memory transcript cache, fires the
+   * onTranscriptSegmentUpdated callback so the cockpit can repaint, and
+   * folds the segment's stored embedding into the new person's centroid
+   * via `enrollSample` so the matcher gets smarter over time.
+   *
+   * If `personId` is null the segment is reverted to Unknown.
+   */
+  async reassignSegment(segmentId: string, personId: string | null): Promise<void> {
+    const conv = this.conversation;
+    if (!conv) return;
+    const row = await db().transcriptSegments.get(segmentId);
+    if (!row) return;
+
+    const person = personId ? this.people.find((p) => p.id === personId) : null;
+    const updates: Partial<TranscriptSegment> = {
+      personId: person?.id,
+      speakerLabel: person?.id ?? "unknown",
+    };
+    await db().transcriptSegments.update(segmentId, updates);
+
+    // Update the in-memory cache so subsequent suggestion-generation calls
+    // see the corrected attribution.
+    this.transcriptCache = this.transcriptCache.map((s) =>
+      s.id === segmentId
+        ? { ...s, personId: person?.id, personName: person?.name, speakerLabel: person?.id ?? "unknown" }
+        : s,
+    );
+
+    // Refresh the speakerMap so the cockpit's display stays in sync.
+    if (person) {
+      conv.speakerMap = { ...conv.speakerMap, [segmentId]: person.id };
+      await db().conversations.update(conv.id, { speakerMap: conv.speakerMap });
+    }
+
+    // Fold the segment's embedding into the chosen person's voiceprint so
+    // the matcher learns from the correction. Soft-fail if the embedding
+    // wasn't stored (Tier-2 will catch up later).
+    if (person) {
+      try {
+        const stored = await db().segmentEmbeddings.get(segmentId);
+        if (stored) {
+          await this.foldEmbeddingIntoPerson(person.id, stored.embedding, segmentId);
+        }
+      } catch (err) {
+        console.warn("[conversation] reassign fold failed", err);
+      }
+    }
+
+    this.callbacks.onTranscriptSegmentUpdated?.({
+      id: row.id,
+      conversationId: row.conversationId,
+      text: row.text,
+      speakerKind: "other",
+      speakerLabel: person?.id ?? "unknown",
+      personId: person?.id,
+      personName: person?.name,
+      confidence: row.confidence,
+      startedAt: row.startedAt,
+      endedAt: row.endedAt,
+    });
+  }
+
+  /**
+   * Collapse one cluster into another. All transcript segments that
+   * belong to `fromPersonId` (or carry the synthetic `unknown` label
+   * matching `fromLabel`) get re-attributed to `toPersonId`. Used when
+   * Silero VAD splits a single person into two clusters mid-conversation.
+   */
+  async mergeCluster(args: {
+    fromPersonId?: string;
+    fromLabel?: string;
+    toPersonId: string;
+  }): Promise<void> {
+    const conv = this.conversation;
+    if (!conv) return;
+    const toPerson = this.people.find((p) => p.id === args.toPersonId);
+    if (!toPerson) return;
+    const candidates = await db()
+      .transcriptSegments.where("conversationId")
+      .equals(conv.id)
+      .toArray();
+    const targets = candidates.filter((s) => {
+      if (args.fromPersonId && s.personId === args.fromPersonId) return true;
+      if (args.fromLabel && s.speakerLabel === args.fromLabel) return true;
+      return false;
+    });
+    for (const seg of targets) {
+      await this.reassignSegment(seg.id, args.toPersonId);
+    }
+  }
+
+  /** Fold a stored embedding into the given person's voiceprint. */
+  private async foldEmbeddingIntoPerson(
+    personId: string,
+    encodedEmbedding: string,
+    sourceSegmentId: string,
+  ): Promise<void> {
+    const embedding = decodeEmbedding(encodedEmbedding);
+    const existing = await db().voiceprints.get(personId);
+    if (!existing) {
+      await db().voiceprints.put({
+        personId,
+        centroid: encodedEmbedding,
+        sampleCount: 1,
+        updatedAt: Date.now(),
+      });
+      return;
+    }
+
+    // Guard against a clearly-noisy correction: if the new sample is wildly
+    // dissimilar from the existing centroid (cosine < 0.5 — same threshold
+    // as the single-enrollee fallback minus a bit of slack), refuse to fold.
+    // James's wrong tap shouldn't poison the centroid permanently.
+    const prev = decodeEmbedding(existing.centroid);
+    const sim = cosine(prev, embedding);
+    if (sim < 0.5) {
+      console.warn(
+        `[conversation] refusing to fold low-similarity reassignment (sim=${sim.toFixed(2)}) into ${personId} from segment ${sourceSegmentId}`,
+      );
+      return;
+    }
+
+    const n = existing.sampleCount;
+    const dim = Math.min(prev.length, embedding.length);
+    const next = new Float32Array(dim);
+    for (let i = 0; i < dim; i++) {
+      next[i] = (prev[i] * n + embedding[i]) / (n + 1);
+    }
+    const normalized = l2Normalize(next);
+    await db().voiceprints.put({
+      personId,
+      centroid: encodeEmbedding(normalized),
+      sampleCount: n + 1,
+      confidence: existing.confidence,
+      subCentroids: existing.subCentroids,
+      updatedAt: Date.now(),
+    });
   }
 
   getState(): ConversationState {
@@ -376,7 +581,26 @@ export class LiveConversation {
 
     const top = candidates?.[0];
     const accept = this.deps.settings.speakerIdAcceptThreshold;
-    const isConfirmed = !!top?.personId && (top.posterior ?? 0) >= accept;
+
+    // Repair-flow overrides: the cockpit can ask us to ignore the matcher
+    // for the next segment (the "New" button) or to suspend confirmation
+    // entirely until James manually picks (the "Ask" flow). Both keep the
+    // transcript line visible — just mark the speaker as Unknown so the
+    // user has to repair it explicitly.
+    const askInWindow =
+      this.awaitingIntroductionForCluster !== null &&
+      Date.now() < this.awaitingIntroductionUntil;
+    if (this.awaitingIntroductionForCluster !== null && !askInWindow) {
+      // Window timed out without a tap; release the hold.
+      this.clearAwaitingIntroduction();
+    }
+    const suppressMatch = this.forceNextSegmentNewCluster || askInWindow;
+    if (this.forceNextSegmentNewCluster) {
+      this.forceNextSegmentNewCluster = false;
+    }
+
+    const isConfirmed =
+      !suppressMatch && !!top?.personId && (top.posterior ?? 0) >= accept;
     const personId = isConfirmed ? top!.personId! : undefined;
     const personName = isConfirmed ? this.people.find((p) => p.id === personId)?.name : undefined;
 
