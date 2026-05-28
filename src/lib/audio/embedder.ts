@@ -1,3 +1,4 @@
+import { WorkerSpeakerEmbedder } from "./embedder-worker-client";
 import { l2Normalize } from "./utils";
 
 /**
@@ -351,4 +352,17 @@ export function makeEmbedder(kind: EmbedderKind, config?: EmbedderConfig): Speak
     case "mock":
       return new MockSpectralEmbedder();
   }
+}
+
+/**
+ * Construct the worker-backed transformers.js embedder. This is the
+ * preferred path in the browser — it moves processor + model + ORT
+ * session off the main thread so the per-12-turn embedder reset no
+ * longer freezes the cockpit. Falling back to `TransformersSpeakerEmbedder`
+ * is the caller's responsibility (environments without
+ * `new Worker(new URL(...))` support — e.g. some test runners — should
+ * call `makeEmbedder("transformers", config)` instead).
+ */
+export function makeWorkerEmbedder(config?: EmbedderConfig): SpeakerEmbedder {
+  return new WorkerSpeakerEmbedder(config);
 }
