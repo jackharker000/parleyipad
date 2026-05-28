@@ -5,7 +5,18 @@ import { DomainAI } from "./domain";
 
 export { DomainAI } from "./domain";
 export { MOODS } from "./domain";
-export type { Mood, SuggestionContext, SuggestionDraft, ExpandContext } from "./domain";
+export type {
+  Mood,
+  SuggestionContext,
+  SuggestionDraft,
+  ExpandContext,
+  DraftPlatform,
+  DraftReplyContext,
+  DraftReplyResult,
+  DraftReplyVariation,
+  InterestSuggestion,
+  ExtractInterestsContext,
+} from "./domain";
 
 /**
  * Build a DomainAI client for the given provider. Cheap to construct —
