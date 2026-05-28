@@ -126,7 +126,13 @@ async function runSummariseConversation(
 ): Promise<void> {
   const conv = await db().conversations.get(job.conversationId);
   if (!conv) return;
-  if (conv.summary) return; // Already done.
+  // Already done. The Recent page's "Re-summarise" button works around
+  // this by clearing `summary` + `highlights` on the conversation row
+  // before enqueueing — once that lands the drainer treats the row as
+  // un-summarised and re-runs. TODO: replace the clear-then-enqueue
+  // dance with an explicit `force?: boolean` flag on EnqueueArgs +
+  // PendingJob so the prior summary survives until the new one writes.
+  if (conv.summary) return;
 
   const segments = await db()
     .transcriptSegments.where("conversationId")
