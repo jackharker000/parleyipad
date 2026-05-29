@@ -12,6 +12,7 @@ import { makeEmbedder, type EmbedderKind, type SpeakerEmbedder } from "@/lib/aud
 import { deleteAllContributionsForPerson } from "@/lib/audio/enrollment";
 import { useSettings } from "@/lib/settings";
 import { VoiceSampleRecorder } from "@/components/VoiceSampleRecorder";
+import { ProfileProposalsSection } from "@/components/people/ProfileProposalsSection";
 import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/people")({
@@ -374,6 +375,7 @@ function PersonRow({
             embedder={embedder}
             embedderReady={embedderReady}
           />
+          <ProfileProposalsSection person={person} />
         </div>
       )}
     </li>
