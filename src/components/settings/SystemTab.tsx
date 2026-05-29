@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { toast } from "sonner";
 
@@ -8,13 +8,21 @@ import { Switch } from "@/components/ui/switch";
 import { db, type SettingsRecord } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
 import { drainPendingJobs } from "@/lib/jobs/drain";
+import {
+  exportEncryptedBackup,
+  importEncryptedBackup,
+  suggestedBackupFilename,
+} from "@/lib/backup";
 import { cn } from "@/lib/cn";
 
 /**
  * System tab. Display preset, speaker-ID tuning, GPS toggle, dead-phrase
  * suppression thresholds, a style-profile last-run card, and the danger
- * zone. Encrypted export is stubbed for C8.
+ * zone (clear + encrypted backup export / import).
  */
+
+const INPUT_CLASSES =
+  "rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 
 const DISPLAY_PRESETS: Array<{ value: SettingsRecord["displayPreset"]; label: string }> = [
   { value: "mini", label: "iPad mini" },
@@ -436,17 +444,183 @@ function DangerZoneCard() {
           starting over.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-4">
         <Button variant="destructive" onClick={clearAll} disabled={clearing}>
           {clearing ? "Clearing…" : "Clear all local data"}
         </Button>
-        <div className="space-y-1">
-          <Button variant="outline" disabled>
-            Export local data (encrypted)
-          </Button>
-          <p className="text-xs text-muted-foreground">Coming in C8.</p>
+
+        <div className="border-t pt-3">
+          <ExportBackupSection />
+        </div>
+
+        <div className="border-t pt-3">
+          <ImportBackupSection />
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// --------------------------------------------------------------------------
+
+function ExportBackupSection() {
+  const [pass, setPass] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async () => {
+    if (exporting) return;
+    if (pass.length < 6) {
+      toast.error("Passphrase must be at least 6 characters.");
+      return;
+    }
+    if (pass !== confirm) {
+      toast.error("Passphrases don't match.");
+      return;
+    }
+    setExporting(true);
+    try {
+      const { blob, meta } = await exportEncryptedBackup(pass);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = suggestedBackupFilename(meta.exportedAt);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${meta.rowCount} row${meta.rowCount === 1 ? "" : "s"}.`);
+      setPass("");
+      setConfirm("");
+    } catch (err) {
+      toast.error(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-foreground">Export local data (encrypted)</p>
+        <p className="text-xs text-muted-foreground">
+          The file is encrypted with your passphrase using AES-GCM. Without the passphrase the
+          export is unrecoverable — there is no reset link.
+        </p>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <input
+          type="password"
+          placeholder="Passphrase (min 6 chars)"
+          value={pass}
+          onChange={(e) => setPass(e.target.value)}
+          autoComplete="new-password"
+          className={INPUT_CLASSES}
+        />
+        <input
+          type="password"
+          placeholder="Confirm passphrase"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+          autoComplete="new-password"
+          className={INPUT_CLASSES}
+        />
+      </div>
+      <Button variant="outline" onClick={handleExport} disabled={exporting}>
+        {exporting ? "Exporting…" : "Export local data (encrypted)"}
+      </Button>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+
+function ImportBackupSection() {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [pass, setPass] = useState("");
+  const [replace, setReplace] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const handleImport = async () => {
+    if (importing) return;
+    if (!file) {
+      toast.error("Pick a .parlbak file first.");
+      return;
+    }
+    if (pass.length < 6) {
+      toast.error("Passphrase must be at least 6 characters.");
+      return;
+    }
+    setImporting(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const meta = await importEncryptedBackup(buf, pass, { replace });
+      toast.success(
+        `Imported ${meta.rowCount} row${meta.rowCount === 1 ? "" : "s"}. Reload to refresh the app.`,
+        {
+          action: {
+            label: "Reload now",
+            onClick: () => window.location.reload(),
+          },
+        },
+      );
+      setFile(null);
+      setPass("");
+      setReplace(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/wrong passphrase/i.test(msg)) {
+        toast.error("Wrong passphrase, or the file has been tampered with.");
+      } else {
+        toast.error(`Import failed: ${msg}`);
+      }
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-foreground">Import an encrypted backup</p>
+        <p className="text-xs text-muted-foreground">
+          Pick a .parlbak file and enter the same passphrase you used when exporting.
+        </p>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".parlbak,application/octet-stream"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          className={cn(
+            INPUT_CLASSES,
+            "file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1 file:text-xs file:text-foreground",
+          )}
+        />
+        <input
+          type="password"
+          placeholder="Passphrase"
+          value={pass}
+          onChange={(e) => setPass(e.target.value)}
+          autoComplete="current-password"
+          className={INPUT_CLASSES}
+        />
+      </div>
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium text-foreground">Replace existing data</p>
+          <p className="text-xs text-muted-foreground">
+            Wipes each table before importing. Off = merge (bulk put by primary key).
+          </p>
+        </div>
+        <Switch checked={replace} onCheckedChange={setReplace} />
+      </div>
+      <Button variant="outline" onClick={handleImport} disabled={importing}>
+        {importing ? "Importing…" : "Import backup"}
+      </Button>
+    </div>
   );
 }

@@ -268,5 +268,23 @@ async function applyAssignments(
     await db().voiceprintContributions.bulkAdd(contributions);
   }
 
+  // Expand conv.personIds to cover any personId that ended up attributed.
+  // Without this, a person whose every live segment was Unknown but whom
+  // rediarize identifies offline won't be picked up by the subsequent
+  // rebuildVoiceprints job (which reads conv.personIds for its scope).
+  const finalPersonIds = new Set<string>();
+  for (const v of finalAssign.values()) {
+    if (v !== "unknown") finalPersonIds.add(v);
+  }
+  if (finalPersonIds.size > 0) {
+    const conv = await db().conversations.get(conversationId);
+    if (conv) {
+      const merged = Array.from(new Set([...conv.personIds, ...finalPersonIds]));
+      if (merged.length !== conv.personIds.length) {
+        await db().conversations.update(conversationId, { personIds: merged });
+      }
+    }
+  }
+
   return { updates };
 }

@@ -23,7 +23,7 @@ import {
   type DraftReplyVariation,
   type InterestSuggestion,
 } from "@/lib/ai";
-import { db, type HelperDraft, type JamesProfile } from "@/lib/db";
+import { db, type HelperDraft, type JamesProfile, type StyleProfile } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
 
 /**
@@ -61,6 +61,10 @@ export function DraftHelper(props: {
   const settings = useSettings();
   const jamesProfile = useLiveQuery<JamesProfile | undefined>(
     () => db().jamesProfile.get("singleton"),
+    [],
+  );
+  const styleProfile = useLiveQuery<StyleProfile | undefined>(
+    () => db().styleProfile.get("singleton"),
     [],
   );
 
@@ -126,6 +130,7 @@ export function DraftHelper(props: {
         rawText: raw,
         context: context.trim() || undefined,
         jamesProfile,
+        styleProfile,
         toneOverride: opts.toneOverride,
       });
       if (r.error) toast.error(r.error);

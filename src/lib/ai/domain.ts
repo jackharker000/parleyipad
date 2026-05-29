@@ -112,6 +112,13 @@ export type DraftReplyContext = {
   /** Optional James profile so the model can write in his voice. */
   jamesProfile?: JamesProfile;
   /**
+   * Optional distilled style profile — feeds the same fingerprint the live
+   * cockpit uses into Helpers, so drafts sound consistent with how James
+   * talks in conversation. Cached in the system prompt because it's only
+   * refreshed every ~12h.
+   */
+  styleProfile?: StyleProfile;
+  /**
    * Tone-redo nudge. When set, appends a single instruction line to the user
    * prompt asking the model to re-cast the SAME intent in a different tone
    * ("shorter", "warmer", "drier", "more formal", "more casual"). Used by the
@@ -1096,8 +1103,9 @@ function draftReplySystemPrompt(ctx: DraftReplyContext): string {
       : ctx.platform === "imessage"
         ? "Text-message tone: short, casual, lower-case ok, contractions, can use a single emoji if it fits him. Usually 1-2 short sentences."
         : "Facebook tone: warm, conversational, concise. Emojis sparingly only if it fits his personality.";
+  const styleBlock = ctx.styleProfile ? `\n\n${styleProfileBlock(ctx.styleProfile, name)}` : "";
 
-  return `You are a writing assistant helping ${name}, a non-speaking man with cerebral palsy, write ${platformLabel}. He types with great difficulty so his input is heavily truncated and full of typos — interpret it generously. Rewrite as authentically HIM (his personality, humor, vocabulary). NEVER invent facts, opinions, names, plans, or details he did not type or that aren't in his profile. ${toneHint}
+  return `You are a writing assistant helping ${name}, a non-speaking man with cerebral palsy, write ${platformLabel}. He types with great difficulty so his input is heavily truncated and full of typos — interpret it generously. Rewrite as authentically HIM (his personality, humor, vocabulary). NEVER invent facts, opinions, names, plans, or details he did not type or that aren't in his profile. ${toneHint}${styleBlock}
 
 Output strictly as JSON, no commentary:
 
