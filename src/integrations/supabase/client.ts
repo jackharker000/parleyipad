@@ -27,6 +27,19 @@ function createSupabaseClient() {
   });
 }
 
+/**
+ * Whether the Supabase env vars are present. Lets callers (e.g. AuthGate)
+ * check WITHOUT tripping the throwing proxy below — so the app can run
+ * local-first / anonymous when Supabase isn't configured instead of
+ * blocking on a sign-in wall.
+ */
+export function isSupabaseConfigured(): boolean {
+  const url = import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const key =
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
+  return !!url && !!key;
+}
+
 let _supabase: ReturnType<typeof createSupabaseClient> | undefined;
 
 // Import the supabase client like this:

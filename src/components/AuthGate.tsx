@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,11 +17,19 @@ import { pullForUser, clearLocal } from "@/lib/cloud-sync";
  * Dexie before rendering children.
  */
 export function AuthGate({ children }: { children: React.ReactNode }) {
+  // Local-first / anonymous mode: when Supabase isn't configured on the
+  // deploy, skip the sign-in wall entirely and render the app straight
+  // away. All data lives in local Dexie; cloud sync is simply unavailable
+  // until Supabase env vars are set. Without this the app would dead-end
+  // on a login screen no one can pass.
+  const supabaseReady = isSupabaseConfigured();
+
   const [session, setSession] = useState<Session | null>(null);
-  const [checking, setChecking] = useState(true);
+  const [checking, setChecking] = useState(supabaseReady);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
+    if (!supabaseReady) return;
     // Set up listener BEFORE checking the session, per Supabase guidance.
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
@@ -31,7 +39,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       setChecking(false);
     });
     return () => sub.subscription.unsubscribe();
-  }, []);
+  }, [supabaseReady]);
 
   // Pull cloud backup whenever the user changes.
   useEffect(() => {
@@ -50,6 +58,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [session?.user?.id]);
+
+  // No Supabase configured → run local-first, no auth, no cloud pull.
+  if (!supabaseReady) return <>{children}</>;
 
   if (checking) {
     return (
