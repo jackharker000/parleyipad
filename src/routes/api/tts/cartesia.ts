@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { corsPreflight, requireClientToken, withCors } from "@/lib/api-cors";
+
 /**
  * Cartesia Sonic 3 streaming TTS proxy — the latency fallback to
  * ElevenLabs Flash. Same browser-facing contract as the ElevenLabs
@@ -13,6 +15,11 @@ const CARTESIA_URL = "https://api.cartesia.ai/tts/bytes";
 const CARTESIA_VERSION = "2024-11-13";
 const DEFAULT_MODEL = "sonic-3";
 
+// Upstream timeout — mirrors the ElevenLabs TTS route. Bounds connect + the
+// whole streamed body so a hung Cartesia stream errors the client reader
+// instead of leaving James on a half-spoken phrase.
+const UPSTREAM_TIMEOUT_MS = 15_000;
+
 type RequestBody = {
   text: string;
   voiceId?: string;
@@ -21,7 +28,11 @@ type RequestBody = {
 export const Route = createFileRoute("/api/tts/cartesia")({
   server: {
     handlers: {
+      OPTIONS: ({ request }) => corsPreflight(request),
       POST: async ({ request }) => {
+        const denied = requireClientToken(request);
+        if (denied) return denied;
+
         const apiKey = process.env.CARTESIA_API_KEY;
         if (!apiKey) return errorResponse(500, "CARTESIA_API_KEY not set on the server");
 
@@ -38,21 +49,30 @@ export const Route = createFileRoute("/api/tts/cartesia")({
           return errorResponse(400, "No voiceId in body and PARLEY_JAMES_VOICE_ID not set");
         }
 
-        const upstream = await fetch(CARTESIA_URL, {
-          method: "POST",
-          headers: {
-            "x-api-key": apiKey,
-            "cartesia-version": CARTESIA_VERSION,
-            "content-type": "application/json",
-            accept: "audio/mp3",
-          },
-          body: JSON.stringify({
-            model_id: DEFAULT_MODEL,
-            transcript: body.text,
-            voice: { mode: "id", id: voiceId },
-            output_format: { container: "mp3", sample_rate: 44100, bit_rate: 128000 },
-          }),
-        });
+        let upstream: Response;
+        try {
+          upstream = await fetch(CARTESIA_URL, {
+            method: "POST",
+            headers: {
+              "x-api-key": apiKey,
+              "cartesia-version": CARTESIA_VERSION,
+              "content-type": "application/json",
+              accept: "audio/mp3",
+            },
+            body: JSON.stringify({
+              model_id: DEFAULT_MODEL,
+              transcript: body.text,
+              voice: { mode: "id", id: voiceId },
+              output_format: { container: "mp3", sample_rate: 44100, bit_rate: 128000 },
+            }),
+            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+          });
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "TimeoutError") {
+            return errorResponse(504, `Cartesia timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+          }
+          return errorResponse(502, `Cartesia request failed: ${(err as Error).message}`);
+        }
 
         if (!upstream.ok || !upstream.body) {
           const text = await upstream.text();
@@ -61,7 +81,11 @@ export const Route = createFileRoute("/api/tts/cartesia")({
 
         return new Response(upstream.body, {
           status: 200,
-          headers: { "content-type": "audio/mpeg", "cache-control": "no-cache" },
+          headers: withCors({
+            "content-type": "audio/mpeg",
+            "cache-control": "no-cache",
+            "x-accel-buffering": "no",
+          }),
         });
       },
     },
@@ -71,6 +95,6 @@ export const Route = createFileRoute("/api/tts/cartesia")({
 function errorResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: withCors({ "content-type": "application/json" }),
   });
 }

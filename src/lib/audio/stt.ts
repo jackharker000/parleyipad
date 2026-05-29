@@ -8,11 +8,16 @@ import type { STTProviderId } from "@/lib/db";
  *
  * Returns the full transcript text (Scribe returns word-level timestamps;
  * the cockpit v1 treats the whole segment as one transcript line).
+ *
+ * Optional `keyTerms` are forwarded to the proxy as a JSON-encoded multipart
+ * field so the upstream keyterm-biasing pass kicks in (same effect as the
+ * streaming path's URL `keyterms` params, just batched).
  */
 export async function transcribeSegment(args: {
   providerId: STTProviderId;
   waveform16k: Float32Array;
   signal?: AbortSignal;
+  keyTerms?: string[];
 }): Promise<string> {
   const wav = float32ToWav(args.waveform16k, 16000);
   const stt = makeSTT(args.providerId);
@@ -20,6 +25,7 @@ export async function transcribeSegment(args: {
     audio: new Blob([wav as BlobPart], { type: "audio/wav" }),
     sampleRate: 16000,
     signal: args.signal,
+    keyTerms: args.keyTerms,
   });
   return segments
     .map((s) => s.text)

@@ -29,6 +29,11 @@ export class TTSPlayer {
     this.currentAbort = abort;
 
     const chunks: Uint8Array[] = [];
+    // Returning/breaking out of this `for await` (the abort checks below) calls
+    // the provider iterator's `return()`, which runs the generator's `finally`
+    // and cancels its upstream reader — so an interrupted utterance releases the
+    // keyed TTS connection rather than leaking it. `abort.signal` is also wired
+    // into the provider fetch, so a mid-`read()` interrupt aborts the body too.
     for await (const chunk of this.provider.stream({
       text: args.text,
       voiceId: args.voiceId ?? "",

@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { corsPreflight, requireClientToken, withCors } from "@/lib/api-cors";
+
 /**
  * ElevenLabs Scribe (batch REST) proxy.
  *
@@ -16,10 +18,20 @@ import { createFileRoute } from "@tanstack/react-router";
 
 const SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 
+// Upstream timeout. This batch path is the fallback when the streaming WS
+// transcription fails; if it also hangs after sending headers, the segment's
+// transcribe() never resolves and that turn is lost. 15s covers a long
+// utterance plus Scribe's processing.
+const UPSTREAM_TIMEOUT_MS = 15_000;
+
 export const Route = createFileRoute("/api/stt/elevenlabs")({
   server: {
     handlers: {
+      OPTIONS: ({ request }) => corsPreflight(request),
       POST: async ({ request }) => {
+        const denied = requireClientToken(request);
+        if (denied) return denied;
+
         const apiKey = process.env.ELEVENLABS_API_KEY;
         if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
 
@@ -31,14 +43,54 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
 
         const upstreamForm = new FormData();
         upstreamForm.append("file", audio, "audio.webm");
-        upstreamForm.append("model_id", "scribe_v1");
+        upstreamForm.append("model_id", "scribe_v2_realtime");
         upstreamForm.append("timestamps_granularity", "word");
+        // Suppress (laughs)/(pauses)/etc. event tags that Scribe injects into
+        // the transcript text and that James can't easily strip out of the
+        // suggestion prompts.
+        upstreamForm.append("tag_audio_events", "false");
 
-        const upstream = await fetch(SCRIBE_URL, {
-          method: "POST",
-          headers: { "xi-api-key": apiKey },
-          body: upstreamForm,
-        });
+        // Optional keyterm biasing — the client sends `keyTerms` as a JSON
+        // array string. Scribe batch accepts `keyterms` as repeated multipart
+        // fields (one entry per term). Batch caps at 1000 terms of 50 chars
+        // each; we cap at 50 for parity with realtime so a switch to the
+        // batch fallback doesn't suddenly inflate cost.
+        // Source: https://elevenlabs.io/docs/eleven-api/guides/how-to/speech-to-text/batch/keyterm-prompting
+        const keyTermsField = form.get("keyTerms");
+        if (typeof keyTermsField === "string" && keyTermsField.length > 0) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(keyTermsField);
+          } catch {
+            parsed = null;
+          }
+          if (Array.isArray(parsed)) {
+            const terms = parsed
+              .filter((t): t is string => typeof t === "string")
+              .map((t) => t.trim())
+              .filter((t) => t.length > 0)
+              .map((t) => (t.length > 50 ? t.slice(0, 50) : t))
+              .slice(0, 50);
+            for (const term of terms) {
+              upstreamForm.append("keyterms", term);
+            }
+          }
+        }
+
+        let upstream: Response;
+        try {
+          upstream = await fetch(SCRIBE_URL, {
+            method: "POST",
+            headers: { "xi-api-key": apiKey },
+            body: upstreamForm,
+            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+          });
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "TimeoutError") {
+            return errorResponse(504, `Scribe timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+          }
+          return errorResponse(502, `Scribe request failed: ${(err as Error).message}`);
+        }
 
         if (!upstream.ok) {
           const text = await upstream.text();
@@ -75,7 +127,7 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
           },
         ];
 
-        return Response.json({ segments });
+        return Response.json({ segments }, { headers: withCors() });
       },
     },
   },
@@ -84,6 +136,6 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
 function errorResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: withCors({ "content-type": "application/json" }),
   });
 }

@@ -18,10 +18,20 @@ export class CartesiaSonicTTS implements TTSProvider {
       throw new Error(`Cartesia proxy ${res.status}: ${await res.text()}`);
     }
     const reader = res.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) yield value;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) yield value;
+      }
+    } finally {
+      // Cancel on early break (James interrupts) so the keyed upstream stream
+      // is released instead of leaking a connection.
+      try {
+        await reader.cancel();
+      } catch {
+        /* already closed */
+      }
     }
   }
 }

@@ -20,10 +20,20 @@ export class ElevenLabsFlashTTS implements TTSProvider {
       throw new Error(`Flash TTS proxy ${res.status}: ${await res.text()}`);
     }
     const reader = res.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) yield value;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) yield value;
+      }
+    } finally {
+      // James interrupts mid-utterance often; cancel the reader so the keyed
+      // upstream TTS stream is released instead of leaking a connection.
+      try {
+        await reader.cancel();
+      } catch {
+        /* already closed */
+      }
     }
   }
 }

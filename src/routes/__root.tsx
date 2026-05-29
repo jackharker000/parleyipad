@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   HeadContent,
@@ -12,6 +13,7 @@ import { Toaster } from "sonner";
 import appCss from "@/styles.css?url";
 import { ParleyLogo } from "@/components/ParleyLogo";
 import { cn } from "@/lib/cn";
+import { drainPendingJobs } from "@/lib/jobs/drain";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -63,6 +65,15 @@ function RootShell({ children }: { children: React.ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  // Tier-2 jobs (summarise / re-diarize / enrich) that were queued by a
+  // prior `LiveConversation.stop()` and never finished — typically because
+  // the user closed the tab before the LLM call returned. Single-flight on
+  // the drainer side, so mounting multiple routes won't fan out.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    void drainPendingJobs();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <div className="flex min-h-full flex-col bg-background text-foreground">
@@ -83,7 +94,6 @@ const NAV: Array<{ to: string; label: string }> = [
   { to: "/recent", label: "Recent" },
   { to: "/helpers", label: "Helpers" },
   { to: "/settings", label: "Settings" },
-  { to: "/spike/speaker-id", label: "Spike" },
 ];
 
 function TopNav() {

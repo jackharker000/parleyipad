@@ -43,6 +43,19 @@ export class SileroVAD {
       ortConfig: (ort) => {
         if (ort.env.wasm) ort.env.wasm.numThreads = 1;
       },
+      // Silero defaults are too aggressive: short minSpeech and a small
+      // redemption window mean we hand Scribe sub-1-s clips with onsets
+      // clipped — which it transcribes as half-words and surrounds with
+      // (laughs)/(pauses)/etc. WavLM also degrades fast on <1 s clips.
+      // The legacy model uses 96-ms frames so these ms values correspond to:
+      //   minSpeechMs: 1440  → 15 frames, ~1.4 s of committed speech
+      //   redemptionMs: 960  → 10 frames, ~960 ms silence before ending
+      //   preSpeechPadMs: 768 → 8 frames, ~768 ms of pre-pad
+      // Target segments: 1.5–8 s for a healthy turn. Validate empirically on
+      // James's iPad mic; these are starting values, not load-bearing.
+      minSpeechMs: 1440,
+      redemptionMs: 960,
+      preSpeechPadMs: 768,
       onSpeechStart: () => {
         for (const fn of this.speechListeners) fn();
       },

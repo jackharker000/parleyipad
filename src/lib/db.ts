@@ -91,7 +91,10 @@ export type VoiceprintContribution = {
   /** L2-normalized ECAPA-TDNN embedding, base64-encoded float32. */
   embedding: string;
   conversationId?: string;
-  source: "enrollment" | "conversation";
+  /** "enrollment" = clean in-room sample; "conversation" = live-attributed or
+   * intro-seed utterance; "rediarize" = derived by the Tier-2 re-diarize pass
+   * (kept distinct so a re-diarize re-run can clear only its own rows). */
+  source: "enrollment" | "conversation" | "rediarize";
   /** Source-utterance preview text, when known. */
   previewText?: string;
   rms: number;
@@ -111,6 +114,9 @@ export type Place = {
   /** GPS snap radius in metres. */
   radiusM?: number;
   notes?: string;
+  /** People commonly present here. Multiplies the speaker-ID prior 2× for
+   * each enrolled person on this list when the place is active. */
+  personIds?: string[];
   createdAt: number;
   updatedAt: number;
 };
@@ -320,6 +326,127 @@ export type ManualReply = {
   spokenAt: number;
 };
 
+/**
+ * On-device cache of synthesised TTS audio for the canned quick phrases.
+ * Single source of truth for "James never goes silent" — these clips must
+ * play with zero network and zero LiveConversation dependency.
+ *
+ * Cache key is `phraseText::voiceId` because changing James's voice id
+ * invalidates every prior synth.
+ */
+export type CachedPhraseAudio = {
+  id: string;
+  phraseText: string;
+  voiceId: string;
+  mimeType: string;
+  audioBuffer: ArrayBuffer;
+  cachedAt: number;
+};
+
+/**
+ * Tier-2 / post-conversation jobs that should run in the background after
+ * the user taps Stop. Queued here so they survive tab close / reload — the
+ * drainer reads pending rows on next app mount and replays them, instead
+ * of fire-and-forget which the browser kills on navigation.
+ */
+export type PendingJob = {
+  id: string;
+  type:
+    | "summariseConversation"
+    | "rediarize"
+    | "rebuildVoiceprints"
+    | "enrichProfiles"
+    | "distillStyle"
+    | "extractMemories"
+    | "updateLexicon"
+    | "detectIntroductions";
+  conversationId: string;
+  status: "pending" | "running" | "done" | "failed";
+  attempts: number;
+  lastError?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/**
+ * Drafts the Helpers tab has generated. Each row carries enough state for
+ * a history view AND for the style-distillation loop (`jamesEdit` and
+ * `sentAt` are the load-bearing signals — they're the Helpers-tab
+ * equivalent of `suggestionsLog.editedTo` / `selected`).
+ */
+export type HelperDraft = {
+  id: string;
+  platform: "facebook" | "email" | "imessage";
+  /** What James was replying to (if anything). */
+  incoming?: string;
+  /** James's rough typed input. */
+  rawText: string;
+  /** AI recommendation. */
+  recommended: string;
+  /** Alternative tones the AI also returned. */
+  alternatives: Array<{ text: string; tone: string }>;
+  /** What James actually used (his edit on top of the recommended draft). */
+  jamesEdit?: string;
+  createdAt: number;
+  /** When he tapped "mark sent". null = drafted but never sent. */
+  sentAt?: number;
+};
+
+/**
+ * Cadence guard for the Tier-1 style distillation job. One row per run; we
+ * read the most-recent row to decide whether to skip (legacy: ≤ once per
+ * 12h unless force=true).
+ */
+export type StyleDistillRun = {
+  id: string;
+  startedAt: number;
+  endedAt?: number;
+  samplesUsed: number;
+  /** What the distiller produced; lets the System tab show "last run" detail
+   * without re-querying styleProfile. */
+  summary?: string;
+  /** "ok" / "skipped" / "failed". */
+  status: "ok" | "skipped" | "failed";
+  error?: string;
+};
+
+/**
+ * Proposed changes to a Person row from the post-conversation profile
+ * enrichment pass. Never auto-applied unless the user (or a high-confidence
+ * heuristic per C4 plan) confirms them. Status transitions:
+ *   auto       → user hasn't reviewed yet
+ *   confirmed  → applied to the Person row, kept here for audit
+ *   rejected   → user said no, never proposed again
+ *   auto-applied → confidence was high enough to skip review
+ */
+export type ProfileProposal = {
+  id: string;
+  personId: string;
+  conversationId: string;
+  /** Person field being proposed against ("relationship", "topicsLoved", "notes" …). */
+  field: string;
+  value: string;
+  op: "set" | "append" | "remove";
+  reasoning?: string;
+  status: "auto" | "confirmed" | "rejected" | "auto-applied";
+  createdAt: number;
+};
+
+/**
+ * Per-person vocabulary contribution. Aggregated to build Scribe keyterms
+ * (the C6 / T1 path) so proper nouns + jargon stop being mistranscribed.
+ * `weight` is a heuristic boost — 3.0 for explicit names, 1.0–2.0 for words
+ * extracted from transcripts. `source` lets the System tab show provenance.
+ */
+export type PersonLexiconEntry = {
+  id: string;
+  term: string;
+  personId?: string;
+  weight: number;
+  source: "name" | "transcript" | "manual" | "profile";
+  createdAt: number;
+};
+
 export type SettingsRecord = {
   id: "singleton";
   llmProvider: LLMProviderId;
@@ -327,6 +454,12 @@ export type SettingsRecord = {
   ttsProvider: TTSProviderId;
   /** James's ElevenLabs voice_id (also surfaced as PARLEY_JAMES_VOICE_ID on the server). */
   jamesVoiceId?: string;
+  /** User-saved custom voices (e.g. via the voice designer panel). */
+  customVoices?: Array<{ voiceId: string; name: string }>;
+  /** Per-tier model overrides. The server proxies fall back to the env-var
+   * default when these are absent. */
+  fastModel?: string;
+  smartModel?: string;
   /** Speaker-ID matcher tuning. */
   speakerIdWebGPU: boolean;
   speakerIdAcceptThreshold: number;
@@ -335,6 +468,9 @@ export type SettingsRecord = {
   gpsEnabled: boolean;
   /** iPad size preset for UI scaling. */
   displayPreset: "mini" | "11" | "12.9" | "13";
+  /** Cross-session dead-phrase suppression thresholds (System tab). */
+  deadPhraseShownTimes?: number;
+  deadPhraseWindowDays?: number;
 };
 
 export const DEFAULT_SETTINGS: SettingsRecord = {
@@ -388,6 +524,14 @@ export class ParleyDB extends Dexie {
 
   settings!: EntityTable<SettingsRecord, "id">;
 
+  cachedPhraseAudio!: EntityTable<CachedPhraseAudio, "id">;
+  pendingJobs!: EntityTable<PendingJob, "id">;
+
+  helperDrafts!: EntityTable<HelperDraft, "id">;
+  styleDistillRuns!: EntityTable<StyleDistillRun, "id">;
+  profileProposals!: EntityTable<ProfileProposal, "id">;
+  personLexicon!: EntityTable<PersonLexiconEntry, "id">;
+
   constructor() {
     super("parley");
     this.version(1).stores({
@@ -420,6 +564,29 @@ export class ParleyDB extends Dexie {
       manualReplies: "id, conversationId, spokenAt",
 
       settings: "id",
+    });
+
+    // v2: durable-degradation tables. cachedPhraseAudio so the five quick
+    // phrases play offline and with no LiveConversation; pendingJobs so
+    // tier-2 work survives tab close after Stop. Place.personIds is a
+    // type-only addition (Dexie doesn't enforce TS types) so no index
+    // change is needed for it here.
+    this.version(2).stores({
+      cachedPhraseAudio: "id, phraseText, voiceId, cachedAt",
+      pendingJobs: "id, type, conversationId, status, createdAt",
+    });
+
+    // v3: AI learning loop tables. helperDrafts persists every Helpers-tab
+    // draft so the distillation pass can read them as style evidence.
+    // styleDistillRuns is the cadence guard. profileProposals carries the
+    // Tier-2 enrichment output queue. personLexicon backs Scribe keyterm
+    // biasing (T1/C6). Settings additions (customVoices/fast/smartModel,
+    // dead-phrase tunables) are type-only — no index change required.
+    this.version(3).stores({
+      helperDrafts: "id, platform, createdAt, sentAt",
+      styleDistillRuns: "id, startedAt, status",
+      profileProposals: "id, personId, conversationId, status, createdAt",
+      personLexicon: "id, term, personId, source, createdAt",
     });
   }
 }

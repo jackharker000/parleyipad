@@ -12,6 +12,12 @@ export class ElevenLabsScribeSTT implements STTProvider {
     const form = new FormData();
     form.append("audio", request.audio);
     form.append("sampleRate", String(request.sampleRate));
+    // Forward keyterms as a JSON-encoded string so the multipart parser on
+    // the proxy can decode and re-emit as repeated `keyterms` fields to
+    // ElevenLabs.
+    if (request.keyTerms && request.keyTerms.length > 0) {
+      form.append("keyTerms", JSON.stringify(request.keyTerms));
+    }
 
     const res = await fetch("/api/stt/elevenlabs", {
       method: "POST",

@@ -36,3 +36,9 @@ dist-ssr
 public/vad.worklet.bundle.min.js
 public/silero_vad*.onnx
 public/ort-wasm-simd-threaded*
+
+# Local env — never commit real keys
+.env
+.env.local
+*.env
+!.env.example

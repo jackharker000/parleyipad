@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
+import { corsPreflight, requireClientToken, withCors } from "@/lib/api-cors";
+
 /**
  * ElevenLabs Flash v2.5 streaming TTS proxy. The browser POSTs
  * `{ text, voiceId? }` and we stream MP3 chunks back as soon as
@@ -13,6 +15,13 @@ import { createFileRoute } from "@tanstack/react-router";
 const DEFAULT_VOICE_ID = "pNInz6obpgDQGcFmaJgB"; // "Adam" — ElevenLabs public sample voice
 const MODEL_ID = "eleven_flash_v2_5";
 
+// Upstream timeout. Bounds both the connect and the whole streamed body — a
+// single spoken suggestion is short, so a stream still open after 15s is hung.
+// When it fires mid-stream the abort propagates to the forwarded body and the
+// client's reader errors, so the TTSPlayer catch runs instead of hanging James
+// on a half-spoken phrase.
+const UPSTREAM_TIMEOUT_MS = 15_000;
+
 type RequestBody = {
   text: string;
   voiceId?: string;
@@ -21,7 +30,11 @@ type RequestBody = {
 export const Route = createFileRoute("/api/tts/elevenlabs")({
   server: {
     handlers: {
+      OPTIONS: ({ request }) => corsPreflight(request),
       POST: async ({ request }) => {
+        const denied = requireClientToken(request);
+        if (denied) return denied;
+
         const apiKey = process.env.ELEVENLABS_API_KEY;
         if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
 
@@ -39,22 +52,31 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
         const voiceId =
           body.voiceId?.trim() || process.env.PARLEY_JAMES_VOICE_ID?.trim() || DEFAULT_VOICE_ID;
 
-        const upstream = await fetch(
-          `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`,
-          {
-            method: "POST",
-            headers: {
-              "xi-api-key": apiKey,
-              "content-type": "application/json",
-              accept: "audio/mpeg",
+        let upstream: Response;
+        try {
+          upstream = await fetch(
+            `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`,
+            {
+              method: "POST",
+              headers: {
+                "xi-api-key": apiKey,
+                "content-type": "application/json",
+                accept: "audio/mpeg",
+              },
+              body: JSON.stringify({
+                text: body.text,
+                model_id: MODEL_ID,
+                voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+              }),
+              signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
             },
-            body: JSON.stringify({
-              text: body.text,
-              model_id: MODEL_ID,
-              voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-            }),
-          },
-        );
+          );
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "TimeoutError") {
+            return errorResponse(504, `Flash TTS timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+          }
+          return errorResponse(502, `Flash TTS request failed: ${(err as Error).message}`);
+        }
 
         if (!upstream.ok || !upstream.body) {
           const text = await upstream.text();
@@ -63,10 +85,11 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
 
         return new Response(upstream.body, {
           status: 200,
-          headers: {
+          headers: withCors({
             "content-type": "audio/mpeg",
             "cache-control": "no-cache",
-          },
+            "x-accel-buffering": "no",
+          }),
         });
       },
     },
@@ -76,6 +99,6 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
 function errorResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: withCors({ "content-type": "application/json" }),
   });
 }
