@@ -17,7 +17,9 @@ import { Route as EventsRouteImport } from './routes/events'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SpikeSpeakerIdRouteImport } from './routes/spike.speaker-id'
 import { Route as ApiTtsVoicesRouteImport } from './routes/api/tts/voices'
+import { Route as ApiTtsSaveDesignedVoiceRouteImport } from './routes/api/tts/save-designed-voice'
 import { Route as ApiTtsElevenlabsRouteImport } from './routes/api/tts/elevenlabs'
+import { Route as ApiTtsDesignPreviewsRouteImport } from './routes/api/tts/design-previews'
 import { Route as ApiTtsCartesiaRouteImport } from './routes/api/tts/cartesia'
 import { Route as ApiSttScribeTokenRouteImport } from './routes/api/stt/scribe-token'
 import { Route as ApiSttElevenlabsRouteImport } from './routes/api/stt/elevenlabs'
@@ -65,9 +67,19 @@ const ApiTtsVoicesRoute = ApiTtsVoicesRouteImport.update({
   path: '/api/tts/voices',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiTtsSaveDesignedVoiceRoute = ApiTtsSaveDesignedVoiceRouteImport.update({
+  id: '/api/tts/save-designed-voice',
+  path: '/api/tts/save-designed-voice',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiTtsElevenlabsRoute = ApiTtsElevenlabsRouteImport.update({
   id: '/api/tts/elevenlabs',
   path: '/api/tts/elevenlabs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTtsDesignPreviewsRoute = ApiTtsDesignPreviewsRouteImport.update({
+  id: '/api/tts/design-previews',
+  path: '/api/tts/design-previews',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTtsCartesiaRoute = ApiTtsCartesiaRouteImport.update({
@@ -115,7 +127,9 @@ export interface FileRoutesByFullPath {
   '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
   '/api/stt/scribe-token': typeof ApiSttScribeTokenRoute
   '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
+  '/api/tts/design-previews': typeof ApiTtsDesignPreviewsRoute
   '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
+  '/api/tts/save-designed-voice': typeof ApiTtsSaveDesignedVoiceRoute
   '/api/tts/voices': typeof ApiTtsVoicesRoute
 }
 export interface FileRoutesByTo {
@@ -132,7 +146,9 @@ export interface FileRoutesByTo {
   '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
   '/api/stt/scribe-token': typeof ApiSttScribeTokenRoute
   '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
+  '/api/tts/design-previews': typeof ApiTtsDesignPreviewsRoute
   '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
+  '/api/tts/save-designed-voice': typeof ApiTtsSaveDesignedVoiceRoute
   '/api/tts/voices': typeof ApiTtsVoicesRoute
 }
 export interface FileRoutesById {
@@ -150,7 +166,9 @@ export interface FileRoutesById {
   '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
   '/api/stt/scribe-token': typeof ApiSttScribeTokenRoute
   '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
+  '/api/tts/design-previews': typeof ApiTtsDesignPreviewsRoute
   '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
+  '/api/tts/save-designed-voice': typeof ApiTtsSaveDesignedVoiceRoute
   '/api/tts/voices': typeof ApiTtsVoicesRoute
 }
 export interface FileRouteTypes {
@@ -169,7 +187,9 @@ export interface FileRouteTypes {
     | '/api/stt/elevenlabs'
     | '/api/stt/scribe-token'
     | '/api/tts/cartesia'
+    | '/api/tts/design-previews'
     | '/api/tts/elevenlabs'
+    | '/api/tts/save-designed-voice'
     | '/api/tts/voices'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -186,7 +206,9 @@ export interface FileRouteTypes {
     | '/api/stt/elevenlabs'
     | '/api/stt/scribe-token'
     | '/api/tts/cartesia'
+    | '/api/tts/design-previews'
     | '/api/tts/elevenlabs'
+    | '/api/tts/save-designed-voice'
     | '/api/tts/voices'
   id:
     | '__root__'
@@ -203,7 +225,9 @@ export interface FileRouteTypes {
     | '/api/stt/elevenlabs'
     | '/api/stt/scribe-token'
     | '/api/tts/cartesia'
+    | '/api/tts/design-previews'
     | '/api/tts/elevenlabs'
+    | '/api/tts/save-designed-voice'
     | '/api/tts/voices'
   fileRoutesById: FileRoutesById
 }
@@ -221,7 +245,9 @@ export interface RootRouteChildren {
   ApiSttElevenlabsRoute: typeof ApiSttElevenlabsRoute
   ApiSttScribeTokenRoute: typeof ApiSttScribeTokenRoute
   ApiTtsCartesiaRoute: typeof ApiTtsCartesiaRoute
+  ApiTtsDesignPreviewsRoute: typeof ApiTtsDesignPreviewsRoute
   ApiTtsElevenlabsRoute: typeof ApiTtsElevenlabsRoute
+  ApiTtsSaveDesignedVoiceRoute: typeof ApiTtsSaveDesignedVoiceRoute
   ApiTtsVoicesRoute: typeof ApiTtsVoicesRoute
 }
 
@@ -283,11 +309,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTtsVoicesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/tts/save-designed-voice': {
+      id: '/api/tts/save-designed-voice'
+      path: '/api/tts/save-designed-voice'
+      fullPath: '/api/tts/save-designed-voice'
+      preLoaderRoute: typeof ApiTtsSaveDesignedVoiceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/tts/elevenlabs': {
       id: '/api/tts/elevenlabs'
       path: '/api/tts/elevenlabs'
       fullPath: '/api/tts/elevenlabs'
       preLoaderRoute: typeof ApiTtsElevenlabsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/tts/design-previews': {
+      id: '/api/tts/design-previews'
+      path: '/api/tts/design-previews'
+      fullPath: '/api/tts/design-previews'
+      preLoaderRoute: typeof ApiTtsDesignPreviewsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/tts/cartesia': {
@@ -349,7 +389,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiSttElevenlabsRoute: ApiSttElevenlabsRoute,
   ApiSttScribeTokenRoute: ApiSttScribeTokenRoute,
   ApiTtsCartesiaRoute: ApiTtsCartesiaRoute,
+  ApiTtsDesignPreviewsRoute: ApiTtsDesignPreviewsRoute,
   ApiTtsElevenlabsRoute: ApiTtsElevenlabsRoute,
+  ApiTtsSaveDesignedVoiceRoute: ApiTtsSaveDesignedVoiceRoute,
   ApiTtsVoicesRoute: ApiTtsVoicesRoute,
 }
 export const routeTree = rootRouteImport

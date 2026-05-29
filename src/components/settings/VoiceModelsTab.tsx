@@ -296,6 +296,7 @@ function VoiceSection() {
             <p className="text-xs text-muted-foreground">No custom voices saved.</p>
           )}
         </div>
+        <VoiceDesignerPanel />
       </CardContent>
     </Card>
   );
@@ -464,6 +465,226 @@ function Row({
         {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
       </div>
       <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+
+type DesignPreview = { generatedVoiceId: string; audioBase64: string; mime: string };
+
+const DEFAULT_DESIGN_DESCRIPTION =
+  "A calm, warm middle-aged New Zealand man. Measured pace, gentle dry humour, clearly articulated.";
+const DESIGN_DESCRIPTION_MIN = 20;
+const DESIGN_DESCRIPTION_MAX = 1000;
+
+function VoiceDesignerPanel() {
+  const settings = useSettings();
+  const [open, setOpen] = useState(false);
+  const [description, setDescription] = useState(DEFAULT_DESIGN_DESCRIPTION);
+  const [voiceName, setVoiceName] = useState("James");
+  const [previews, setPreviews] = useState<DesignPreview[]>([]);
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const reset = () => {
+    setPreviews([]);
+    setChosen(null);
+  };
+
+  const generate = async () => {
+    const desc = description.trim();
+    if (desc.length < DESIGN_DESCRIPTION_MIN) {
+      toast.error(`Description must be at least ${DESIGN_DESCRIPTION_MIN} characters`);
+      return;
+    }
+    setGenerating(true);
+    reset();
+    try {
+      const res = await fetch("/api/tts/design-previews", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ description: desc }),
+      });
+      if (!res.ok) {
+        // 402 / 403 = the user's ElevenLabs account doesn't have voice
+        // design enabled. Tell them clearly so they don't think we broke
+        // something — falls back to the existing voice picker above.
+        const detail = await res.text();
+        if (res.status === 402 || res.status === 403) {
+          toast.error(
+            "Voice design isn't enabled on this ElevenLabs account. Pick a voice from the catalog above instead.",
+          );
+        } else {
+          toast.error(`Voice design failed (${res.status}): ${detail.slice(0, 200)}`);
+        }
+        return;
+      }
+      const json = (await res.json()) as { previews?: DesignPreview[] };
+      const list = json.previews ?? [];
+      setPreviews(list);
+      if (list[0]) setChosen(list[0].generatedVoiceId);
+      if (list.length === 0) toast.message("No previews returned");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const play = (p: DesignPreview) => {
+    try {
+      const audio = new Audio(`data:${p.mime};base64,${p.audioBase64}`);
+      void audio.play();
+    } catch {
+      toast.error("Playback failed");
+    }
+  };
+
+  const save = async () => {
+    if (!chosen) return;
+    const name = voiceName.trim();
+    if (!name) {
+      toast.error("Give the voice a name");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/tts/save-designed-voice", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          voiceName: name,
+          description: description.trim(),
+          generatedVoiceId: chosen,
+        }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        toast.error(`Save failed (${res.status}): ${detail.slice(0, 200)}`);
+        return;
+      }
+      const json = (await res.json()) as { voiceId: string; name: string };
+
+      // Persist the new voice into customVoices + select it. Same shape as
+      // the addCustom path above so the rest of the UI (dropdown, preview
+      // button) picks it up without further wiring.
+      const existing = settings.customVoices ?? [];
+      const next = existing.some((v) => v.voiceId === json.voiceId)
+        ? existing
+        : [...existing, { voiceId: json.voiceId, name: json.name }];
+      const current = await db().settings.get("singleton");
+      await db().settings.put({
+        ...(current ?? {
+          id: "singleton",
+          llmProvider: "anthropic",
+          sttProvider: "elevenlabs-scribe",
+          ttsProvider: "elevenlabs-flash",
+          speakerIdWebGPU: true,
+          speakerIdAcceptThreshold: 0.7,
+          speakerIdAskThreshold: 0.45,
+          gpsEnabled: false,
+          displayPreset: "11",
+        }),
+        customVoices: next,
+        jamesVoiceId: json.voiceId,
+      });
+      toast.success(`Saved "${json.name}" — now selected`);
+      reset();
+      setOpen(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-border bg-muted/20 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Design a custom voice</h3>
+          <p className="text-xs text-muted-foreground">
+            Describe the voice — age, accent, tone, pace, personality. ElevenLabs generates a few
+            preview voices to pick from. Requires Voice Design on your ElevenLabs plan.
+          </p>
+        </div>
+        <Button variant={open ? "ghost" : "outline"} size="sm" onClick={() => setOpen((o) => !o)}>
+          {open ? "Close" : "Open"}
+        </Button>
+      </div>
+      {open && (
+        <div className="mt-4 space-y-3">
+          <div className="space-y-1">
+            <label className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Voice description
+            </label>
+            <textarea
+              rows={4}
+              value={description}
+              onChange={(e) => setDescription(e.target.value.slice(0, DESIGN_DESCRIPTION_MAX))}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {description.trim().length} / {DESIGN_DESCRIPTION_MAX} characters
+            </p>
+          </div>
+          <Button onClick={() => void generate()} disabled={generating}>
+            {generating ? "Generating previews…" : "Generate previews"}
+          </Button>
+          {previews.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-sm font-medium text-foreground">Pick your favourite</p>
+              <ul className="space-y-2">
+                {previews.map((p, i) => {
+                  const isChosen = chosen === p.generatedVoiceId;
+                  return (
+                    <li
+                      key={p.generatedVoiceId}
+                      className={`flex items-center justify-between gap-3 rounded-lg border-2 p-3 transition cursor-pointer ${
+                        isChosen ? "border-primary bg-primary/5" : "border-border hover:bg-muted/40"
+                      }`}
+                      onClick={() => setChosen(p.generatedVoiceId)}
+                    >
+                      <div className="text-sm">Preview {i + 1}</div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            play(p);
+                          }}
+                        >
+                          <Play className="h-4 w-4" />
+                          Play
+                        </Button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="grow space-y-1">
+                  <label className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    Save as
+                  </label>
+                  <input
+                    value={voiceName}
+                    onChange={(e) => setVoiceName(e.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    placeholder="Voice name"
+                  />
+                </div>
+                <Button onClick={() => void save()} disabled={!chosen || saving}>
+                  {saving ? "Saving…" : "Save selected voice"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
