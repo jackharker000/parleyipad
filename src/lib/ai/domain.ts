@@ -289,6 +289,51 @@ export type DetectIntroductionsResult = {
   confirmed: ConfirmedIntroduction[];
 };
 
+export type IdentifySpeakerContext = {
+  /** Window of recent turns the speaker just spoke into. */
+  transcript: Array<{ speaker: string; text: string }>;
+  /** Candidate names the matcher couldn't decisively pick between. */
+  candidates: string[];
+  /** Optional contextual hints — place name, event name, expected attendees. */
+  place?: string;
+  event?: string;
+  jamesProfile?: JamesProfile;
+};
+
+export type IdentifySpeakerResult = {
+  name: string | "unknown";
+  confidence: number;
+  reasoning?: string;
+};
+
+export type RediarizeTieBreakerCandidate = {
+  /** Candidate transcript segments + their top-2 posterior gap. */
+  segmentId: string;
+  text: string;
+  /** Top-2 candidate names + posteriors from the cosine pass. */
+  top1: { name: string; posterior: number };
+  top2: { name: string; posterior: number };
+};
+
+export type RediarizeTieBreakerContext = {
+  candidates: RediarizeTieBreakerCandidate[];
+  /** Names of all people in the conversation, for grounding. */
+  rosterNames: string[];
+  /** Full transcript context (single string, ~6k chars cap). */
+  transcript: string;
+};
+
+export type RediarizeTieBreakerDecision = {
+  segmentId: string;
+  /** Resolved name from `rosterNames`, or "unknown" if neither candidate fits. */
+  name: string | "unknown";
+  confidence: number;
+};
+
+export type RediarizeTieBreakerResult = {
+  decisions: RediarizeTieBreakerDecision[];
+};
+
 export class DomainAI {
   constructor(private llm: LLMProvider) {}
 
@@ -562,6 +607,48 @@ export class DomainAI {
       ],
     });
     return parseDetectIntroductions(response.text);
+  }
+
+  /**
+   * Live tie-breaker for the matcher. Used when the voice + context prior
+   * leave two candidates within an ambiguity gap (e.g. siblings, parent +
+   * adult child). The model sees the recent transcript window and picks
+   * the most likely speaker from a closed-set, or "unknown" if neither
+   * fits. Fast tier — this sits on the live path.
+   */
+  async identifySpeakerFromContext(ctx: IdentifySpeakerContext): Promise<IdentifySpeakerResult> {
+    const response = await this.llm.complete({
+      tier: "fast",
+      maxTokens: 200,
+      temperature: 0.1,
+      cacheSystem: false,
+      messages: [
+        { role: "system", content: identifySpeakerSystemPrompt(ctx) },
+        { role: "user", content: identifySpeakerUserPrompt(ctx) },
+      ],
+    });
+    return parseIdentifySpeaker(response.text, ctx.candidates);
+  }
+
+  /**
+   * Post-conversation tie-breaker for rediarize. Resolves segments whose
+   * top-2 candidate posteriors were within the ambiguity gap. Batch-sized
+   * so we do at most one LLM call per conversation, not one per ambiguous
+   * segment. Smart tier — quality dominates here, latency doesn't matter.
+   */
+  async aiRediarizeTieBreaker(ctx: RediarizeTieBreakerContext): Promise<RediarizeTieBreakerResult> {
+    if (ctx.candidates.length === 0) return { decisions: [] };
+    const response = await this.llm.complete({
+      tier: "smart",
+      maxTokens: 800,
+      temperature: 0.2,
+      cacheSystem: false,
+      messages: [
+        { role: "system", content: rediarizeTieBreakerSystemPrompt() },
+        { role: "user", content: rediarizeTieBreakerUserPrompt(ctx) },
+      ],
+    });
+    return parseRediarizeTieBreaker(response.text);
   }
 }
 
@@ -1520,6 +1607,122 @@ function parseDetectIntroductions(raw: string): DetectIntroductionsResult {
     out.push({ name: o.name.trim(), confidence });
   }
   return { confirmed: out };
+}
+
+function identifySpeakerSystemPrompt(ctx: IdentifySpeakerContext): string {
+  const jamesName = ctx.jamesProfile?.displayName || "James";
+  const candList = ctx.candidates.map((c) => `- ${c}`).join("\n");
+  return `You are the speaker-identification tie-breaker for ${jamesName}'s AAC iPad. The voice-similarity matcher couldn't decide between two candidates; you read the recent transcript window and pick the single best match.
+
+Choose strictly from this candidate list (or "unknown" if no candidate clearly fits):
+${candList || "(no candidates)"}
+
+Output strictly as JSON, no commentary:
+
+{ "name": "<one of the candidates, or 'unknown'>", "confidence": <0..1>, "reasoning": "<one short sentence>" }
+
+JSON only.`;
+}
+
+function identifySpeakerUserPrompt(ctx: IdentifySpeakerContext): string {
+  const lines: string[] = [];
+  if (ctx.place) lines.push(`Place: ${ctx.place}`);
+  if (ctx.event) lines.push(`Event: ${ctx.event}`);
+  lines.push("");
+  lines.push("Recent transcript:");
+  lines.push(formatTranscript(ctx.transcript));
+  lines.push("");
+  lines.push("Who is the most recent 'Other' speaker? JSON only.");
+  return lines.join("\n");
+}
+
+function parseIdentifySpeaker(raw: string, candidates: string[]): IdentifySpeakerResult {
+  const json = extractJsonObject(raw);
+  if (!json) return { name: "unknown", confidence: 0 };
+  let parsed: { name?: unknown; confidence?: unknown; reasoning?: unknown };
+  try {
+    parsed = JSON.parse(json) as typeof parsed;
+  } catch {
+    return { name: "unknown", confidence: 0 };
+  }
+  const name =
+    typeof parsed.name === "string" && parsed.name.trim().length > 0
+      ? parsed.name.trim()
+      : "unknown";
+  const lowered = name.toLowerCase();
+  const matched =
+    lowered === "unknown"
+      ? "unknown"
+      : (candidates.find((c) => c.toLowerCase() === lowered) ?? "unknown");
+  const confidence =
+    typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence)
+      ? Math.max(0, Math.min(1, parsed.confidence))
+      : 0;
+  const reasoning =
+    typeof parsed.reasoning === "string" && parsed.reasoning.trim().length > 0
+      ? parsed.reasoning.trim()
+      : undefined;
+  return { name: matched, confidence, reasoning };
+}
+
+function rediarizeTieBreakerSystemPrompt(): string {
+  return `You are a post-conversation speaker-attribution tie-breaker. Each input candidate is a transcript segment whose top-two voice matches were too close to call from voice alone. Read the full transcript, judge which speaker each segment best fits, and decide.
+
+Output strictly as JSON, no commentary:
+
+{
+  "decisions": [
+    { "segmentId": "<id>", "name": "<one of the roster names, or 'unknown'>", "confidence": <0..1> }
+  ]
+}
+
+Rules:
+- Use ONLY names from the roster list provided.
+- Use "unknown" if neither candidate fits and you can't justify either.
+- One decision per input candidate. JSON only.`;
+}
+
+function rediarizeTieBreakerUserPrompt(ctx: RediarizeTieBreakerContext): string {
+  const lines: string[] = [];
+  lines.push(`Roster: ${ctx.rosterNames.join(", ") || "(empty)"}`);
+  lines.push("");
+  lines.push("Full transcript:");
+  lines.push(ctx.transcript.slice(-6000));
+  lines.push("");
+  lines.push("Ambiguous segments:");
+  for (const c of ctx.candidates) {
+    lines.push(
+      `- id="${c.segmentId}" text="${c.text.slice(0, 200).replace(/"/g, "'")}" top1=${c.top1.name}(${c.top1.posterior.toFixed(2)}) top2=${c.top2.name}(${c.top2.posterior.toFixed(2)})`,
+    );
+  }
+  lines.push("");
+  lines.push("Return decisions for ALL candidate ids, in any order. JSON only.");
+  return lines.join("\n");
+}
+
+function parseRediarizeTieBreaker(raw: string): RediarizeTieBreakerResult {
+  const json = extractJsonObject(raw);
+  if (!json) return { decisions: [] };
+  let parsed: { decisions?: unknown };
+  try {
+    parsed = JSON.parse(json) as { decisions?: unknown };
+  } catch {
+    return { decisions: [] };
+  }
+  if (!Array.isArray(parsed.decisions)) return { decisions: [] };
+  const out: RediarizeTieBreakerDecision[] = [];
+  for (const item of parsed.decisions) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as { segmentId?: unknown; name?: unknown; confidence?: unknown };
+    if (typeof o.segmentId !== "string" || o.segmentId.length === 0) continue;
+    if (typeof o.name !== "string" || o.name.length === 0) continue;
+    const confidence =
+      typeof o.confidence === "number" && Number.isFinite(o.confidence)
+        ? Math.max(0, Math.min(1, o.confidence))
+        : 0;
+    out.push({ segmentId: o.segmentId, name: o.name.trim(), confidence });
+  }
+  return { decisions: out };
 }
 
 const INTEREST_KINDS = new Set<InterestSuggestion["kind"]>([

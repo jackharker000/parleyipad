@@ -1,23 +1,30 @@
 import { nanoid } from "nanoid";
 
-import { db, type TranscriptSegment, type Voiceprint, type VoiceprintContribution } from "@/lib/db";
+import {
+  db,
+  type Person,
+  type TranscriptSegment,
+  type Voiceprint,
+  type VoiceprintContribution,
+} from "@/lib/db";
 import { cosine, decodeEmbedding, encodeEmbedding, l2Normalize } from "@/lib/audio/utils";
+import { makeAI } from "@/lib/ai";
+import { getSettingsSnapshot } from "@/lib/settings";
 
 /**
  * Tier-2 post-conversation re-diarize. Uses the saved per-segment ECAPA
- * embeddings to refine cluster → person mapping with hindsight. Pure
- * cosine matching against stored voiceprint centroids, then a short
- * k-means tightening pass seeded from those same centroids.
- *
- * No LLM call. The optional tie-breaker for genuinely ambiguous segments
- * (top-2 cosine gap < 0.02) is intentionally left for a follow-up PR via
- * `ai.aiRediarizeTieBreaker`.
+ * embeddings to refine cluster → person mapping with hindsight. Cosine
+ * matching against stored voiceprint centroids, then a short k-means
+ * tightening pass, then an LLM tie-breaker for the segments whose top-2
+ * posteriors stayed within an ambiguity gap.
  */
 
 const MIN_SEGMENTS = 6;
 const MIN_OTHER_PARTICIPANTS = 2;
 const ACCEPT_COSINE = 0.55;
 const ASSIGN_GAP = 0.05;
+const TIE_BREAKER_GAP = 0.04;
+const TIE_BREAKER_MAX_CANDIDATES = 12;
 const KMEANS_MAX_ITERATIONS = 8;
 
 export type RediarizeResult = {
@@ -58,18 +65,35 @@ export async function rediarizeConversation(conversationId: string): Promise<Red
     if (centroids.length < MIN_OTHER_PARTICIPANTS) return { updates: 0 };
 
     // 1. Cosine-against-centroid pass with accept threshold + gap rule.
+    // Also remember the top-2 posteriors per segment so step 3 knows which
+    // segments to escalate to the tie-breaker.
     const candidates = collectCandidates(segments, embeddingBySegmentId);
     if (candidates.length === 0) return { updates: 0 };
     const initialAssign = new Map<string, string | "unknown">();
+    const topPairs = new Map<string, TopPair>();
     for (const c of candidates) {
-      initialAssign.set(c.segmentId, assignByCosine(c.embedding, centroids));
+      const pair = topTwoByCosine(c.embedding, centroids);
+      topPairs.set(c.segmentId, pair);
+      initialAssign.set(c.segmentId, finaliseFromPair(pair));
     }
 
     // 2. K-means tightening seeded from the same centroids + an unknown
     // bucket. Stops on convergence or after KMEANS_MAX_ITERATIONS rounds.
     const finalAssign = kmeansTighten(candidates, centroids, initialAssign);
 
-    // 3. Persist any segment whose assignment changed, plus voiceprint
+    // 3. LLM tie-breaker for segments whose top-2 stayed within the
+    // ambiguity gap (siblings, parent + adult child, etc). Cheap because
+    // it's one call per conversation and only over the truly ambiguous
+    // segments — bounded by TIE_BREAKER_MAX_CANDIDATES.
+    await applyTieBreaker({
+      conversationId,
+      segments,
+      finalAssign,
+      topPairs,
+      personIds: otherParticipants,
+    });
+
+    // 4. Persist any segment whose assignment changed, plus voiceprint
     // contributions so the rebuild job picks up the corrections.
     return await applyAssignments(conversationId, segments, finalAssign, embeddingBySegmentId);
   } catch (err) {
@@ -108,24 +132,38 @@ function collectCandidates(
   return out;
 }
 
-function assignByCosine(embedding: Float32Array, centroids: Centroid[]): string | "unknown" {
-  let bestId = "unknown";
+type TopPair = {
+  bestId: string | "unknown";
+  bestSim: number;
+  secondId: string | "unknown";
+  secondSim: number;
+};
+
+function topTwoByCosine(embedding: Float32Array, centroids: Centroid[]): TopPair {
+  let bestId: string | "unknown" = "unknown";
   let bestSim = -Infinity;
+  let secondId: string | "unknown" = "unknown";
   let secondSim = -Infinity;
   for (const c of centroids) {
     if (c.vector.length !== embedding.length) continue;
     const sim = cosine(c.vector, embedding);
     if (sim > bestSim) {
+      secondId = bestId;
       secondSim = bestSim;
-      bestSim = sim;
       bestId = c.personId;
+      bestSim = sim;
     } else if (sim > secondSim) {
+      secondId = c.personId;
       secondSim = sim;
     }
   }
-  if (bestSim < ACCEPT_COSINE) return "unknown";
-  if (bestSim - secondSim < ASSIGN_GAP) return "unknown";
-  return bestId;
+  return { bestId, bestSim, secondId, secondSim };
+}
+
+function finaliseFromPair(pair: TopPair): string | "unknown" {
+  if (pair.bestSim < ACCEPT_COSINE) return "unknown";
+  if (pair.bestSim - pair.secondSim < ASSIGN_GAP) return "unknown";
+  return pair.bestId;
 }
 
 /**
@@ -207,6 +245,86 @@ function sameAssignments<K, V>(a: Map<K, V>, b: Map<K, V>): boolean {
     if (b.get(k) !== v) return false;
   }
   return true;
+}
+
+async function applyTieBreaker(args: {
+  conversationId: string;
+  segments: TranscriptSegment[];
+  finalAssign: Map<string, string | "unknown">;
+  topPairs: Map<string, TopPair>;
+  personIds: string[];
+}): Promise<void> {
+  const ambiguous: Array<{ segmentId: string; pair: TopPair; seg: TranscriptSegment }> = [];
+  const segById = new Map(args.segments.map((s) => [s.id, s]));
+  for (const [segmentId, pair] of args.topPairs.entries()) {
+    if (pair.bestSim < ACCEPT_COSINE) continue;
+    const gap = pair.bestSim - pair.secondSim;
+    if (gap >= TIE_BREAKER_GAP) continue;
+    const seg = segById.get(segmentId);
+    if (!seg) continue;
+    ambiguous.push({ segmentId, pair, seg });
+  }
+  if (ambiguous.length === 0) return;
+  ambiguous.sort((a, b) => a.pair.bestSim - a.pair.secondSim - (b.pair.bestSim - b.pair.secondSim));
+  const truncated = ambiguous.slice(0, TIE_BREAKER_MAX_CANDIDATES);
+
+  const people = await db().people.bulkGet(args.personIds);
+  const personById = new Map<string, Person>();
+  for (const p of people) {
+    if (p) personById.set(p.id, p);
+  }
+  if (personById.size < 2) return;
+  const rosterNames = Array.from(personById.values()).map((p) => p.name);
+  const nameToId = new Map<string, string>();
+  for (const p of personById.values()) nameToId.set(p.name.toLowerCase(), p.id);
+
+  const orderedTranscript = args.segments
+    .slice()
+    .sort((a, b) => a.startedAt - b.startedAt)
+    .map((s) => {
+      const speaker =
+        s.speakerKind === "self"
+          ? "James"
+          : (s.personId && personById.get(s.personId)?.name) || s.speakerLabel || "Unknown";
+      return `${speaker}: ${s.text}`;
+    })
+    .join("\n");
+
+  const settings = await getSettingsSnapshot();
+  const ai = makeAI(settings.llmProvider);
+  let result;
+  try {
+    result = await ai.aiRediarizeTieBreaker({
+      candidates: truncated.map(({ segmentId, pair, seg }) => ({
+        segmentId,
+        text: seg.text,
+        top1: {
+          name: personById.get(pair.bestId === "unknown" ? "" : pair.bestId)?.name ?? "Unknown",
+          posterior: pair.bestSim,
+        },
+        top2: {
+          name: personById.get(pair.secondId === "unknown" ? "" : pair.secondId)?.name ?? "Unknown",
+          posterior: pair.secondSim,
+        },
+      })),
+      rosterNames,
+      transcript: orderedTranscript,
+    });
+  } catch (err) {
+    console.warn("[rediarize] tie-breaker failed; keeping cosine assignments", err);
+    return;
+  }
+
+  for (const decision of result.decisions) {
+    if (decision.confidence < 0.6) continue;
+    if (decision.name === "unknown") {
+      args.finalAssign.set(decision.segmentId, "unknown");
+      continue;
+    }
+    const personId = nameToId.get(decision.name.toLowerCase());
+    if (!personId) continue;
+    args.finalAssign.set(decision.segmentId, personId);
+  }
 }
 
 async function applyAssignments(

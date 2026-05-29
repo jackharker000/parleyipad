@@ -531,27 +531,34 @@ export class LiveConversation {
       // route stays mounted. Skip if the conversation was empty — nothing
       // meaningful to summarise.
       if (hadSegments) {
-        // Order matters here — the drainer runs jobs in insertion order. We
-        // want rediarize + voiceprintRebuild to run before extractMemories
-        // and enrichProfiles so those latter calls see the corrected
-        // personId assignments. summarise sits first so the Recent view
-        // populates quickly for the user.
+        // Drainer runs jobs in insertion order. We want rediarize +
+        // rebuildVoiceprints to land FIRST so the downstream enrich /
+        // detectIntroductions / extractMemories calls all read the
+        // hindsight-corrected personIds. summariseConversation can sit
+        // before rediarize because the summary's value to the user
+        // (showing up quickly in Recent) outweighs label correctness for
+        // the summary text — the personId in the transcript itself is what
+        // rediarize fixes, not the prose summary. updateLexicon runs after
+        // rediarize so per-person term extraction sees the corrected
+        // attribution.
         await enqueueJob({ type: "summariseConversation", conversationId });
-        // The Tier-2 chain only makes sense when ≥ 2 people contributed —
-        // single-person calls have nothing to rediarize or enrich beyond
-        // the matcher already did live. Self-only "conversations" (typing-
-        // only sessions) skip the whole chain.
+        // The Tier-2 chain only makes sense when ≥ 1 other person
+        // contributed — single-person calls have nothing to rediarize or
+        // enrich. Self-only "conversations" (typing-only sessions) skip the
+        // whole chain.
         const otherPersonCount = new Set(
           this.transcriptCache
             .filter((s) => s.speakerKind === "other" && s.personId)
             .map((s) => s.personId),
         ).size;
+        if (otherPersonCount >= 1 && this.transcriptCache.length >= 6) {
+          await enqueueJob({ type: "rediarize", conversationId });
+          await enqueueJob({ type: "rebuildVoiceprints", conversationId });
+        }
         if (this.people.length > 0) {
           await enqueueJob({ type: "updateLexicon", conversationId });
         }
         if (otherPersonCount >= 1 && this.transcriptCache.length >= 6) {
-          await enqueueJob({ type: "rediarize", conversationId });
-          await enqueueJob({ type: "rebuildVoiceprints", conversationId });
           await enqueueJob({ type: "enrichProfiles", conversationId });
           await enqueueJob({ type: "detectIntroductions", conversationId });
           await enqueueJob({ type: "extractMemories", conversationId });
@@ -587,10 +594,14 @@ export class LiveConversation {
   }): Promise<void> {
     try {
       if (this.conversation) {
+        const trigger = args.triggeringSegmentId
+          ? this.transcriptCache.find((t) => t.id === args.triggeringSegmentId)
+          : undefined;
         const log: SuggestionLog = {
           id: nanoid(),
           conversationId: this.conversation.id,
           triggeringSegmentId: args.triggeringSegmentId,
+          personId: trigger?.personId,
           text: args.text,
           category: args.category ?? "answer",
           why: args.why,
