@@ -975,15 +975,10 @@ export class LiveConversation {
   }
 
   private shouldResetEmbedder(): boolean {
-    if (this.state === "idle" || this.state === "stopping") return false;
-    if (this.inFlight > 0) return false;
-    if (this.segmentCount < LiveConversation.EMBEDDER_RESET_AFTER_N_SEGMENTS) return false;
-    // Wait for an idle gap before disposing — the dispose+warmup cycle
-    // pauses embed for several seconds, and James reports the prior
-    // timer-based reset feels like the page reloads mid-conversation.
-    // Running it only between turns keeps the cycle invisible.
-    const idle = Date.now() - this.lastSegmentEndedAt;
-    return idle >= LiveConversation.EMBEDDER_RESET_IDLE_GAP_MS;
+    // MFCC embedder has no WASM heap to leak — the dispose+warmup cycle
+    // that the WavLM/ONNX path needed is no longer relevant. Always
+    // return false; the embedder lives for the full conversation.
+    return false;
   }
 
   /**

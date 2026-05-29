@@ -26,7 +26,7 @@ import {
   type VoiceprintContribution,
 } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
-import { makeWorkerEmbedder, type SpeakerEmbedder } from "@/lib/audio/embedder";
+import { makeEmbedder, type SpeakerEmbedder } from "@/lib/audio/embedder";
 import { makeAI, MOODS, type Mood, type SuggestionDraft } from "@/lib/ai";
 import type { Candidate } from "@/lib/audio/matcher";
 import {
@@ -112,12 +112,15 @@ function Cockpit() {
     setEmbedderReady(false);
     setEmbedderError(null);
     embedderRef.current?.dispose?.();
-    // Worker-backed embedder: the entire transformers.js call lives in a
-    // separate JSC VM so the periodic dispose+warmup cycle (every 12 turns
-    // per the OOM mitigation) doesn't freeze the cockpit. dispose() on the
-    // client side terminates the worker, which is the only reliable way
-    // to actually release ORT's WASM heap on iPad Safari.
-    const next = makeWorkerEmbedder({ preferWebGPU: settings.speakerIdWebGPU });
+    // MFCC (Meyda) speaker embedder, restored from the legacy build. No
+    // model download, no WASM warmup, no Worker required — runs ~2–5 ms
+    // per segment on the main thread. The WavLM/ONNX path was getting
+    // stuck on the warmup screen on iPad Safari (memory cap or model
+    // download stall); MFCC was what the legacy used end-to-end and it
+    // just works. Less discriminative than WavLM but a working app beats
+    // a broken one. The WavLM path is still selectable via the spike
+    // diagnostics page if a caregiver wants to compare.
+    const next = makeEmbedder("mfcc");
     embedderRef.current = next;
     let cancelled = false;
     (async () => {
@@ -132,7 +135,7 @@ function Cockpit() {
     return () => {
       cancelled = true;
     };
-  }, [settings.speakerIdWebGPU]);
+  }, []);
 
   const people = useLiveQuery(() => db().people.toArray(), [], EMPTY_PEOPLE);
   const voiceprints = useLiveQuery(() => db().voiceprints.toArray(), [], EMPTY_VOICEPRINTS);

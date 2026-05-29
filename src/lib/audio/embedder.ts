@@ -1,5 +1,6 @@
 import { WorkerSpeakerEmbedder } from "./embedder-worker-client";
 import { l2Normalize } from "./utils";
+import Meyda from "meyda";
 
 /**
  * Speaker embedder interface. Implementations take a mono 16kHz Float32
@@ -341,7 +342,87 @@ function hasWebGPU(): boolean {
   );
 }
 
-export type EmbedderKind = "transformers" | "onnx-ecapa" | "mock";
+/**
+ * Mean-MFCC speaker embedder, restored from the legacy Lovable build.
+ *
+ * The WavLM-base-plus-sv embedder is more accurate on paper, but in
+ * practice on James's iPad it gets stuck on the warmup screen — the
+ * ~95 MB ONNX download + single-threaded WASM init either times out or
+ * blows Safari's per-tab memory cap, leaving the cockpit unusable.
+ * MFCC has no model download, runs ~2–5 ms per segment on the main
+ * thread, and was what the legacy used end-to-end. Less discriminative,
+ * but a working app beats a broken one.
+ *
+ * Implementation mirrors `legacy-src/lib/voiceprint.ts:computeMfccMean`:
+ * iterate FRAME-sized slices, drop frames below RMS_GATE (silence /
+ * breath), average the MFCC vectors across the segment, sanitise
+ * NaN/Inf, then L2-normalise so the downstream cosine matcher works
+ * unchanged. Dim is 13 (Meyda default + legacy `MFCC_COEFFS`).
+ */
+const MFCC_FRAME = 512;
+const MFCC_COEFFS = 13;
+const MFCC_RMS_GATE = 0.012;
+
+export class MfccSpeakerEmbedder implements SpeakerEmbedder {
+  readonly id = "mfcc-meyda";
+  readonly dim = MFCC_COEFFS;
+  private configured = false;
+
+  async warmup(): Promise<void> {
+    if (this.configured) return;
+    // Meyda's globals are mutable; configure once. Safe to call repeatedly.
+    (Meyda as unknown as { bufferSize: number }).bufferSize = MFCC_FRAME;
+    (Meyda as unknown as { numberOfMFCCCoefficients: number }).numberOfMFCCCoefficients =
+      MFCC_COEFFS;
+    this.configured = true;
+  }
+
+  async embed(waveform16k: Float32Array): Promise<Float32Array> {
+    await this.warmup();
+    (Meyda as unknown as { sampleRate: number }).sampleRate = 16000;
+
+    const sum = new Float32Array(MFCC_COEFFS);
+    let frames = 0;
+
+    for (let i = 0; i + MFCC_FRAME <= waveform16k.length; i += MFCC_FRAME) {
+      const slice = waveform16k.subarray(i, i + MFCC_FRAME);
+      let sumSq = 0;
+      for (let j = 0; j < slice.length; j++) sumSq += slice[j] * slice[j];
+      const rms = Math.sqrt(sumSq / slice.length);
+      if (rms < MFCC_RMS_GATE) continue;
+      let mfcc: number[] | null = null;
+      try {
+        mfcc = (
+          Meyda as unknown as { extract: (f: string, s: Float32Array) => number[] | null }
+        ).extract("mfcc", slice);
+      } catch {
+        continue;
+      }
+      if (!mfcc || mfcc.length !== MFCC_COEFFS) continue;
+      for (let k = 0; k < MFCC_COEFFS; k++) sum[k] += mfcc[k];
+      frames++;
+    }
+
+    if (frames < 4) {
+      // Too quiet / too short — return a zero vector. The matcher's
+      // single-enrollee fallback and the unknown-likelihood floor still
+      // produce a sensible Unknown verdict on this case.
+      return new Float32Array(MFCC_COEFFS);
+    }
+
+    for (let k = 0; k < MFCC_COEFFS; k++) {
+      const v = sum[k] / frames;
+      sum[k] = Number.isFinite(v) ? v : 0;
+    }
+    return l2Normalize(sum);
+  }
+
+  async dispose(): Promise<void> {
+    // Nothing to release — Meyda has no per-instance state we own.
+  }
+}
+
+export type EmbedderKind = "transformers" | "onnx-ecapa" | "mfcc" | "mock";
 
 export function makeEmbedder(kind: EmbedderKind, config?: EmbedderConfig): SpeakerEmbedder {
   switch (kind) {
@@ -349,6 +430,8 @@ export function makeEmbedder(kind: EmbedderKind, config?: EmbedderConfig): Speak
       return new TransformersSpeakerEmbedder(config);
     case "onnx-ecapa":
       return new OnnxEcapaEmbedder(config);
+    case "mfcc":
+      return new MfccSpeakerEmbedder();
     case "mock":
       return new MockSpectralEmbedder();
   }
