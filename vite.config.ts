@@ -7,6 +7,16 @@ import { nitro } from "nitro/vite";
 
 export default defineConfig({
   plugins: [tsConfigPaths(), tanstackStart(), nitro(), viteReact(), tailwindcss()],
+  // Dexie hard-throws "Two different versions of Dexie loaded in the same
+  // app" if two physical copies land in one bundle — which crashed SSR on
+  // every route after the legacy-deps install left 4.4.2 + 4.4.3 both
+  // resolvable (direct `dexie` vs the copy `dexie-react-hooks` pulled in).
+  // dedupe collapses every `dexie` import to one module instance at bundle
+  // time regardless of node_modules layout. react/react-dom deduped too as
+  // standard singleton hygiene.
+  resolve: {
+    dedupe: ["dexie", "dexie-react-hooks", "react", "react-dom"],
+  },
   worker: {
     format: "es",
   },

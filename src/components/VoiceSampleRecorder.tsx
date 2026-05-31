@@ -1,226 +1,272 @@
-/**
- * VoiceSampleRecorder — inline mic recorder for a single person.
- *
- * Drives the rebuild's `enrollSample` API. The caller passes in the page's
- * `SpeakerEmbedder` so we don't pay the WavLM warmup once per person on the
- * People page; one warmup covers the whole roster.
- *
- * Mic capture path: `startCapture` from `src/lib/audio/capture.ts` (AudioWorklet
- * → 16 kHz mono Float32). That helper already handles the iPad-Safari
- * 44.1/48 kHz quirk via linear resample, and is the same path the spike's
- * enrollment card uses. We deliberately don't roll a MediaRecorder + decode
- * detour — the AudioWorklet path is already proven in the spike.
- */
 import { useEffect, useRef, useState } from "react";
-import { Mic, MicOff, Trash2 } from "lucide-react";
+import { Mic, Square, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { useLiveQuery } from "dexie-react-hooks";
-
-import { Button } from "@/components/ui/button";
+import {
+  VoiceCapture,
+  computeMfccMean,
+  recordVoiceprint,
+  deleteVoiceprint,
+  addContributionWithCap,
+} from "@/lib/voiceprint";
 import { db, type Voiceprint, type VoiceprintContribution } from "@/lib/db";
-import { startCapture, type Capture } from "@/lib/audio/capture";
-import { enrollSample, deleteContribution } from "@/lib/audio/enrollment";
-import type { SpeakerEmbedder } from "@/lib/audio/embedder";
+import { Button } from "@/components/ui/button";
 
-const MIN_SECS = 2;
+const MIN_SECS = 3;
 const MAX_SECS = 8;
 
-const EMPTY_CONTRIBUTIONS: VoiceprintContribution[] = [];
-
-export function VoiceSampleRecorder({
-  personId,
-  embedder,
-  embedderReady,
-}: {
-  personId: string;
-  embedder: SpeakerEmbedder | null;
-  embedderReady: boolean;
-}) {
-  const voiceprint = useLiveQuery<Voiceprint | undefined>(
-    () => db().voiceprints.get(personId),
-    [personId],
-  );
-  const contributions = useLiveQuery(
-    () =>
-      db().voiceprintContributions.where("personId").equals(personId).reverse().sortBy("createdAt"),
-    [personId],
-    EMPTY_CONTRIBUTIONS,
-  );
-
-  const [capture, setCapture] = useState<Capture | null>(null);
+export function VoiceSampleRecorder({ personId }: { personId: string }) {
+  const [print, setPrint] = useState<Voiceprint | null>(null);
+  const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [busy, setBusy] = useState(false);
-  const captureRef = useRef<Capture | null>(null);
+  const captureRef = useRef<VoiceCapture | null>(null);
+  const tickRef = useRef<number | null>(null);
+  const startedAtRef = useRef<number>(0);
+  const replaceModeRef = useRef(false);
 
-  // Keep ref in sync so the unmount cleanup can cancel without depending on
-  // the React render snapshot.
-  useEffect(() => {
-    captureRef.current = capture;
-  }, [capture]);
+  const refresh = async () => {
+    const vp = await db.voiceprints.get(personId);
+    setPrint(vp ?? null);
+  };
 
-  // Tick the elapsed counter; auto-stop at MAX_SECS so we don't trap the user
-  // in a runaway recording when the embedder is slow.
   useEffect(() => {
-    if (!capture) return;
-    const id = window.setInterval(() => {
-      const e = capture.getElapsedSec();
-      setElapsed(e);
-      if (e >= MAX_SECS) void stopAndSave();
-    }, 100);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [capture]);
-
-  // Cancel any in-flight capture on unmount so the mic actually releases.
-  useEffect(() => {
+    void refresh();
     return () => {
-      captureRef.current?.cancel().catch(() => {});
+      try {
+        captureRef.current?.stop();
+      } catch {}
+      if (tickRef.current) clearInterval(tickRef.current);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personId]);
 
-  const startRecording = async () => {
-    if (capture || busy) return;
-    if (!embedder || !embedderReady) {
-      toast.error("Voice model still warming up — try again in a moment");
-      return;
-    }
+  const start = async (replace: boolean) => {
+    if (recording || busy) return;
+    replaceModeRef.current = replace;
     try {
-      const cap = await startCapture();
-      setCapture(cap);
+      const cap = new VoiceCapture();
+      await cap.start();
+      captureRef.current = cap;
+      startedAtRef.current = Date.now();
       setElapsed(0);
-    } catch (err) {
-      toast.error(`Mic error: ${formatError(err)}`);
+      setRecording(true);
+      tickRef.current = window.setInterval(() => {
+        const e = (Date.now() - startedAtRef.current) / 1000;
+        setElapsed(e);
+        if (e >= MAX_SECS) void stop();
+      }, 100);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Microphone unavailable");
     }
   };
 
-  const stopAndSave = async () => {
-    const cap = captureRef.current;
-    if (!cap) return;
-    captureRef.current = null;
-    setCapture(null);
-    if (!embedder) {
-      try {
-        await cap.cancel();
-      } catch {
-        /* ignore */
-      }
-      toast.error("Voice model not ready");
-      return;
+  const stop = async () => {
+    if (!recording) return;
+    setRecording(false);
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
     }
+    const cap = captureRef.current;
+    captureRef.current = null;
+    if (!cap) return;
     setBusy(true);
     try {
-      const waveform = await cap.stop();
-      const durationSec = waveform.length / 16000;
-      if (durationSec < MIN_SECS) {
-        toast.error(`Need at least ${MIN_SECS}s — try again`);
+      const duration = (Date.now() - startedAtRef.current) / 1000;
+      if (duration < MIN_SECS) {
+        toast.error(`Need at least ${MIN_SECS} seconds — try again`);
+        cap.stop();
         return;
       }
-      await enrollSample({
-        personId,
-        waveform16k: waveform,
-        durationSec,
-        embedder,
-        source: "enrollment",
-        previewText: `Manual sample (${durationSec.toFixed(1)}s)`,
+      const pcm = cap.recentSlice(duration, 0);
+      cap.stop();
+      const mfcc = computeMfccMean(pcm, cap.sampleRate);
+      if (!mfcc) {
+        toast.error("Could not extract voice features — try again");
+        return;
+      }
+      if (replaceModeRef.current) {
+        // Write the new voiceprint first so we always have a valid record.
+        // Only then delete the old contributions so a failure here doesn't
+        // leave the person with no voiceprint at all.
+        await db.voiceprints.put({
+          id: personId,
+          person_id: personId,
+          centroid: mfcc.slice(),
+          sample_count: 1,
+          updated_at: Date.now(),
+        });
+        await db.voiceprint_contributions
+          .where("person_id")
+          .equals(personId)
+          .delete();
+      } else {
+        await recordVoiceprint(personId, mfcc);
+      }
+      await addContributionWithCap({
+        id: crypto.randomUUID(),
+        person_id: personId,
+        source: "manual",
+        mfcc: mfcc.slice(),
+        ts: Date.now(),
+        preview_text: `Manual sample (${duration.toFixed(1)}s)`,
       });
       toast.success("Voice sample saved");
-    } catch (err) {
-      toast.error(`Failed: ${formatError(err)}`);
+      await refresh();
+    } catch (e: any) {
+      toast.error(e?.message ?? "Failed to save voice sample");
     } finally {
       setBusy(false);
     }
   };
 
-  const cancelRecording = async () => {
-    const cap = captureRef.current;
-    if (!cap) return;
-    captureRef.current = null;
-    setCapture(null);
-    try {
-      await cap.cancel();
-    } catch {
-      /* ignore */
-    }
+  const remove = async () => {
+    if (!confirm("Delete this person's voice sample?")) return;
+    await deleteVoiceprint(personId);
+    await db.voiceprint_contributions
+      .where("person_id")
+      .equals(personId)
+      .delete();
+    await refresh();
+    toast.success("Voiceprint deleted");
   };
 
-  const removeContribution = async (id: string) => {
-    if (!confirm("Remove this contribution from the voice profile?")) return;
-    await deleteContribution(id);
-    toast.success("Removed contribution");
-  };
-
-  const sampleCount = voiceprint?.sampleCount ?? 0;
   const remaining = Math.max(0, MAX_SECS - elapsed);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <p className="text-sm text-muted-foreground">
-        {sampleCount > 0
-          ? `Voice learned · ${sampleCount} sample${sampleCount === 1 ? "" : "s"}`
+        {print
+          ? `Voice learned · ${print.sample_count} sample${
+              print.sample_count === 1 ? "" : "s"
+            }`
           : "No voiceprint yet"}
       </p>
 
-      {capture ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={stopAndSave} variant="destructive" size="sm" disabled={busy}>
-            <MicOff />
-            Stop &amp; save ({remaining.toFixed(1)}s)
+      {recording ? (
+        <div className="flex items-center gap-2">
+          <Button onClick={stop} variant="destructive" size="sm">
+            <Square className="size-4" />
+            Stop ({remaining.toFixed(1)}s)
           </Button>
-          <Button onClick={cancelRecording} variant="ghost" size="sm" disabled={busy}>
-            Cancel
-          </Button>
-          <span className="text-xs text-muted-foreground">Speak normally…</span>
+          <span className="text-xs text-muted-foreground">
+            Speak normally…
+          </span>
         </div>
       ) : (
         <div className="flex flex-wrap gap-2">
           <Button
-            onClick={startRecording}
-            disabled={busy || !embedderReady}
+            onClick={() => start(false)}
+            disabled={busy}
             size="sm"
-            variant="accent"
+            variant="secondary"
           >
-            <Mic />
-            {sampleCount > 0 ? "Add another sample" : "Record voice sample"}
+            <Mic className="size-4" />
+            {print ? "Add another sample" : "Record voice sample"}
           </Button>
+          {print && (
+            <>
+              <Button
+                onClick={() => start(true)}
+                disabled={busy}
+                size="sm"
+                variant="outline"
+              >
+                Replace
+              </Button>
+              <Button
+                onClick={remove}
+                disabled={busy}
+                size="sm"
+                variant="ghost"
+                className="text-destructive"
+              >
+                <Trash2 className="size-4" />
+                Delete
+              </Button>
+            </>
+          )}
         </div>
       )}
-
-      {!capture && (
+      {!recording && (
         <p className="text-xs text-muted-foreground">
-          Tap record and have the person speak normally for {MIN_SECS}–{MAX_SECS}s. The recording
-          stays on this device.
+          Tap record and have the person speak normally for {MIN_SECS}–
+          {MAX_SECS} seconds. The recording stays on this device.
         </p>
       )}
-
-      {!embedderReady && !capture && (
-        <p className="text-xs text-muted-foreground">
-          Voice model is loading — recording will enable once it's warm.
-        </p>
-      )}
-
-      <ContributionsList contributions={contributions} onRemove={removeContribution} />
+      {/* Auto-learned contributions */}
+      <VoiceprintContributions personId={personId} onChanged={refresh} />
     </div>
   );
 }
 
-function ContributionsList({
-  contributions,
-  onRemove,
+function VoiceprintContributions({
+  personId,
+  onChanged,
 }: {
-  contributions: VoiceprintContribution[];
-  onRemove: (id: string) => void | Promise<void>;
+  personId: string;
+  onChanged: () => void | Promise<void>;
 }) {
-  if (contributions.length === 0) return null;
+  const [items, setItems] = useState<VoiceprintContribution[]>([]);
+
+  const refresh = async () => {
+    const list = await db.voiceprint_contributions
+      .where("person_id")
+      .equals(personId)
+      .reverse()
+      .sortBy("ts");
+    setItems(list);
+  };
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personId]);
+
+  // Remove this contribution and recompute the centroid from the remaining ones.
+  const remove = async (id: string) => {
+    if (!confirm("Remove this contribution from the voice profile?")) return;
+    await db.voiceprint_contributions.delete(id);
+    const remaining = await db.voiceprint_contributions
+      .where("person_id")
+      .equals(personId)
+      .toArray();
+    if (remaining.length === 0) {
+      await deleteVoiceprint(personId);
+    } else {
+      // Recompute centroid as the simple mean of remaining MFCCs of the same dim.
+      const dim = remaining[0].mfcc.length;
+      const compatible = remaining.filter((r) => r.mfcc.length === dim);
+      const sum = new Array(dim).fill(0);
+      for (const c of compatible) {
+        for (let i = 0; i < dim; i++) sum[i] += c.mfcc[i];
+      }
+      const centroid = sum.map((v) => v / compatible.length);
+      await db.voiceprints.put({
+        id: personId,
+        person_id: personId,
+        centroid,
+        sample_count: compatible.length,
+        updated_at: Date.now(),
+      });
+    }
+    await refresh();
+    await onChanged();
+    toast.success("Removed contribution");
+  };
+
+  if (items.length === 0) return null;
   return (
-    <div className="mt-2 space-y-1.5 rounded-md border border-border bg-secondary/30 p-2">
+    <div className="mt-3 space-y-1.5 rounded-md border border-border bg-secondary/30 p-2">
       <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        Voice contributions ({contributions.length})
+        Voice contributions ({items.length})
       </p>
       <p className="text-xs text-muted-foreground">
-        Remove any entry that isn't actually them — the voice profile is rebuilt from the rest.
+        Remove any entry that isn't actually them — the voice profile will be
+        rebuilt from the rest.
       </p>
       <ul className="space-y-1">
-        {contributions.slice(0, 20).map((c) => (
+        {items.slice(0, 20).map((c) => (
           <li
             key={c.id}
             className="flex items-start justify-between gap-2 rounded border border-border bg-background px-2 py-1.5 text-xs"
@@ -228,40 +274,34 @@ function ContributionsList({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span
-                  className={
-                    c.source === "enrollment"
-                      ? "rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700"
-                      : "rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
-                  }
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                    c.source === "manual"
+                      ? "bg-emerald-500/20 text-emerald-700"
+                      : "bg-amber-500/20 text-amber-800"
+                  }`}
                 >
-                  {c.source === "enrollment" ? "manual" : "auto"}
+                  {c.source === "manual" ? "manual" : "auto"}
                 </span>
                 <span className="text-muted-foreground">
-                  {new Date(c.createdAt).toLocaleString()}
+                  {new Date(c.ts).toLocaleString()}
                 </span>
-                <span className="text-muted-foreground">· {c.durationSec.toFixed(1)}s</span>
               </div>
-              {c.previewText && (
-                <p className="mt-0.5 truncate italic">&ldquo;{c.previewText}&rdquo;</p>
+              {c.preview_text && (
+                <p className="mt-0.5 truncate italic">"{c.preview_text}"</p>
               )}
             </div>
             <Button
-              onClick={() => onRemove(c.id)}
+              onClick={() => remove(c.id)}
               size="sm"
               variant="ghost"
               className="h-auto px-1.5 py-1 text-destructive"
-              title="Remove this contribution"
+              title="This isn't them — remove this contribution"
             >
-              <Trash2 className="h-3 w-3" />
+              <Trash2 className="size-3" />
             </Button>
           </li>
         ))}
       </ul>
     </div>
   );
-}
-
-function formatError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
 }

@@ -1,120 +1,54 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useLiveQuery } from "dexie-react-hooks";
-import { Search, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { ConversationDetail } from "@/components/recent/ConversationDetail";
-import { RecentList } from "@/components/recent/RecentList";
-import { cn } from "@/lib/cn";
+import { ChevronLeft, Search, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
-  db,
-  type Conversation,
-  type EventRecord,
-  type PendingJob,
-  type Person,
-  type Place,
-} from "@/lib/db";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { db, type Conversation } from "@/lib/db";
 
 export const Route = createFileRoute("/recent")({
   component: RecentPage,
 });
 
-const EMPTY_CONVERSATIONS: Conversation[] = [];
-const EMPTY_PEOPLE: Person[] = [];
-const EMPTY_PLACES: Place[] = [];
-const EMPTY_EVENTS: EventRecord[] = [];
-const EMPTY_PENDING: PendingJob[] = [];
-
-type SortKey = "date_desc" | "date_asc";
+type SortKey = "date_desc" | "date_asc" | "location" | "people";
 
 function RecentPage() {
-  return (
-    <div className="mx-auto w-full max-w-4xl space-y-6 px-4 py-8">
-      <header className="space-y-1">
-        <p className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Recent</p>
-        <h1 className="text-3xl font-semibold tracking-tight">Past conversations</h1>
-        <p className="max-w-prose text-muted-foreground">
-          Every conversation is summarised and indexed so future suggestions can call back to what
-          was said. Tap a row to see the transcript, the suggestion log, and how the AI is learning
-          your reply style.
-        </p>
-      </header>
-
-      <ClientOnly fallback={<LoadingCard />}>
-        <RecentApp />
-      </ClientOnly>
-    </div>
-  );
-}
-
-function LoadingCard() {
-  return (
-    <Card>
-      <CardContent className="py-6 text-sm text-muted-foreground">
-        Loading conversations…
-      </CardContent>
-    </Card>
-  );
-}
-
-function ClientOnly({
-  children,
-  fallback,
-}: {
-  children: React.ReactNode;
-  fallback: React.ReactNode;
-}) {
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  if (!mounted) return <>{fallback}</>;
-  return <>{children}</>;
-}
-
-function RecentApp() {
-  const conversations = useLiveQuery(
-    () => db().conversations.orderBy("startedAt").reverse().toArray(),
+  const recent = useLiveQuery(
+    () => db.conversations.orderBy("started_at").reverse().limit(200).toArray(),
     [],
-    EMPTY_CONVERSATIONS,
   );
-  const people = useLiveQuery(() => db().people.orderBy("name").toArray(), [], EMPTY_PEOPLE);
-  const places = useLiveQuery(() => db().places.toArray(), [], EMPTY_PLACES);
-  const events = useLiveQuery(() => db().events.toArray(), [], EMPTY_EVENTS);
-  const pendingJobs = useLiveQuery(() => db().pendingJobs.toArray(), [], EMPTY_PENDING);
+  const people = useLiveQuery(() => db.people.toArray(), []);
+  const places = useLiveQuery(() => db.places.toArray(), []);
 
-  const peopleById = useMemo(() => new Map(people.map((p) => [p.id, p] as const)), [people]);
-  const placesById = useMemo(() => new Map(places.map((p) => [p.id, p] as const)), [places]);
-  const eventsById = useMemo(() => new Map(events.map((e) => [e.id, e] as const)), [events]);
-  const pendingByConversationId = useMemo(() => {
-    const m = new Map<string, PendingJob[]>();
-    for (const j of pendingJobs) {
-      const arr = m.get(j.conversationId);
-      if (arr) arr.push(j);
-      else m.set(j.conversationId, [j]);
-    }
-    return m;
-  }, [pendingJobs]);
-
-  const [keyword, setKeyword] = useState("");
-  const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
-  const [placeFilter, setPlaceFilter] = useState<string>("__all__");
   const [sort, setSort] = useState<SortKey>("date_desc");
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [keyword, setKeyword] = useState("");
+  const [placeFilter, setPlaceFilter] = useState<string>("__all__");
+  const [personFilter, setPersonFilter] = useState<string>("__all__");
 
-  const togglePersonFilter = (personId: string) => {
-    setSelectedPersonIds((prev) =>
-      prev.includes(personId) ? prev.filter((id) => id !== personId) : [...prev, personId],
-    );
-  };
+  const peopleById = useMemo(
+    () => new Map((people ?? []).map((p) => [p.id, p] as const)),
+    [people],
+  );
+  const placesById = useMemo(
+    () => new Map((places ?? []).map((p) => [p.id, p] as const)),
+    [places],
+  );
 
   const filtered = useMemo(() => {
-    let list = conversations;
+    let list: Conversation[] = recent ?? [];
     if (placeFilter !== "__all__") {
-      list = list.filter((c) => c.placeId === placeFilter);
+      list = list.filter((c) => c.place_id === placeFilter);
     }
-    if (selectedPersonIds.length > 0) {
-      list = list.filter((c) => (c.personIds ?? []).some((id) => selectedPersonIds.includes(id)));
+    if (personFilter !== "__all__") {
+      list = list.filter((c) => c.person_ids?.includes(personFilter));
     }
     const kw = keyword.trim().toLowerCase();
     if (kw) {
@@ -122,8 +56,10 @@ function RecentApp() {
         const hay = [
           c.summary ?? "",
           ...(c.highlights ?? []),
-          placesById.get(c.placeId ?? "")?.name ?? "",
-          ...(c.personIds ?? []).map((id) => peopleById.get(id)?.name ?? "").filter(Boolean),
+          placesById.get(c.place_id ?? "")?.name ?? "",
+          ...(c.person_ids ?? [])
+            .map((id) => peopleById.get(id)?.name ?? "")
+            .filter(Boolean),
         ]
           .join(" \n")
           .toLowerCase();
@@ -131,149 +67,160 @@ function RecentApp() {
       });
     }
     const sorted = [...list];
-    if (sort === "date_asc") {
-      sorted.sort((a, b) => a.startedAt - b.startedAt);
-    } else {
-      sorted.sort((a, b) => b.startedAt - a.startedAt);
+    switch (sort) {
+      case "date_asc":
+        sorted.sort((a, b) => a.started_at - b.started_at);
+        break;
+      case "location":
+        sorted.sort((a, b) =>
+          (placesById.get(a.place_id ?? "")?.name ?? "~").localeCompare(
+            placesById.get(b.place_id ?? "")?.name ?? "~",
+          ),
+        );
+        break;
+      case "people":
+        sorted.sort((a, b) => {
+          const an = (a.person_ids ?? [])
+            .map((id) => peopleById.get(id)?.name ?? "")
+            .sort()[0] ?? "~";
+          const bn = (b.person_ids ?? [])
+            .map((id) => peopleById.get(id)?.name ?? "")
+            .sort()[0] ?? "~";
+          return an.localeCompare(bn);
+        });
+        break;
+      case "date_desc":
+      default:
+        sorted.sort((a, b) => b.started_at - a.started_at);
     }
     return sorted;
-  }, [conversations, placeFilter, selectedPersonIds, keyword, sort, peopleById, placesById]);
+  }, [recent, sort, keyword, placeFilter, personFilter, peopleById, placesById]);
 
   const hasFilters =
     keyword.trim() !== "" ||
-    selectedPersonIds.length > 0 ||
     placeFilter !== "__all__" ||
+    personFilter !== "__all__" ||
     sort !== "date_desc";
 
-  const clearFilters = () => {
-    setKeyword("");
-    setSelectedPersonIds([]);
-    setPlaceFilter("__all__");
-    setSort("date_desc");
-  };
-
-  if (selectedConversationId) {
-    return (
-      <ConversationDetail
-        conversationId={selectedConversationId}
-        peopleById={peopleById}
-        placesById={placesById}
-        eventsById={eventsById}
-        onBack={() => setSelectedConversationId(null)}
-      />
-    );
-  }
-
   return (
-    <div className="space-y-4">
-      <Card className="sticky top-16 z-10 bg-card/95 backdrop-blur">
-        <CardContent className="space-y-3 p-4">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="Search summary, highlights, names…"
-              className="w-full rounded-md border border-input bg-background py-2 pl-9 pr-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          </div>
+    <main className="mx-auto flex h-screen w-full max-w-4xl flex-col gap-3 p-4">
+      <header className="flex items-center gap-3">
+        <Link
+          to="/"
+          className="flex size-10 items-center justify-center rounded-lg border border-border hover:bg-secondary"
+          aria-label="Back"
+        >
+          <ChevronLeft className="size-5" />
+        </Link>
+        <h1 className="text-xl font-semibold">Recent conversations</h1>
+      </header>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                People
-              </span>
-              {people.length === 0 ? (
-                <span className="text-xs italic text-muted-foreground">No people yet</span>
-              ) : (
-                people.map((p) => {
-                  const active = selectedPersonIds.includes(p.id);
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => togglePersonFilter(p.id)}
-                      className={cn(
-                        "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
-                        active
-                          ? "border-accent bg-accent text-accent-foreground"
-                          : "border-input bg-background text-foreground hover:bg-muted",
-                      )}
-                    >
-                      {p.name}
-                    </button>
-                  );
-                })
-              )}
-            </div>
+      {/* Filter / sort bar */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card/40 p-2">
+        <div className="relative min-w-[200px] flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="Search summary, highlights, names…"
+            className="pl-8"
+          />
+        </div>
+        <Select value={personFilter} onValueChange={setPersonFilter}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="Person" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All people</SelectItem>
+            {(people ?? []).map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={placeFilter} onValueChange={setPlaceFilter}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="Location" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All locations</SelectItem>
+            {(places ?? []).map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
+          <SelectTrigger className="w-[160px]">
+            <SelectValue placeholder="Sort" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="date_desc">Newest first</SelectItem>
+            <SelectItem value="date_asc">Oldest first</SelectItem>
+            <SelectItem value="location">By location</SelectItem>
+            <SelectItem value="people">By person</SelectItem>
+          </SelectContent>
+        </Select>
+        {hasFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setKeyword("");
+              setPlaceFilter("__all__");
+              setPersonFilter("__all__");
+              setSort("date_desc");
+            }}
+          >
+            <X className="mr-1 size-4" /> Clear
+          </Button>
+        )}
+      </div>
 
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="recent-place-filter"
-                className="text-xs font-medium uppercase tracking-wider text-muted-foreground"
-              >
-                Place
-              </label>
-              <select
-                id="recent-place-filter"
-                value={placeFilter}
-                onChange={(e) => setPlaceFilter(e.target.value)}
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-              >
-                <option value="__all__">All places</option>
-                {places.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+      <div className="text-xs text-muted-foreground">
+        {filtered.length} {filtered.length === 1 ? "conversation" : "conversations"}
+      </div>
 
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="recent-sort"
-                className="text-xs font-medium uppercase tracking-wider text-muted-foreground"
-              >
-                Sort
-              </label>
-              <select
-                id="recent-sort"
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortKey)}
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-              >
-                <option value="date_desc">Newest first</option>
-                <option value="date_asc">Oldest first</option>
-              </select>
-            </div>
-
-            {hasFilters && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={clearFilters}
-                className="ml-auto gap-1"
-              >
-                <X className="size-4" /> Clear
-              </Button>
-            )}
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            {filtered.length} {filtered.length === 1 ? "conversation" : "conversations"}
+      <div className="flex-1 space-y-2 overflow-y-auto">
+        {filtered.length === 0 && (
+          <p className="text-sm italic text-muted-foreground">
+            No conversations match your filters.
           </p>
-        </CardContent>
-      </Card>
-
-      <RecentList
-        conversations={filtered}
-        peopleById={peopleById}
-        placesById={placesById}
-        eventsById={eventsById}
-        pendingByConversationId={pendingByConversationId}
-        onSelect={setSelectedConversationId}
-      />
-    </div>
+        )}
+        {filtered.map((c) => {
+          const placeName = placesById.get(c.place_id ?? "")?.name;
+          const peopleNames = (c.person_ids ?? [])
+            .map((id) => peopleById.get(id)?.name)
+            .filter(Boolean) as string[];
+          return (
+            <Card key={c.id} className="p-3">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span>{new Date(c.started_at).toLocaleString()}</span>
+                {placeName && <span>· {placeName}</span>}
+                {peopleNames.length > 0 && (
+                  <span>· {peopleNames.join(", ")}</span>
+                )}
+              </div>
+              {c.summary ? (
+                <p className="mt-1 leading-snug">{c.summary}</p>
+              ) : (
+                <p className="mt-1 text-xs italic text-muted-foreground">
+                  {c.ended_at ? "No summary" : "In progress…"}
+                </p>
+              )}
+              {c.highlights && c.highlights.length > 0 && (
+                <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground">
+                  {c.highlights.map((h, i) => (
+                    <li key={i}>{h}</li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    </main>
   );
 }

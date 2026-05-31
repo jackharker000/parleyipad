@@ -1,47 +1,21 @@
-import { useState } from "react";
-import { useLiveQuery } from "dexie-react-hooks";
-import { nanoid } from "nanoid";
+import { useEffect, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
-import {
-  Sparkles,
-  Copy,
-  Check,
-  Plus,
-  X,
-  ChevronDown,
-  ChevronRight,
-  Send,
-  History,
-} from "lucide-react";
-
+import { Sparkles, Copy, Check, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/cn";
-import {
-  makeAI,
-  type DraftPlatform,
-  type DraftReplyVariation,
-  type InterestSuggestion,
-} from "@/lib/ai";
-import { db, type HelperDraft, type JamesProfile, type StyleProfile } from "@/lib/db";
-import { useSettings } from "@/lib/settings";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { draftReply, extractInterests } from "@/lib/aac.functions";
+import { buildConversationContext } from "@/lib/context";
+import { getSettings, getJamesProfile, updateJamesProfile } from "@/lib/db";
 
-/**
- * Helpers-tab drafter. Takes James's rough typed input and asks the smart-tier
- * LLM to rewrite it in his voice for the given channel (iMessage / email /
- * Facebook). Shows a recommended draft + 2–4 alternates, and a fire-and-forget
- * "learned from this draft" panel that proposes additions to his profile.
- *
- * Persistence: each successful draft is written to `helperDrafts`, keyed by
- * `id`. The row carries enough state for two things — (1) a per-platform
- * history disclosure that James / a helper can browse and reuse, and (2) the
- * Tier-1 style-distillation loop, which reads `jamesEdit` and `sentAt` as
- * "this is what he actually said" signals (the Helpers-tab equivalent of
- * `suggestionsLog.editedTo` / `selected`).
- *
- * No legacy `createServerFn` here — the rebuild's `makeAI(...)` factory wraps
- * the `/api/llm/*` proxy and the keys live server-side only.
- */
+type Variation = { text: string; tone: string };
+type InterestSuggestion = { kind: string; text: string; why?: string };
+
+export type DraftPlatform = "facebook" | "email" | "imessage";
+
 export function DraftHelper(props: {
   platform: DraftPlatform;
   /** Title shown above the incoming-text box, e.g. "Email you received" */
@@ -50,7 +24,7 @@ export function DraftHelper(props: {
   /** Title shown above the typing box */
   draftLabel: string;
   draftPlaceholder: string;
-  /** Optional context input label (defaults to a single freeform "Context" input) */
+  /** Optional context input (defaults to a single freeform "Context" input) */
   contextLabel?: string;
   contextPlaceholder?: string;
   /** Hide the incoming box entirely (e.g. status updates) */
@@ -58,140 +32,71 @@ export function DraftHelper(props: {
   /** Render extra controls inside the right column */
   extraControls?: React.ReactNode;
 }) {
-  const settings = useSettings();
-  const jamesProfile = useLiveQuery<JamesProfile | undefined>(
-    () => db().jamesProfile.get("singleton"),
-    [],
-  );
-  const styleProfile = useLiveQuery<StyleProfile | undefined>(
-    () => db().styleProfile.get("singleton"),
-    [],
-  );
-
-  // Live history feed for this platform — newest first, capped at 10.
-  const history = useLiveQuery<HelperDraft[]>(
-    () =>
-      db()
-        .helperDrafts.where("platform")
-        .equals(props.platform)
-        .reverse()
-        .sortBy("createdAt")
-        .then((rs) => rs.slice(0, 10)),
-    [props.platform],
-  );
+  const draftFn = useServerFn(draftReply);
+  const extractFn = useServerFn(extractInterests);
 
   const [incoming, setIncoming] = useState("");
   const [draft, setDraft] = useState("");
   const [context, setContext] = useState("");
   const [busy, setBusy] = useState(false);
-  /** Which tone chip is currently re-running, if any. Disables the others. */
-  const [tonePending, setTonePending] = useState<string | null>(null);
   const [recommended, setRecommended] = useState<string | null>(null);
-  const [alternatives, setAlternatives] = useState<DraftReplyVariation[]>([]);
+  const [alternatives, setAlternatives] = useState<Variation[]>([]);
+  const [model, setModel] = useState<string | undefined>(undefined);
   const [copied, setCopied] = useState<string | null>(null);
   const [interestSuggestions, setInterestSuggestions] = useState<InterestSuggestion[]>([]);
-  /** Edit-before-sending box. Empty unless the user has touched it. */
-  const [jamesEdit, setJamesEdit] = useState("");
-  /** Db row id of the current draft so we can patch `jamesEdit` / `sentAt`. */
-  const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
 
-  // --------------------------------------------------------------------
-  // Draft + persist
-  // --------------------------------------------------------------------
+  useEffect(() => {
+    // Drafts and interest extraction are quality-critical, not latency-critical.
+    getSettings().then((s) =>
+      setModel(s.smart_model ?? s.suggestion_model ?? s.expand_model),
+    );
+  }, []);
 
-  /**
-   * Issue a `draftReply` and persist the result. `rawTextOverride` lets the
-   * tone-redo chips re-run on the previous recommended text (so the model
-   * iterates on the polished version rather than the original typo soup).
-   */
-  async function runDraft(opts: { rawTextOverride?: string; toneOverride?: string } = {}) {
-    const raw = (opts.rawTextOverride ?? draft).trim();
-    if (!raw) return;
-    if (busy || tonePending) return;
-
-    const isTone = !!opts.toneOverride;
-    if (isTone) setTonePending(opts.toneOverride ?? null);
-    else setBusy(true);
-
-    if (!isTone) {
-      setRecommended(null);
-      setAlternatives([]);
-      setInterestSuggestions([]);
-      setJamesEdit("");
-      setCurrentDraftId(null);
-    }
-
+  async function handleDraft() {
+    const raw = draft.trim();
+    if (!raw || busy) return;
+    setBusy(true);
+    setRecommended(null);
+    setAlternatives([]);
+    setInterestSuggestions([]);
     try {
-      const ai = makeAI(settings.llmProvider);
-      const r = await ai.draftReply({
-        platform: props.platform,
-        incoming: props.hideIncoming ? undefined : incoming.trim() || undefined,
-        rawText: raw,
-        context: context.trim() || undefined,
-        jamesProfile,
-        styleProfile,
-        toneOverride: opts.toneOverride,
+      const ctx = await buildConversationContext({ personIds: [] });
+      const r = await draftFn({
+        data: {
+          platform: props.platform,
+          incoming: props.hideIncoming ? undefined : incoming.trim() || undefined,
+          rawText: raw,
+          context: context.trim() || undefined,
+          jamesProfile: ctx.jamesProfile,
+          model,
+        },
       });
       if (r.error) toast.error(r.error);
       setRecommended(r.recommended);
       setAlternatives(r.alternatives ?? []);
 
-      // Persist. The tone-redo path writes a NEW row too — it captures a
-      // distinct draft attempt, useful for the distillation loop.
-      const row: HelperDraft = {
-        id: nanoid(),
-        platform: props.platform,
-        incoming: props.hideIncoming ? undefined : incoming.trim() || undefined,
-        rawText: raw,
-        recommended: r.recommended,
-        alternatives: r.alternatives ?? [],
-        createdAt: Date.now(),
-      };
-      try {
-        await db().helperDrafts.put(row);
-        setCurrentDraftId(row.id);
-      } catch (err) {
-        // Persistence isn't load-bearing for the live UI; log + carry on.
-        console.warn("helperDrafts.put failed", err);
-      }
-
-      // Fire-and-forget interest extraction on the recommended draft. Skip
-      // for tone re-dos — the underlying intent didn't change, so we'd just
-      // re-propose the same additions.
-      if (!isTone && r.recommended) {
-        void ai
-          .extractInterests({
+      // Fire-and-forget interest extraction on the recommended draft.
+      if (r.recommended) {
+        const profile = await getJamesProfile();
+        extractFn({
+          data: {
             draft: r.recommended,
             incoming: props.hideIncoming ? undefined : incoming.trim() || undefined,
-            currentTopicsLoved: jamesProfile?.topicsLoved?.join(", "),
-            currentLifeContext: jamesProfile?.currentLifeContext,
-            currentSignaturePhrases: jamesProfile?.signaturePhrases?.join("\n"),
-            jamesName: jamesProfile?.displayName,
-          })
+            currentTopicsLoved: profile.topics_loved,
+            currentLifeContext: profile.current_life_context,
+            currentSignaturePhrases: profile.signature_phrases,
+            jamesName: profile.display_name,
+            model,
+          },
+        })
           .then((res) => setInterestSuggestions(res.suggestions ?? []))
           .catch(() => {});
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Could not draft";
-      toast.error(msg);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Could not draft");
     } finally {
-      if (isTone) setTonePending(null);
-      else setBusy(false);
+      setBusy(false);
     }
-  }
-
-  function handleDraft() {
-    return runDraft();
-  }
-
-  function handleToneChip(tone: string) {
-    // Tone re-dos iterate on the polished recommended text when we have one;
-    // otherwise fall back to the raw draft. Either way the model gets the
-    // same `toneOverride` nudge as the final line of its user prompt.
-    const seed = recommended ?? draft;
-    if (!seed.trim()) return;
-    return runDraft({ rawTextOverride: seed, toneOverride: tone });
   }
 
   async function copyText(text: string) {
@@ -205,33 +110,31 @@ export function DraftHelper(props: {
     }
   }
 
-  function applyDraft(text: string) {
+  function useAsDraft(text: string) {
     setDraft(text);
     setRecommended(null);
     setAlternatives([]);
     setInterestSuggestions([]);
-    setJamesEdit("");
-    setCurrentDraftId(null);
   }
 
   async function acceptInterest(s: InterestSuggestion) {
-    const current = (await db().jamesProfile.get("singleton")) ?? {
-      id: "singleton" as const,
-      displayName: "James",
-      updatedAt: 0,
-    };
-    const updates: Partial<JamesProfile> = {};
+    const profile = await getJamesProfile();
     if (s.kind === "topic_loved") {
-      const arr = [...(current.topicsLoved ?? []), s.text];
-      updates.topicsLoved = arr;
+      const cur = profile.topics_loved?.trim();
+      await updateJamesProfile({
+        topics_loved: cur ? `${cur}, ${s.text}` : s.text,
+      });
     } else if (s.kind === "current_context") {
-      const cur = current.currentLifeContext?.trim();
-      updates.currentLifeContext = cur ? `${cur}\n${s.text}` : s.text;
+      const cur = profile.current_life_context?.trim();
+      await updateJamesProfile({
+        current_life_context: cur ? `${cur}\n${s.text}` : s.text,
+      });
     } else if (s.kind === "signature_phrase") {
-      const arr = [...(current.signaturePhrases ?? []), s.text];
-      updates.signaturePhrases = arr;
+      const cur = profile.signature_phrases?.trim();
+      await updateJamesProfile({
+        signature_phrases: cur ? `${cur}\n${s.text}` : s.text,
+      });
     }
-    await db().jamesProfile.put({ ...current, ...updates, updatedAt: Date.now() });
     toast.success("Added to James's profile");
     setInterestSuggestions((arr) => arr.filter((x) => x !== s));
   }
@@ -240,99 +143,63 @@ export function DraftHelper(props: {
     setInterestSuggestions((arr) => arr.filter((x) => x !== s));
   }
 
-  /**
-   * "Use this" from a history row. Drops the recommended text into the draft
-   * field, then immediately re-runs `draftReply` with that text as `rawText`
-   * so the model gets a fresh shot at alternatives. We don't write
-   * `jamesEdit` here — that's reserved for the user's edit-before-send box.
-   */
-  async function reuseHistoryRow(row: HelperDraft) {
-    setDraft(row.recommended);
-    if (!props.hideIncoming) setIncoming(row.incoming ?? "");
-    // Regenerate fresh alternatives from the recommended text as the seed.
-    await runDraft({ rawTextOverride: row.recommended });
-  }
-
-  /**
-   * "Mark sent" on a history row OR the current draft. Persists the
-   * edit-before-send text (if any) and stamps `sentAt`. The style-distill
-   * job downstream reads both fields as evidence of what James actually
-   * spoke / sent.
-   */
-  async function markSent(rowId: string, editText?: string) {
-    try {
-      const patch: Partial<HelperDraft> = { sentAt: Date.now() };
-      if (editText && editText.trim().length > 0) patch.jamesEdit = editText.trim();
-      await db().helperDrafts.update(rowId, patch);
-      toast.success("Marked sent");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Could not mark sent";
-      toast.error(msg);
-    }
-  }
-
-  // --------------------------------------------------------------------
-  // Render
-  // --------------------------------------------------------------------
-
   return (
     <>
-      <HistoryDisclosure
-        history={history ?? []}
-        open={historyOpen}
-        onToggle={() => setHistoryOpen((x) => !x)}
-        onUse={reuseHistoryRow}
-        onMarkSent={(row) => markSent(row.id)}
-      />
-
       <Card className="p-5">
         <div className="grid gap-4 md:grid-cols-[1fr_220px]">
           <div className="space-y-3">
             {!props.hideIncoming && (
-              <FieldLabel
-                htmlFor="dh-incoming"
-                text={props.incomingLabel ?? "What you received (optional)"}
-              >
-                <textarea
+              <div>
+                <Label htmlFor="dh-incoming" className="text-base">
+                  {props.incomingLabel ?? "What you received (optional)"}
+                </Label>
+                <Textarea
                   id="dh-incoming"
                   value={incoming}
                   onChange={(e) => setIncoming(e.target.value)}
                   placeholder={props.incomingPlaceholder}
                   rows={4}
-                  className={textareaClass}
+                  className="mt-1 text-base"
                 />
-              </FieldLabel>
+              </div>
             )}
-            <FieldLabel htmlFor="dh-draft" text={props.draftLabel}>
-              <textarea
+            <div>
+              <Label htmlFor="dh-draft" className="text-base">
+                {props.draftLabel}
+              </Label>
+              <Textarea
                 id="dh-draft"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
-                    void handleDraft();
+                    handleDraft();
                   }
                 }}
                 placeholder={props.draftPlaceholder}
                 rows={5}
-                className={textareaClass}
+                className="mt-1 text-base"
               />
-              <p className="mt-1 text-xs text-muted-foreground">Tip: Cmd/Ctrl + Enter to draft.</p>
-            </FieldLabel>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Tip: Cmd/Ctrl + Enter to draft.
+              </p>
+            </div>
           </div>
           <div className="flex flex-col gap-3">
             {props.extraControls}
-            <FieldLabel htmlFor="dh-ctx" text={props.contextLabel ?? "Context (optional)"}>
-              <input
+            <div>
+              <Label htmlFor="dh-ctx" className="text-base">
+                {props.contextLabel ?? "Context (optional)"}
+              </Label>
+              <Input
                 id="dh-ctx"
-                type="text"
                 value={context}
                 onChange={(e) => setContext(e.target.value)}
                 placeholder={props.contextPlaceholder ?? "e.g. from his sister Anna"}
-                className={inputClass}
+                className="mt-1"
               />
-            </FieldLabel>
+            </div>
           </div>
         </div>
 
@@ -341,9 +208,9 @@ export function DraftHelper(props: {
             size="lg"
             className="gap-2"
             onClick={handleDraft}
-            disabled={busy || tonePending !== null || !draft.trim()}
+            disabled={busy || !draft.trim()}
           >
-            <Sparkles className={cn("size-5", busy && "animate-pulse")} />
+            <Sparkles className={`size-5 ${busy ? "animate-pulse" : ""}`} />
             {busy ? "Drafting…" : "Draft reply"}
           </Button>
         </div>
@@ -357,65 +224,14 @@ export function DraftHelper(props: {
               Recommended
             </div>
             <p className="mt-2 whitespace-pre-wrap text-base leading-relaxed">{recommended}</p>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex gap-2">
               <Button size="sm" onClick={() => copyText(recommended)} className="gap-2">
-                {copied === recommended ? (
-                  <Check className="size-4" />
-                ) : (
-                  <Copy className="size-4" />
-                )}
+                {copied === recommended ? <Check className="size-4" /> : <Copy className="size-4" />}
                 {copied === recommended ? "Copied" : "Copy"}
               </Button>
-              <Button size="sm" variant="ghost" onClick={() => applyDraft(recommended)}>
+              <Button size="sm" variant="ghost" onClick={() => useAsDraft(recommended)}>
                 Tweak it
               </Button>
-            </div>
-
-            <ToneChips
-              busy={busy}
-              pending={tonePending}
-              onPick={(tone) => void handleToneChip(tone)}
-            />
-
-            <div className="mt-4">
-              <FieldLabel htmlFor="dh-edit" text="Edit before sending (optional)">
-                <textarea
-                  id="dh-edit"
-                  value={jamesEdit}
-                  onChange={(e) => setJamesEdit(e.target.value)}
-                  placeholder="Tweak the recommended draft before you send / speak it…"
-                  rows={3}
-                  className={textareaClass}
-                />
-              </FieldLabel>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-2"
-                  disabled={!currentDraftId}
-                  onClick={() => {
-                    if (currentDraftId) void markSent(currentDraftId, jamesEdit);
-                  }}
-                >
-                  <Send className="size-4" /> Mark sent
-                </Button>
-                {jamesEdit.trim().length > 0 && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="gap-2"
-                    onClick={() => void copyText(jamesEdit)}
-                  >
-                    {copied === jamesEdit ? (
-                      <Check className="size-4" />
-                    ) : (
-                      <Copy className="size-4" />
-                    )}
-                    {copied === jamesEdit ? "Copied edit" : "Copy edit"}
-                  </Button>
-                )}
-              </div>
             </div>
           </Card>
 
@@ -428,20 +244,11 @@ export function DraftHelper(props: {
                   </div>
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{alt.text}</p>
                   <div className="mt-3 flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => copyText(alt.text)}
-                      className="gap-2"
-                    >
-                      {copied === alt.text ? (
-                        <Check className="size-4" />
-                      ) : (
-                        <Copy className="size-4" />
-                      )}
+                    <Button size="sm" variant="secondary" onClick={() => copyText(alt.text)} className="gap-2">
+                      {copied === alt.text ? <Check className="size-4" /> : <Copy className="size-4" />}
                       {copied === alt.text ? "Copied" : "Copy"}
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => applyDraft(alt.text)}>
+                    <Button size="sm" variant="ghost" onClick={() => useAsDraft(alt.text)}>
                       Tweak
                     </Button>
                   </div>
@@ -466,20 +273,10 @@ export function DraftHelper(props: {
                           : "Phrase"}
                     </span>
                     <span className="flex-1 text-sm">{s.text}</span>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="gap-1"
-                      onClick={() => acceptInterest(s)}
-                    >
+                    <Button size="sm" variant="ghost" className="gap-1" onClick={() => acceptInterest(s)}>
                       <Plus className="size-4" /> Add
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => dismissInterest(s)}
-                      aria-label="Dismiss"
-                    >
+                    <Button size="sm" variant="ghost" onClick={() => dismissInterest(s)} aria-label="Dismiss">
                       <X className="size-4" />
                     </Button>
                   </li>
@@ -492,186 +289,3 @@ export function DraftHelper(props: {
     </>
   );
 }
-
-// --------------------------------------------------------------------------
-// Tone-redo chip row
-// --------------------------------------------------------------------------
-
-const TONE_CHIPS: readonly string[] = [
-  "shorter",
-  "warmer",
-  "drier",
-  "more formal",
-  "more casual",
-] as const;
-
-function ToneChips({
-  busy,
-  pending,
-  onPick,
-}: {
-  busy: boolean;
-  pending: string | null;
-  onPick: (tone: string) => void;
-}) {
-  return (
-    <div className="mt-3 flex flex-wrap items-center gap-2">
-      <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Re-do
-      </span>
-      {TONE_CHIPS.map((tone) => {
-        const isThisPending = pending === tone;
-        const disabled = busy || (pending !== null && !isThisPending);
-        return (
-          <button
-            key={tone}
-            type="button"
-            disabled={disabled}
-            onClick={() => onPick(tone)}
-            className={cn(
-              "rounded-full border border-input bg-background px-3 py-1 text-xs font-medium transition-colors",
-              "hover:bg-muted hover:text-foreground",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-              isThisPending && "animate-pulse border-primary text-primary",
-            )}
-          >
-            {isThisPending ? `${tone}…` : tone}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------------
-// History disclosure (per-platform, last 10, collapsed by default)
-// --------------------------------------------------------------------------
-
-function HistoryDisclosure({
-  history,
-  open,
-  onToggle,
-  onUse,
-  onMarkSent,
-}: {
-  history: HelperDraft[];
-  open: boolean;
-  onToggle: () => void;
-  onUse: (row: HelperDraft) => void | Promise<void>;
-  onMarkSent: (row: HelperDraft) => void | Promise<void>;
-}) {
-  if (history.length === 0) return null;
-
-  return (
-    <Card className="mb-4 p-3">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 text-left text-sm font-medium text-muted-foreground hover:text-foreground"
-      >
-        {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-        <History className="size-4" />
-        <span>
-          History <span className="text-xs">({history.length})</span>
-        </span>
-      </button>
-      {open && (
-        <ul className="mt-3 space-y-2">
-          {history.map((row) => (
-            <HistoryRow
-              key={row.id}
-              row={row}
-              onUse={() => void onUse(row)}
-              onMarkSent={() => void onMarkSent(row)}
-            />
-          ))}
-        </ul>
-      )}
-    </Card>
-  );
-}
-
-function HistoryRow({
-  row,
-  onUse,
-  onMarkSent,
-}: {
-  row: HelperDraft;
-  onUse: () => void;
-  onMarkSent: () => void;
-}) {
-  const now = Date.now();
-  return (
-    <li className="rounded-md border border-border/60 bg-background p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>{formatRelative(row.createdAt, now)}</span>
-        {row.sentAt && (
-          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
-            Sent
-          </span>
-        )}
-      </div>
-      {row.rawText && (
-        <p className="mt-1 truncate text-xs italic text-muted-foreground" title={row.rawText}>
-          You typed: {row.rawText}
-        </p>
-      )}
-      <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-sm leading-snug">
-        {row.recommended}
-      </p>
-      <div className="mt-2 flex gap-2">
-        <Button size="sm" variant="outline" onClick={onUse}>
-          Use this
-        </Button>
-        <Button size="sm" variant="ghost" disabled={!!row.sentAt} onClick={onMarkSent}>
-          {row.sentAt ? "Marked sent" : "Mark sent"}
-        </Button>
-      </div>
-    </li>
-  );
-}
-
-/**
- * Same relative-time format as the Recent view's `formatRelative` —
- * duplicated here so we don't reach across into a route file. Cheap and
- * keeps the boundary clean.
- */
-function formatRelative(ts: number, now: number): string {
-  const diff = now - ts;
-  if (diff < 0) return "in the future";
-  const sec = Math.round(diff / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.round(sec / 60);
-  if (min < 60) return `${min} min${min === 1 ? "" : "s"} ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr} hour${hr === 1 ? "" : "s"} ago`;
-  const day = Math.round(hr / 24);
-  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
-  const month = Math.round(day / 30);
-  if (month < 12) return `${month} month${month === 1 ? "" : "s"} ago`;
-  const yr = Math.round(month / 12);
-  return `${yr} year${yr === 1 ? "" : "s"} ago`;
-}
-
-// --------------------------------------------------------------------------
-// Tiny hand-rolled primitives (no shadcn Tabs/Textarea/Input/Label in the
-// rebuild yet — keep the dep tree small).
-// --------------------------------------------------------------------------
-
-function FieldLabel(props: { htmlFor: string; text: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label htmlFor={props.htmlFor} className="block text-base font-medium">
-        {props.text}
-      </label>
-      <div className="mt-1">{props.children}</div>
-    </div>
-  );
-}
-
-const baseFieldClass =
-  "w-full rounded-md border border-input bg-background px-3 text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50";
-
-const inputClass = cn(baseFieldClass, "h-10");
-const textareaClass = cn(baseFieldClass, "min-h-[80px] py-2 leading-relaxed");

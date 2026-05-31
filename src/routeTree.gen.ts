@@ -11,19 +11,9 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RecentRouteImport } from './routes/recent'
-import { Route as PeopleRouteImport } from './routes/people'
 import { Route as HelpersRouteImport } from './routes/helpers'
-import { Route as EventsRouteImport } from './routes/events'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as SpikeSpeakerIdRouteImport } from './routes/spike.speaker-id'
-import { Route as ApiTtsVoicesRouteImport } from './routes/api/tts/voices'
-import { Route as ApiTtsElevenlabsRouteImport } from './routes/api/tts/elevenlabs'
-import { Route as ApiTtsCartesiaRouteImport } from './routes/api/tts/cartesia'
-import { Route as ApiSttScribeTokenRouteImport } from './routes/api/stt/scribe-token'
-import { Route as ApiSttElevenlabsRouteImport } from './routes/api/stt/elevenlabs'
-import { Route as ApiLlmOpenaiRouteImport } from './routes/api/llm/openai'
-import { Route as ApiLlmAnthropicRouteImport } from './routes/api/llm/anthropic'
-import { Route as ApiEmbedOpenaiRouteImport } from './routes/api/embed/openai'
+import { Route as ConversationNewRouteImport } from './routes/conversation.new'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -35,19 +25,9 @@ const RecentRoute = RecentRouteImport.update({
   path: '/recent',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PeopleRoute = PeopleRouteImport.update({
-  id: '/people',
-  path: '/people',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const HelpersRoute = HelpersRouteImport.update({
   id: '/helpers',
   path: '/helpers',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const EventsRoute = EventsRouteImport.update({
-  id: '/events',
-  path: '/events',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -55,174 +35,54 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SpikeSpeakerIdRoute = SpikeSpeakerIdRouteImport.update({
-  id: '/spike/speaker-id',
-  path: '/spike/speaker-id',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiTtsVoicesRoute = ApiTtsVoicesRouteImport.update({
-  id: '/api/tts/voices',
-  path: '/api/tts/voices',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiTtsElevenlabsRoute = ApiTtsElevenlabsRouteImport.update({
-  id: '/api/tts/elevenlabs',
-  path: '/api/tts/elevenlabs',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiTtsCartesiaRoute = ApiTtsCartesiaRouteImport.update({
-  id: '/api/tts/cartesia',
-  path: '/api/tts/cartesia',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiSttScribeTokenRoute = ApiSttScribeTokenRouteImport.update({
-  id: '/api/stt/scribe-token',
-  path: '/api/stt/scribe-token',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiSttElevenlabsRoute = ApiSttElevenlabsRouteImport.update({
-  id: '/api/stt/elevenlabs',
-  path: '/api/stt/elevenlabs',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiLlmOpenaiRoute = ApiLlmOpenaiRouteImport.update({
-  id: '/api/llm/openai',
-  path: '/api/llm/openai',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiLlmAnthropicRoute = ApiLlmAnthropicRouteImport.update({
-  id: '/api/llm/anthropic',
-  path: '/api/llm/anthropic',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiEmbedOpenaiRoute = ApiEmbedOpenaiRouteImport.update({
-  id: '/api/embed/openai',
-  path: '/api/embed/openai',
+const ConversationNewRoute = ConversationNewRouteImport.update({
+  id: '/conversation/new',
+  path: '/conversation/new',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/events': typeof EventsRoute
   '/helpers': typeof HelpersRoute
-  '/people': typeof PeopleRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
-  '/spike/speaker-id': typeof SpikeSpeakerIdRoute
-  '/api/embed/openai': typeof ApiEmbedOpenaiRoute
-  '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
-  '/api/llm/openai': typeof ApiLlmOpenaiRoute
-  '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
-  '/api/stt/scribe-token': typeof ApiSttScribeTokenRoute
-  '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
-  '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
-  '/api/tts/voices': typeof ApiTtsVoicesRoute
+  '/conversation/new': typeof ConversationNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/events': typeof EventsRoute
   '/helpers': typeof HelpersRoute
-  '/people': typeof PeopleRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
-  '/spike/speaker-id': typeof SpikeSpeakerIdRoute
-  '/api/embed/openai': typeof ApiEmbedOpenaiRoute
-  '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
-  '/api/llm/openai': typeof ApiLlmOpenaiRoute
-  '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
-  '/api/stt/scribe-token': typeof ApiSttScribeTokenRoute
-  '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
-  '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
-  '/api/tts/voices': typeof ApiTtsVoicesRoute
+  '/conversation/new': typeof ConversationNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/events': typeof EventsRoute
   '/helpers': typeof HelpersRoute
-  '/people': typeof PeopleRoute
   '/recent': typeof RecentRoute
   '/settings': typeof SettingsRoute
-  '/spike/speaker-id': typeof SpikeSpeakerIdRoute
-  '/api/embed/openai': typeof ApiEmbedOpenaiRoute
-  '/api/llm/anthropic': typeof ApiLlmAnthropicRoute
-  '/api/llm/openai': typeof ApiLlmOpenaiRoute
-  '/api/stt/elevenlabs': typeof ApiSttElevenlabsRoute
-  '/api/stt/scribe-token': typeof ApiSttScribeTokenRoute
-  '/api/tts/cartesia': typeof ApiTtsCartesiaRoute
-  '/api/tts/elevenlabs': typeof ApiTtsElevenlabsRoute
-  '/api/tts/voices': typeof ApiTtsVoicesRoute
+  '/conversation/new': typeof ConversationNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths:
-    | '/'
-    | '/events'
-    | '/helpers'
-    | '/people'
-    | '/recent'
-    | '/settings'
-    | '/spike/speaker-id'
-    | '/api/embed/openai'
-    | '/api/llm/anthropic'
-    | '/api/llm/openai'
-    | '/api/stt/elevenlabs'
-    | '/api/stt/scribe-token'
-    | '/api/tts/cartesia'
-    | '/api/tts/elevenlabs'
-    | '/api/tts/voices'
+  fullPaths: '/' | '/helpers' | '/recent' | '/settings' | '/conversation/new'
   fileRoutesByTo: FileRoutesByTo
-  to:
-    | '/'
-    | '/events'
-    | '/helpers'
-    | '/people'
-    | '/recent'
-    | '/settings'
-    | '/spike/speaker-id'
-    | '/api/embed/openai'
-    | '/api/llm/anthropic'
-    | '/api/llm/openai'
-    | '/api/stt/elevenlabs'
-    | '/api/stt/scribe-token'
-    | '/api/tts/cartesia'
-    | '/api/tts/elevenlabs'
-    | '/api/tts/voices'
+  to: '/' | '/helpers' | '/recent' | '/settings' | '/conversation/new'
   id:
     | '__root__'
     | '/'
-    | '/events'
     | '/helpers'
-    | '/people'
     | '/recent'
     | '/settings'
-    | '/spike/speaker-id'
-    | '/api/embed/openai'
-    | '/api/llm/anthropic'
-    | '/api/llm/openai'
-    | '/api/stt/elevenlabs'
-    | '/api/stt/scribe-token'
-    | '/api/tts/cartesia'
-    | '/api/tts/elevenlabs'
-    | '/api/tts/voices'
+    | '/conversation/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  EventsRoute: typeof EventsRoute
   HelpersRoute: typeof HelpersRoute
-  PeopleRoute: typeof PeopleRoute
   RecentRoute: typeof RecentRoute
   SettingsRoute: typeof SettingsRoute
-  SpikeSpeakerIdRoute: typeof SpikeSpeakerIdRoute
-  ApiEmbedOpenaiRoute: typeof ApiEmbedOpenaiRoute
-  ApiLlmAnthropicRoute: typeof ApiLlmAnthropicRoute
-  ApiLlmOpenaiRoute: typeof ApiLlmOpenaiRoute
-  ApiSttElevenlabsRoute: typeof ApiSttElevenlabsRoute
-  ApiSttScribeTokenRoute: typeof ApiSttScribeTokenRoute
-  ApiTtsCartesiaRoute: typeof ApiTtsCartesiaRoute
-  ApiTtsElevenlabsRoute: typeof ApiTtsElevenlabsRoute
-  ApiTtsVoicesRoute: typeof ApiTtsVoicesRoute
+  ConversationNewRoute: typeof ConversationNewRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -241,25 +101,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RecentRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/people': {
-      id: '/people'
-      path: '/people'
-      fullPath: '/people'
-      preLoaderRoute: typeof PeopleRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/helpers': {
       id: '/helpers'
       path: '/helpers'
       fullPath: '/helpers'
       preLoaderRoute: typeof HelpersRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/events': {
-      id: '/events'
-      path: '/events'
-      fullPath: '/events'
-      preLoaderRoute: typeof EventsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -269,67 +115,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/spike/speaker-id': {
-      id: '/spike/speaker-id'
-      path: '/spike/speaker-id'
-      fullPath: '/spike/speaker-id'
-      preLoaderRoute: typeof SpikeSpeakerIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/tts/voices': {
-      id: '/api/tts/voices'
-      path: '/api/tts/voices'
-      fullPath: '/api/tts/voices'
-      preLoaderRoute: typeof ApiTtsVoicesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/tts/elevenlabs': {
-      id: '/api/tts/elevenlabs'
-      path: '/api/tts/elevenlabs'
-      fullPath: '/api/tts/elevenlabs'
-      preLoaderRoute: typeof ApiTtsElevenlabsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/tts/cartesia': {
-      id: '/api/tts/cartesia'
-      path: '/api/tts/cartesia'
-      fullPath: '/api/tts/cartesia'
-      preLoaderRoute: typeof ApiTtsCartesiaRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/stt/scribe-token': {
-      id: '/api/stt/scribe-token'
-      path: '/api/stt/scribe-token'
-      fullPath: '/api/stt/scribe-token'
-      preLoaderRoute: typeof ApiSttScribeTokenRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/stt/elevenlabs': {
-      id: '/api/stt/elevenlabs'
-      path: '/api/stt/elevenlabs'
-      fullPath: '/api/stt/elevenlabs'
-      preLoaderRoute: typeof ApiSttElevenlabsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/llm/openai': {
-      id: '/api/llm/openai'
-      path: '/api/llm/openai'
-      fullPath: '/api/llm/openai'
-      preLoaderRoute: typeof ApiLlmOpenaiRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/llm/anthropic': {
-      id: '/api/llm/anthropic'
-      path: '/api/llm/anthropic'
-      fullPath: '/api/llm/anthropic'
-      preLoaderRoute: typeof ApiLlmAnthropicRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/embed/openai': {
-      id: '/api/embed/openai'
-      path: '/api/embed/openai'
-      fullPath: '/api/embed/openai'
-      preLoaderRoute: typeof ApiEmbedOpenaiRouteImport
+    '/conversation/new': {
+      id: '/conversation/new'
+      path: '/conversation/new'
+      fullPath: '/conversation/new'
+      preLoaderRoute: typeof ConversationNewRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -337,20 +127,10 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  EventsRoute: EventsRoute,
   HelpersRoute: HelpersRoute,
-  PeopleRoute: PeopleRoute,
   RecentRoute: RecentRoute,
   SettingsRoute: SettingsRoute,
-  SpikeSpeakerIdRoute: SpikeSpeakerIdRoute,
-  ApiEmbedOpenaiRoute: ApiEmbedOpenaiRoute,
-  ApiLlmAnthropicRoute: ApiLlmAnthropicRoute,
-  ApiLlmOpenaiRoute: ApiLlmOpenaiRoute,
-  ApiSttElevenlabsRoute: ApiSttElevenlabsRoute,
-  ApiSttScribeTokenRoute: ApiSttScribeTokenRoute,
-  ApiTtsCartesiaRoute: ApiTtsCartesiaRoute,
-  ApiTtsElevenlabsRoute: ApiTtsElevenlabsRoute,
-  ApiTtsVoicesRoute: ApiTtsVoicesRoute,
+  ConversationNewRoute: ConversationNewRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

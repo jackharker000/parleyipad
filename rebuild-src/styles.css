@@ -1,0 +1,121 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Parley — Slate & Sun design tokens.
+ *
+ * Slate  #222428  — ink, primary, foreground
+ * Cream  #EEECE6  — paper background
+ * Beige  #DCDAD3  — secondary / muted surface
+ * Sun    #E8A23A  — accent, focus ring, highlight
+ * Stone  #74757A  — muted foreground
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+:root {
+  --radius: 1rem;
+
+  --paper: oklch(0.985 0.008 90);
+  --paper-warm: oklch(0.97 0.012 80);
+  --ink: oklch(0.21 0.03 230);
+  --ink-soft: oklch(0.45 0.03 230);
+  --hairline: oklch(0.88 0.012 230);
+  --amber: oklch(0.82 0.13 75);
+  --teal: oklch(0.48 0.11 200);
+  --sage: oklch(0.7 0.07 150);
+  --coral: oklch(0.7 0.13 30);
+
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: oklch(1 0 0);
+  --card-foreground: var(--ink);
+  --popover: oklch(1 0 0);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--paper);
+  --secondary: var(--paper-warm);
+  --secondary-foreground: var(--ink);
+  --muted: var(--paper-warm);
+  --muted-foreground: var(--ink-soft);
+  --accent: var(--amber);
+  --accent-foreground: var(--ink);
+  --destructive: var(--coral);
+  --destructive-foreground: var(--paper);
+  --border: var(--hairline);
+  --input: var(--hairline);
+  --ring: var(--amber);
+}
+
+.dark {
+  --background: oklch(0.22 0.008 255);
+  --foreground: oklch(0.943 0.008 85);
+  --card: oklch(0.27 0.008 255);
+  --card-foreground: oklch(0.943 0.008 85);
+  --popover: oklch(0.27 0.008 255);
+  --popover-foreground: oklch(0.943 0.008 85);
+  --primary: oklch(0.943 0.008 85);
+  --primary-foreground: oklch(0.245 0.008 255);
+  --secondary: oklch(0.32 0.01 255);
+  --secondary-foreground: oklch(0.943 0.008 85);
+  --muted: oklch(0.32 0.01 255);
+  --muted-foreground: oklch(0.72 0.01 255);
+  --accent: oklch(0.745 0.14 70);
+  --accent-foreground: oklch(0.245 0.008 255);
+  --destructive: oklch(0.6 0.2 25);
+  --destructive-foreground: oklch(0.943 0.008 85);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.745 0.14 70);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family:
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      "Segoe UI",
+      Roboto,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+}
