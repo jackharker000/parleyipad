@@ -2879,7 +2879,7 @@ function Home() {
               {loadingSuggestions ? "Thinking…" : "Refresh"}
             </Button>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-3 gap-2 overflow-hidden p-2">
+          <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-2 gap-2 overflow-hidden p-2">
             {!active && suggestions.length === 0 && !predicting && (
               <Card className="col-span-3 row-span-3 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Press the record button to start a conversation. Suggestions
@@ -2891,7 +2891,7 @@ function Home() {
                 Listening… suggestions will appear after a few words.
               </Card>
             )}
-            {suggestions.slice(0, 9).map((s, i) => (
+            {suggestions.slice(0, 6).map((s, i) => (
               <SuggestionCard
                 key={`${i}-${s.text}`}
                 suggestion={s}

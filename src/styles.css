@@ -172,4 +172,27 @@
     background-color: var(--color-background);
     color: var(--color-foreground);
   }
+
+  /* Accessibility: honour the system-level "Reduce Motion" preference.
+     Particularly important for the 5s long-press progress bar and the
+     animate-pulse recording indicator — vestibular-sensitive users
+     should not be exposed to those animations unless they opted in. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Accessibility: visible keyboard focus on every interactive element.
+     Tailwind's default focus rings are added per-component; this is a
+     baseline so a keyboard / switch user never loses focus position. */
+  :focus-visible {
+    outline: 2px solid var(--color-ring, var(--ring, currentColor));
+    outline-offset: 2px;
+  }
 }
