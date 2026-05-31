@@ -120,7 +120,9 @@ export async function streamSpeak(args: StreamTTSArgs): Promise<void> {
   const signal = args.signal ?? abort!.signal;
   if (abort) activeAbort = abort;
 
-  const firstChunkTimeoutMs = args.firstChunkTimeoutMs ?? 4000;
+  // Short so a connected-but-stalled socket falls back to full-synth fast —
+  // James (latency-critical) shouldn't sit in dead air waiting on a bad WS.
+  const firstChunkTimeoutMs = args.firstChunkTimeoutMs ?? 1500;
 
   const chunks: Uint8Array[] = [];
 

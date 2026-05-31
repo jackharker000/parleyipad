@@ -75,6 +75,7 @@ const CTX_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 /** Invalidate the context cache — call after profile or memory edits. */
 export function invalidateContextCache() {
   _ctxCache = null;
+  _scanMemo.clear();
 }
 
 export async function suggestPeopleAtPlace(placeId: string, limit = 6): Promise<Person[]> {
@@ -267,7 +268,33 @@ export function sanitizeForPrompt(s: string, max = 160): string {
  * Bounded scans keep this cheap: ≤60 recent conversations and a ≤600-segment
  * global recency window (only when no participants are set).
  */
+/** Short-TTL memo for the two expensive per-turn scans below, so that with
+ *  Tier-3 semantic memory active (which rebuilds context every turn) we don't
+ *  re-run the 600-segment voice-sample scan and 200-row choice scan on every
+ *  turn. Keyed by sorted personIds; slow-moving signal, so ~90s is plenty. */
+const _scanMemo = new Map<string, { at: number; value: string[] }>();
+const SCAN_MEMO_TTL_MS = 90_000;
+async function memoScan(
+  key: string,
+  compute: () => Promise<string[]>,
+): Promise<string[]> {
+  const hit = _scanMemo.get(key);
+  if (hit && Date.now() - hit.at < SCAN_MEMO_TTL_MS) return hit.value;
+  const value = await compute();
+  _scanMemo.set(key, { at: Date.now(), value });
+  return value;
+}
+
 export async function getJamesVoiceSamples(
+  personIds: string[],
+  limit = 24,
+): Promise<string[]> {
+  return memoScan(`voice|${limit}|${[...personIds].sort().join(",")}`, () =>
+    getJamesVoiceSamplesUncached(personIds, limit),
+  );
+}
+
+async function getJamesVoiceSamplesUncached(
   personIds: string[],
   limit = 24,
 ): Promise<string[]> {
@@ -341,6 +368,15 @@ export async function getJamesVoiceSamples(
  * his own — so the suggestion prompt can learn his preferences. Bounded scan.
  */
 export async function getRecentChoiceMemories(
+  personIds: string[],
+  limit = 12,
+): Promise<string[]> {
+  return memoScan(`choice|${limit}|${[...personIds].sort().join(",")}`, () =>
+    getRecentChoiceMemoriesUncached(personIds, limit),
+  );
+}
+
+async function getRecentChoiceMemoriesUncached(
   personIds: string[],
   limit = 12,
 ): Promise<string[]> {

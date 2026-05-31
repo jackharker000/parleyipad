@@ -82,6 +82,9 @@ export class VoiceCapture {
   private maxSamples = 0;
   private shiftTimer: ReturnType<typeof setInterval> | null = null;
   private shiftPrevMfcc: number[] | null = null;
+  /** Fires shortly after start() to catch an AudioWorklet that attached but
+   *  never delivered frames (iOS Safari can starve a muted-sink worklet). */
+  private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Periodically computes MFCC on the last ~500ms of audio. When the
    *  cosine similarity to the previous window drops below `threshold`,
@@ -172,6 +175,13 @@ export class VoiceCapture {
           channelCount: 1,
         });
         node.port.onmessage = (e) => this.pushFrame(e.data as Float32Array);
+        // If the processor throws on the audio thread, fall back at once.
+        node.onprocessorerror = () => {
+          console.warn(
+            "[voiceprint] AudioWorklet processor error — falling back to ScriptProcessor",
+          );
+          this.fallbackToScriptProcessor();
+        };
         this.source.connect(node);
         // Some browsers stop scheduling a node that isn't routed to the
         // destination; route through a muted gain so we pull frames without
@@ -191,21 +201,22 @@ export class VoiceCapture {
     }
 
     if (!usedWorklet) {
-      // ScriptProcessorNode is deprecated but works on iOS Safari & is reliable.
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processor.onaudioprocess = (e) => {
-        this.pushFrame(e.inputBuffer.getChannelData(0));
-      };
-      this.source.connect(processor);
-      // Required for ScriptProcessor to fire; route through gain at zero so we
-      // don't echo.
-      const sink = ctx.createGain();
-      sink.gain.value = 0;
-      processor.connect(sink);
-      sink.connect(ctx.destination);
-      this.processor = processor;
-      this.sink = sink;
-      this.captureMode = "scriptprocessor";
+      this.attachScriptProcessor();
+    } else {
+      // Watchdog: some iOS Safari builds attach a worklet cleanly but never
+      // deliver input frames (a node routed only into a muted sink can be
+      // starved). Speaker-ID is the #1 priority, so if no audio has arrived
+      // shortly after start, switch to the historically-reliable
+      // ScriptProcessor rather than silently capturing nothing.
+      this.watchdogTimer = setTimeout(() => {
+        this.watchdogTimer = null;
+        if (this.captureMode === "worklet" && !this.hasAudio) {
+          console.warn(
+            "[voiceprint] AudioWorklet produced no audio in 1.2s — falling back to ScriptProcessor",
+          );
+          this.fallbackToScriptProcessor();
+        }
+      }, 1200);
     }
 
     console.debug("[voiceprint] capture ready", {
@@ -213,6 +224,48 @@ export class VoiceCapture {
       ctxState: ctx.state,
       captureMode: this.captureMode,
     });
+  }
+
+  /** Attach a ScriptProcessorNode capture path — deprecated but reliable on
+   *  iOS Safari. Used as the initial fallback and by `fallbackToScriptProcessor`. */
+  private attachScriptProcessor() {
+    const ctx = this.ctx;
+    const source = this.source;
+    if (!ctx || !source) return;
+    const processor = ctx.createScriptProcessor(4096, 1, 1);
+    processor.onaudioprocess = (e) => {
+      this.pushFrame(e.inputBuffer.getChannelData(0));
+    };
+    source.connect(processor);
+    // Required for ScriptProcessor to fire; route through gain at zero so we
+    // don't echo.
+    const sink = ctx.createGain();
+    sink.gain.value = 0;
+    processor.connect(sink);
+    sink.connect(ctx.destination);
+    this.processor = processor;
+    this.sink = sink;
+    this.captureMode = "scriptprocessor";
+  }
+
+  /** Idempotently tear down a starved/erroring worklet and switch to the
+   *  ScriptProcessor path. Safe to call from the watchdog or onprocessorerror. */
+  private fallbackToScriptProcessor() {
+    if (this.captureMode === "scriptprocessor") return;
+    if (this.watchdogTimer) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+    try {
+      if (this.worklet) this.worklet.port.onmessage = null;
+      this.worklet?.disconnect();
+    } catch {}
+    this.worklet = null;
+    try {
+      this.sink?.disconnect();
+    } catch {}
+    this.sink = null;
+    this.attachScriptProcessor();
   }
 
   /** Append one render quantum of mono PCM to the rolling buffer and trim to
@@ -307,6 +360,10 @@ export class VoiceCapture {
 
   stop() {
     this.stopShiftMonitor();
+    if (this.watchdogTimer) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
     try {
       if (this.worklet) this.worklet.port.onmessage = null;
     } catch {}

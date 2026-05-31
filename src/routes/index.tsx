@@ -51,8 +51,8 @@ import {
   classifyConversationArc,
   predictMood,
 } from "@/lib/aac.functions";
-import { speakText } from "@/lib/audio/speak-text";
-import { warmQuickPhraseCache } from "@/lib/audio/quick-phrase-cache";
+import { speakText, stopSpeaking } from "@/lib/audio/speak-text";
+import { warmQuickPhraseCache, QUICK_PHRASES } from "@/lib/audio/quick-phrase-cache";
 import {
   buildConversationContext,
   suggestPeopleAtPlace,
@@ -121,13 +121,8 @@ type MoodId = (typeof MOODS)[number]["id"];
 // recorded into the transcript and folded into future suggestion prompts.
 const JAMES_SELF_LABEL = "__james_self__";
 
-const QUICK_PHRASES = [
-  "Yes",
-  "No",
-  "Give me a moment",
-  "Could you repeat that?",
-  "Sorry, who am I speaking with?",
-];
+// QUICK_PHRASES is imported from the quick-phrase cache module (single source
+// of truth) so the displayed list and the pre-warmed/cached list can't drift.
 
 /** Append a suggestion chip onto a cluster status, de-duped by name. */
 function mergeSuggestion(
@@ -1484,8 +1479,16 @@ function Home() {
       moodManuallySetRef.current = false;
       setPredictedMood(null);
       setSuggestions([]);
+      // Stop any in-flight TTS playback / streaming socket so audio doesn't
+      // outlive the conversation and the WS isn't left open.
+      stopSpeaking();
     }
   }, [active, stopping, scribe, summarizeFn, placeName]);
+
+  // Tear down any in-flight TTS (audio + streaming socket) if the cockpit
+  // unmounts mid-utterance (navigating to Settings / People / Recent), so a
+  // module-level singleton can't keep audio playing across routes.
+  useEffect(() => () => stopSpeaking(), []);
 
   // (No auto-mapping effect: speakers are confirmed only via the SpeakerPanel.)
 

@@ -7,12 +7,10 @@
  * round-trip twice.
  *
  * Embeddings are produced server-side by whichever provider key is present —
- * `gemini-embedding-001` or `openai/text-embedding-3-small`, both at 1536
- * dims so they share a comparable space (see COMPATIBLE_EMBEDDING_MODELS).
- * The real model is threaded back through `embedWithModel` so callers persist
- * the true `embedding_model` instead of assuming a fixed provider. Storage
- * lives on the IndexedDB `Memory` and `TranscriptSegment` rows; this module
- * owns nothing persistent.
+ * `gemini-embedding-001` or `openai/text-embedding-3-small`. The real model is
+ * threaded back through `embedWithModel` so callers persist the true
+ * `embedding_model`. Storage lives on the IndexedDB `Memory` and
+ * `TranscriptSegment` rows; this module owns nothing persistent.
  */
 
 import { embedTexts } from "./aac.functions";
@@ -21,29 +19,21 @@ export const EMBEDDING_MODEL = "text-embedding-3-small";
 export const EMBEDDING_DIMS = 1536;
 
 /**
- * Embedding models that produce vectors in a COMPATIBLE 1536-dim space and
- * may be cosine-compared against each other. Both the OpenAI and Gemini
- * paths in `embedTexts` request 1536 dims, so a query embedded by one can be
- * matched against rows embedded by the other without crossing embedding
- * spaces in a way that wrecks similarity. Anything outside this set (e.g. a
- * legacy 768-dim `text-embedding-004` row, or the `"none"` no-provider
- * sentinel) is treated as incompatible by retrieval and falls to the recency
- * bucket.
+ * Are two embedding-model labels safe to cosine-compare? ONLY when they are the
+ * exact same model. Even though both `gemini-embedding-001` and
+ * `text-embedding-3-small` are 1536-dim, they are independently-trained models
+ * in DIFFERENT embedding spaces — cosine across them is meaningless (and the
+ * length guard can't catch it, since the dims match). So if the embedding
+ * provider ever changes for an existing IndexedDB (key rotated / quota pulled →
+ * fallback flips Gemini↔OpenAI), mismatched-provider rows must fall to the
+ * recency bucket, not be silently mis-compared. Exact-match is the only safe rule.
  */
-export const COMPATIBLE_EMBEDDING_MODELS: ReadonlySet<string> = new Set([
-  "text-embedding-3-small",
-  "gemini-embedding-001",
-]);
-
-/** Are two embedding-model labels safe to cosine-compare? Same model always
- *  matches; different models only match when both are in the compatible set. */
 export function embeddingModelsCompatible(
   a: string | undefined,
   b: string | undefined,
 ): boolean {
-  if (!a || !b) return false;
-  if (a === b) return true;
-  return COMPATIBLE_EMBEDDING_MODELS.has(a) && COMPATIBLE_EMBEDDING_MODELS.has(b);
+  if (!a || !b || a === "none" || b === "none") return false;
+  return a === b;
 }
 
 // Single in-memory LRU keyed by a stable hash of the input text. Each entry
