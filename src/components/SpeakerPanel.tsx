@@ -86,9 +86,15 @@ export function SpeakerPanel({
   }, [segments.length, lastSegSig, partial]);
 
   useEffect(() => {
+    // A new conversation (transcript cleared) → resume sticking to the bottom,
+    // even if the user had scrolled up in the previous one.
+    if (segments.length === 0) {
+      stickToBottomRef.current = true;
+      return;
+    }
     // Dismiss reassign popover when new transcript arrives, so it doesn't
     // block the latest lines. User can tap again if they need to correct it.
-    if (segments.length > 0) setReassigningSegId(null);
+    setReassigningSegId(null);
   }, [segments.length]);
 
   const peopleById = new Map(people.map((p) => [p.id, p] as const));

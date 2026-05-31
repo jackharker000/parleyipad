@@ -45,6 +45,9 @@ export type ConversationContext = {
    *  in PAST conversations (prioritising ones with the present people), so the
    *  suggestion + expand prompts can mirror his genuine phrasing. */
   jamesVoiceSamples?: string[];
+  /** Preference learning — compact records of past suggestion decisions
+   *  (picked vs. passed over, or typed-his-own). Feeds the suggestion prompt. */
+  choiceMemories?: string[];
   // === Tier 1: feedback loop ===
   /** Aggregated per-person picks / edits / dead phrases, used to calibrate
    *  the suggestion prompt. Populated by `buildConversationContext`. */
@@ -271,6 +274,60 @@ export async function getJamesVoiceSamples(
   return out.slice(0, limit);
 }
 
+/**
+ * Compact, human-readable records of James's past suggestion decisions for the
+ * people currently present (falling back to global recent). Each line tells the
+ * model what he picked vs. passed over, or that he rejected everything and typed
+ * his own — so the suggestion prompt can learn his preferences. Bounded scan.
+ */
+export async function getRecentChoiceMemories(
+  personIds: string[],
+  limit = 12,
+): Promise<string[]> {
+  const trim = (s: string, n = 80) => {
+    const t = (s ?? "").trim().replace(/\s+/g, " ");
+    return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  };
+  try {
+    let rows = await db.suggestion_choices
+      .orderBy("ts")
+      .reverse()
+      .limit(200)
+      .toArray();
+    // Privacy: when we know who's present, only surface choices tied to one of
+    // them (plus generic person-less ones). A choice's `context`/`typed_own`
+    // can quote what a DIFFERENT person said, so backfilling globally would leak
+    // one person's conversation into a chat with someone else — mirror the
+    // place/follow-up filtering elsewhere in this module.
+    if (personIds.length) {
+      const present = new Set(personIds);
+      rows = rows.filter((r) => !r.person_id || present.has(r.person_id));
+    }
+    const out: string[] = [];
+    for (const r of rows) {
+      if (out.length >= limit) break;
+      const ctx = r.context ? `Replying to "${trim(r.context)}", ` : "";
+      if (r.outcome === "manual" && r.typed_own) {
+        out.push(
+          `${ctx}he rejected all suggestions and said "${trim(r.typed_own)}" instead.`,
+        );
+      } else if (r.outcome === "feedback" && r.chosen) {
+        const fb = (r.feedback ?? "").replace(/_/g, " ");
+        out.push(`He marked "${trim(r.chosen)}" as ${fb || "feedback"}.`);
+      } else if (r.outcome === "selected" && r.chosen) {
+        const alts = r.alternatives?.length
+          ? ` over: ${r.alternatives.slice(0, 3).map((a) => `"${trim(a, 50)}"`).join(", ")}`
+          : "";
+        out.push(`${ctx}he chose "${trim(r.chosen)}"${alts}.`);
+      }
+    }
+    return out.slice(0, limit);
+  } catch (err) {
+    console.warn("choice memories lookup failed", err);
+    return [];
+  }
+}
+
 export async function buildConversationContext(opts: {
   personIds: string[];
   place?: Place;
@@ -398,6 +455,16 @@ export async function buildConversationContext(opts: {
     console.warn("james voice samples failed", err);
   }
 
+  // === Preference learning ===
+  // What James picked vs. passed over before, so suggestions skew to his taste.
+  let choiceMemories: string[] | undefined;
+  try {
+    const choices = await getRecentChoiceMemories(opts.personIds);
+    if (choices.length) choiceMemories = choices;
+  } catch (err) {
+    console.warn("choice memories failed", err);
+  }
+
   // Tier 3.1 — when a query embedding was supplied, hoist the per-person
   // and place semantic top-K into a deduped top-level block so the model
   // sees the cross-scope picture at a glance. Capped to keep token budget
@@ -446,6 +513,7 @@ export async function buildConversationContext(opts: {
     event,
     styleProfileJson: styleProfile?.json,
     jamesVoiceSamples,
+    choiceMemories,
     styleEvidence,
     retrievedMemories,
   };

@@ -40,6 +40,8 @@ const TABLES = [
   // === Tier 2: post-conversation analysis ===
   "profile_proposals",
   "segment_mfccs",
+  // === Preference learning ===
+  "suggestion_choices",
 ] as const;
 
 type TableName = (typeof TABLES)[number];

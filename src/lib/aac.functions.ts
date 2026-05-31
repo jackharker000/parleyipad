@@ -99,9 +99,11 @@ function buildTarget(
       provider,
       url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      // Even an explicit gemini/<id> is run through the free-tier downgrade so
-      // a "pro" id never 403/429s on a free key.
-      model: mapToGemini(explicitModel ?? m),
+      // An EXPLICIT gemini/<id> selection is honoured verbatim (a paid-tier user
+      // can pick Pro; a free-tier user's Pro request 429s and the chain falls
+      // back). Only auto-picked / legacy "google/…" ids get the free-tier-safe
+      // downgrade to flash.
+      model: explicitModel ? explicitModel : mapToGemini(m),
     };
   }
   // lovable (legacy gateway)
@@ -198,12 +200,24 @@ async function chatCompletion(
   for (let i = 0; i < chain.length; i++) {
     const target = chain[i];
     const isLast = i === chain.length - 1;
+    const perBody: Record<string, unknown> = { ...body, model: target.model };
+    // OpenAI's GPT-5 / o-series reject any temperature other than the default
+    // (1) with a 400. Several callers pass a custom temperature, so strip it for
+    // those models — otherwise the request 400s and the fallback chain would
+    // silently mask the user's chosen model never running.
+    if (
+      target.provider === "openai" &&
+      /^(gpt-5|o\d)/i.test(target.model) &&
+      "temperature" in perBody
+    ) {
+      delete perBody.temperature;
+    }
     let res: Response;
     try {
       res = await fetch(target.url, {
         method: "POST",
         headers: target.headers,
-        body: JSON.stringify({ ...body, model: target.model }),
+        body: JSON.stringify(perBody),
       });
     } catch (e) {
       console.warn(`[ai] ${target.provider} network error${isLast ? "" : " — falling back"}`, e);
@@ -523,6 +537,10 @@ const suggestionsSchema = z.object({
   // Real lines James has actually spoken in PAST conversations (his genuine
   // phrasing/vocabulary), so suggestions mirror how he really talks.
   jamesVoiceSamples: z.array(z.string()).max(30).optional(),
+  // === Preference learning ===
+  // Compact records of past decisions: which suggestion he picked over which
+  // alternatives, or when he rejected all of them and typed his own.
+  choiceMemories: z.array(z.string()).max(20).optional(),
   model: z.string().optional(),
   mood: z
     .enum(["normal", "calm", "excited", "sad", "upset", "empathetic", "amused"])
@@ -608,6 +626,16 @@ Strongly bias suggestions toward making these key points and asking these key qu
       ? `# How James actually talks (real quotes from his past conversations)
 These are genuine lines James has spoken before. Mirror his natural phrasing, vocabulary, sentence length, rhythm, and humour. Reuse his real turns of phrase where they fit the moment. Do NOT copy a quote verbatim unless it's a perfect fit — adapt the VOICE, not the exact words.
 ${data.jamesVoiceSamples.map((s) => `- "${s}"`).join("\n")}
+`
+      : "";
+
+    // === Preference learning ===
+    // What James has chosen vs. passed over before. Picked > alternatives; when
+    // he typed his own, every suggestion missed and his own line is the target.
+    const choiceMemoriesBlock = data.choiceMemories?.length
+      ? `# What James has chosen before (his revealed preferences)
+Learn from these past decisions. When he picked one option over others, lean toward the style/content of the picked one and away from the rejected ones. When he rejected ALL suggestions and typed his own, those suggestions missed — aim much closer to what he actually said.
+${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
 `
       : "";
 
@@ -783,7 +811,7 @@ ${peopleBlock}
 ${placeBlock}
 ${eventBlock}
 ${styleBlock}
-${voiceSamplesBlock}${retrievedMemoriesBlock}${styleEvidenceBlock}${arcBlock}${moodBlock}${categoryBiasBlock}
+${voiceSamplesBlock}${choiceMemoriesBlock}${retrievedMemoriesBlock}${styleEvidenceBlock}${arcBlock}${moodBlock}${categoryBiasBlock}
 # Live conversation so far
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
@@ -878,7 +906,13 @@ export const summarizeConversation = createServerFn({ method: "POST" })
       };
     }
 
-    const system = `You analyze a conversation that James (a non-speaking AAC user) just had. Return: a 2-4 sentence narrative summary, 2-5 short highlight bullets, durable memory candidates (facts/preferences/events/todos worth remembering for next time), and follow-up topics for the next conversation. Be concise and concrete.`;
+    const system = `You analyze a conversation that James (a non-speaking AAC user) just had, and produce a thorough record so the system genuinely remembers it next time. Be generous and detailed — it is better to capture too much than to miss something James might value later.
+
+Return, via the tool:
+- summary: a detailed, multi-paragraph narrative (roughly 6–12 sentences). Cover what was actually discussed (each distinct topic), the emotional tone and how it shifted, anything decided or planned, questions left open, and anything notable about how each person was doing. Write in clear past tense about the real content — never generic filler.
+- highlights: 4–8 short, concrete bullet points — the moments, facts, or exchanges most worth remembering at a glance.
+- memories: extract EVERY durable thing worth remembering for future conversations — be thorough, not minimal. Include facts (about James or the people present), stated preferences and dislikes, life events (past or upcoming), plans and commitments (todos), opinions expressed, health/work/family/hobby details, and relationships mentioned. Each memory: a single self-contained sentence plus its kind (fact | preference | event | todo). Aim for as many as the conversation genuinely supports (often 5–15 for a real conversation); return an empty list only if nothing was said.
+- followUps: specific topics or questions to raise next time (e.g. "Ask how Mum's hospital appointment went"). Be concrete.`;
 
     const ctx = `${data.placeName ? `Place: ${data.placeName}\n` : ""}${data.peopleNames?.length ? `People present: ${data.peopleNames.join(", ")}\n` : ""}\nTranscript:\n${transcriptText}`;
 
@@ -895,10 +929,20 @@ export const summarizeConversation = createServerFn({ method: "POST" })
               parameters: {
                 type: "object",
                 properties: {
-                  summary: { type: "string" },
-                  highlights: { type: "array", items: { type: "string" } },
+                  summary: {
+                    type: "string",
+                    description:
+                      "Detailed multi-paragraph narrative (~6-12 sentences) of the whole conversation: topics, tone/emotional arc, decisions, open questions.",
+                  },
+                  highlights: {
+                    type: "array",
+                    description: "4-8 concrete bullet points worth remembering at a glance.",
+                    items: { type: "string" },
+                  },
                   memories: {
                     type: "array",
+                    description:
+                      "Every durable thing worth remembering next time — be thorough (often 5-15 for a real conversation).",
                     items: {
                       type: "object",
                       properties: {
@@ -911,7 +955,11 @@ export const summarizeConversation = createServerFn({ method: "POST" })
                       required: ["text", "kind"],
                     },
                   },
-                  followUps: { type: "array", items: { type: "string" } },
+                  followUps: {
+                    type: "array",
+                    description: "Specific topics/questions to raise next time.",
+                    items: { type: "string" },
+                  },
                 },
                 required: ["summary", "highlights", "memories", "followUps"],
               },
@@ -1035,6 +1083,116 @@ Rewrite as the spoken reply:`;
     const text = (json.choices?.[0]?.message?.content ?? "").trim();
     const cleaned = text.replace(/^["'`]+|["'`]+$/g, "").trim();
     return { expanded: cleaned || data.rawText, error: null };
+  });
+
+/* ------------- AI: predict full utterances from partial typing ------------- */
+// Powers the cockpit's predictive mode: the instant James starts typing, the
+// suggestion grid switches to showing the most likely COMPLETE things he's
+// trying to say, in his voice, so he can tap one instead of typing it all.
+
+const predictSchema = z.object({
+  partialText: z.string().min(1).max(400),
+  recentTranscript: z
+    .array(z.object({ speaker: z.string(), text: z.string() }))
+    .max(40)
+    .optional(),
+  jamesProfile: jamesProfileSchema.optional(),
+  people: z.array(personCtxSchema).optional(),
+  place: placeCtxSchema.optional(),
+  jamesVoiceSamples: z.array(z.string()).max(30).optional(),
+  mood: z
+    .enum(["normal", "calm", "excited", "sad", "upset", "empathetic", "amused"])
+    .optional(),
+  model: z.string().optional(),
+});
+
+export const predictUtterances = createServerFn({ method: "POST" })
+  .inputValidator((d) => predictSchema.parse(d))
+  .handler(async ({ data }) => {
+    const transcriptText = (data.recentTranscript ?? [])
+      .slice(-8)
+      .map((s) => `${s.speaker}: ${s.text}`)
+      .join("\n");
+    const jp = data.jamesProfile;
+    const profileBlock = jp
+      ? `About ${jp.name}: ${jp.background ?? ""}\nPersonality: ${jp.personality ?? ""}\nHumor: ${jp.humor ?? ""}\nCommunication style: ${jp.communication ?? ""}\n${jp.signaturePhrases?.length ? `Signature phrases: ${jp.signaturePhrases.join("; ")}\n` : ""}`
+      : "";
+    const peopleBlock = data.people?.length
+      ? `People present: ${data.people.map((p) => `${p.name}${p.relationship ? ` (${p.relationship})` : ""}`).join(", ")}\n`
+      : "";
+    const placeBlock = data.place ? `Location: ${data.place.name}\n` : "";
+    const voiceSamplesBlock = data.jamesVoiceSamples?.length
+      ? `How James actually talks (real quotes — match this voice):\n${data.jamesVoiceSamples.map((s) => `- "${s}"`).join("\n")}\n`
+      : "";
+
+    const system = `You are an AAC predictive-text engine for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy and slow, effortful typing. He has begun typing a reply. Your job: predict the most likely COMPLETE sentences he is trying to say, so he can tap one instead of finishing typing.
+
+Rules:
+- Treat his partial input as a rough, possibly-misspelled, possibly-abbreviated prefix or sketch of his intent. Interpret generously.
+- Return 6 distinct complete utterances, each a natural, ready-to-speak sentence in HIS voice, ordered most-likely first.
+- They must be plausible continuations/completions of what he has typed AND fit the live conversation.
+- Vary them: cover the obvious literal completion, a couple of close variants, and a couple that resolve ambiguity differently — but every one must be consistent with his partial text.
+- Never invent specific facts, names, times, or claims he didn't imply. Keep each under 16 words.`;
+
+    const user = `${profileBlock}${peopleBlock}${placeBlock}${voiceSamplesBlock}
+Recent conversation:
+${transcriptText || "(just starting)"}
+
+James has typed so far: "${data.partialText}"
+
+Predict the 6 most likely complete sentences he is trying to say.`;
+
+    const res = await chatCompletion(data.model, {
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature: 0.5,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "emit_predictions",
+            description: "Emit likely complete utterances for the partial input",
+            parameters: {
+              type: "object",
+              properties: {
+                predictions: {
+                  type: "array",
+                  minItems: 6,
+                  maxItems: 6,
+                  items: {
+                    type: "object",
+                    properties: {
+                      text: { type: "string" },
+                      category: { type: "string", enum: [...SUGGESTION_CATEGORIES] },
+                    },
+                    required: ["text"],
+                  },
+                },
+              },
+              required: ["predictions"],
+            },
+          },
+        },
+      ],
+      tool_choice: { type: "function", function: { name: "emit_predictions" } },
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("Predict failed:", res.status, err);
+      return { predictions: [], error: `AI error ${res.status}` };
+    }
+    const json = (await res.json()) as any;
+    const call = json.choices?.[0]?.message?.tool_calls?.[0];
+    if (!call) return { predictions: [], error: "No tool call" };
+    try {
+      const parsed = JSON.parse(call.function.arguments);
+      return { predictions: parsed.predictions ?? [], error: null };
+    } catch {
+      return { predictions: [], error: "Parse error" };
+    }
   });
 
 /* ----------------------- AI: draft a Facebook post ------------------------ */

@@ -89,8 +89,8 @@ import {
   type EventPrepItem,
   IPAD_PRESETS,
   type IPadModel,
-  MODEL_OPTIONS,
 } from "@/lib/db";
+import { AI_PROVIDERS, providerIdForModel, getProvider } from "@/lib/ai-models";
 import {
   listVoices,
   synthesizeSpeech,
@@ -334,59 +334,133 @@ function SystemTab() {
             <span className="flex items-center gap-2"><SlidersHorizontal className="size-4" /> AI models</span>
           </AccordionTrigger>
           <AccordionContent className="pb-5">
-            <p className="mb-4 text-sm text-muted-foreground">
-              <strong>Fast</strong> model runs live for every suggestion — speed matters. <strong>Smart</strong> model runs once at the end of conversations and for drafts — quality matters. "Your key" options use your own OpenAI API key.
-            </p>
-            <div>
-              <div className="text-sm font-medium">Live suggestions (fast)</div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Powers suggestion chips. James will feel every extra second.
-              </p>
-              <Select
-                value={settings.fast_model ?? settings.suggestion_model ?? "google/gemini-2.5-flash-lite"}
-                onValueChange={(v) =>
-                  updateSettings({ fast_model: v, suggestion_model: v, expand_model: v }).then(() =>
-                    toast.success("Fast model updated"),
-                  )
-                }
-              >
-                <SelectTrigger className="mt-2 h-12 text-base">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODEL_OPTIONS.map((m) => (
-                    <SelectItem key={`fast-${m.id}`} value={m.id}>
-                      {m.label} — <span className="text-muted-foreground">{m.hint}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="mt-5">
-              <div className="text-sm font-medium">Memory, summary &amp; drafts (smart)</div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Summary, memory extraction, event prep, reply drafts, and expand-and-speak. The extra second is invisible to James.
-              </p>
-              <Select
-                value={settings.smart_model ?? "google/gemini-2.5-pro"}
-                onValueChange={(v) =>
-                  updateSettings({ smart_model: v }).then(() =>
-                    toast.success("Smart model updated"),
-                  )
-                }
-              >
-                <SelectTrigger className="mt-2 h-12 text-base">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODEL_OPTIONS.map((m) => (
-                    <SelectItem key={`smart-${m.id}`} value={m.id}>
-                      {m.label} — <span className="text-muted-foreground">{m.hint}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {(() => {
+              const activeProviderId = providerIdForModel(
+                settings.fast_model ?? settings.suggestion_model,
+              );
+              const provider = getProvider(activeProviderId);
+              const fastValue = provider.models.some(
+                (m) => m.id === (settings.fast_model ?? settings.suggestion_model),
+              )
+                ? (settings.fast_model ?? settings.suggestion_model)!
+                : provider.defaultFast;
+              const smartValue = provider.models.some(
+                (m) => m.id === settings.smart_model,
+              )
+                ? settings.smart_model!
+                : provider.defaultSmart;
+              return (
+                <>
+                  <p className="mb-3 text-sm text-muted-foreground">
+                    Choose a provider, then a model for each tier.{" "}
+                    <strong>Fast</strong> runs live for every suggestion —
+                    speed matters. <strong>Smart</strong> runs at the end of
+                    conversations and for drafts — quality matters.
+                  </p>
+
+                  {/* Provider picker */}
+                  <div className="mb-1 text-sm font-medium">Provider</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {AI_PROVIDERS.map((p) => {
+                      const selected = p.id === activeProviderId;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() =>
+                            updateSettings({
+                              fast_model: p.defaultFast,
+                              suggestion_model: p.defaultFast,
+                              expand_model: p.defaultFast,
+                              smart_model: p.defaultSmart,
+                            }).then(() =>
+                              toast.success(`Switched to ${p.label}`),
+                            )
+                          }
+                          aria-pressed={selected}
+                          className={`min-h-12 rounded-xl border-2 px-3 py-2.5 text-base font-medium transition-colors ${
+                            selected
+                              ? "border-primary bg-primary/10 text-foreground"
+                              : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary"
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">{provider.note}</p>
+
+                  {/* Fast model */}
+                  <div className="mt-5">
+                    <div className="text-sm font-medium">Live suggestions (fast)</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Powers suggestion chips, predictions and expand-and-speak.
+                      James will feel every extra second.
+                    </p>
+                    <Select
+                      value={fastValue}
+                      onValueChange={(v) =>
+                        updateSettings({
+                          fast_model: v,
+                          suggestion_model: v,
+                          expand_model: v,
+                        }).then(() => toast.success("Fast model updated"))
+                      }
+                    >
+                      <SelectTrigger className="mt-2 h-12 text-base">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {provider.models.map((m) => (
+                          <SelectItem key={`fast-${m.id}`} value={m.id}>
+                            {m.label} —{" "}
+                            <span className="text-muted-foreground">{m.hint}</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Smart model */}
+                  <div className="mt-5">
+                    <div className="text-sm font-medium">
+                      Memory, summary &amp; drafts (smart)
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Summary, memory extraction, event prep, reply drafts. The
+                      extra second is invisible to James.
+                    </p>
+                    <Select
+                      value={smartValue}
+                      onValueChange={(v) =>
+                        updateSettings({ smart_model: v }).then(() =>
+                          toast.success("Smart model updated"),
+                        )
+                      }
+                    >
+                      <SelectTrigger className="mt-2 h-12 text-base">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {provider.models.map((m) => (
+                          <SelectItem key={`smart-${m.id}`} value={m.id}>
+                            {m.label} —{" "}
+                            <span className="text-muted-foreground">{m.hint}</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <p className="mt-4 rounded-lg bg-secondary/40 px-3 py-2 text-xs text-muted-foreground">
+                    Whichever provider you pick, Parley automatically falls back
+                    to the others if it's rate-limited or unavailable — so
+                    suggestions keep working.
+                  </p>
+                </>
+              );
+            })()}
           </AccordionContent>
         </AccordionItem>
 
@@ -2598,7 +2672,7 @@ function EventDetail({ eventId }: { eventId: string }) {
           docs: docSnips,
           existingPoints: event.key_points.map((k) => k.text),
           existingQuestions: event.key_questions.map((k) => k.text),
-          model: s.smart_model ?? "google/gemini-2.5-pro",
+          model: s.smart_model ?? "anthropic/claude-sonnet-4-5",
           jamesProfile: {
             name: profile.display_name || "James",
             background: profile.background,

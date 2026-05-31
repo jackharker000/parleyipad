@@ -34,6 +34,8 @@ import {
   type Person,
   type Place,
   type TranscriptSegment,
+  type SuggestionChoice,
+  type SuggestionFeedback,
   IPAD_PRESETS,
 } from "@/lib/db";
 import { findNearestPlace, getCurrentPosition } from "@/lib/geo";
@@ -43,9 +45,14 @@ import {
   summarizeConversation,
   synthesizeSpeech,
   expandUtterance,
+  predictUtterances,
   identifySpeakerFromContext,
 } from "@/lib/aac.functions";
-import { buildConversationContext, suggestPeopleAtPlace } from "@/lib/context";
+import {
+  buildConversationContext,
+  suggestPeopleAtPlace,
+  invalidateContextCache,
+} from "@/lib/context";
 import { getCrossSessionDeadPhrases } from "@/lib/style-evidence";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
@@ -222,6 +229,23 @@ function Home() {
     moodRef.current = mood;
   }, [mood]);
 
+  // === Predictive typing ===
+  // When James types, the grid switches to predicted completions of his intent.
+  const [predicting, setPredicting] = useState(false);
+  const predictModeRef = useRef(false);
+  // The last batch of conversation suggestions, kept so that when he types his
+  // own reply (rejecting them) we can mark them as "all missed".
+  const convoSuggestionsRef = useRef<Suggestion[]>([]);
+  // The line(s) James was replying to when the current suggestions were shown —
+  // recorded with each choice so the preference memory has context.
+  const currentContextRef = useRef<string>("");
+  // === Preference learning / feedback ===
+  // The suggestion currently being given long-press feedback (null = menu closed).
+  const [feedbackTarget, setFeedbackTarget] = useState<Suggestion | null>(null);
+  // True while a suggestion is being held for feedback — pauses auto-refresh so
+  // the held card isn't remounted (which would abort the hold) by a new batch.
+  const holdingCardRef = useRef(false);
+
   // Speech
   const [draft, setDraft] = useState("");
   const [speaking, setSpeaking] = useState(false);
@@ -240,8 +264,8 @@ function Home() {
   } | null>(null);
   const [voiceId, setVoiceId] = useState<string>("EXAVITQu4vr4xnSDxMaL");
   const [ipadModel, setIpadModel] = useState<string>("auto");
-  const fastModelRef = useRef<string>("google/gemini-2.5-flash-lite");
-  const smartModelRef = useRef<string>("google/gemini-2.5-pro");
+  const fastModelRef = useRef<string>("anthropic/claude-haiku-4-5");
+  const smartModelRef = useRef<string>("anthropic/claude-sonnet-4-5");
 
   // Speaker map
   // `speakerMap` only ever contains CONFIRMED entries (label -> personId).
@@ -354,6 +378,7 @@ function Home() {
   const suggestFn = useServerFn(generateSuggestions);
   const summarizeFn = useServerFn(summarizeConversation);
   const expandFn = useServerFn(expandUtterance);
+  const predictFn = useServerFn(predictUtterances);
   const identifyFn = useServerFn(identifySpeakerFromContext);
 
   // Per-utterance processing — extracted so we can call it twice when we
@@ -999,8 +1024,8 @@ function Home() {
       setVoiceId(s.voice_id);
       setIpadModel(s.ipad_model ?? "auto");
       fastModelRef.current =
-        s.fast_model ?? s.suggestion_model ?? "google/gemini-2.5-flash-lite";
-      smartModelRef.current = s.smart_model ?? "google/gemini-2.5-pro";
+        s.fast_model ?? s.suggestion_model ?? "anthropic/claude-haiku-4-5";
+      smartModelRef.current = s.smart_model ?? "anthropic/claude-sonnet-4-5";
 
       const people = await db.people.orderBy("name").toArray();
       if (!cancelled) setAllPeople(people);
@@ -1301,6 +1326,12 @@ function Home() {
   const deadPhrasesCacheRef = useRef<{ key: string; at: number; list: string[] } | null>(null);
   const refreshSuggestions = useCallback(async () => {
     if (loadingSuggestions || !active) return;
+    // While James is typing, the grid shows predictions of his intent — don't
+    // overwrite them with conversation suggestions.
+    if (predictModeRef.current) return;
+    // While a card is being held for feedback, don't swap the batch — a remount
+    // would abort the in-progress hold gesture.
+    if (holdingCardRef.current) return;
     const key = `${committed.length}:${moodRef.current}`;
     if (key === lastSuggestKeyRef.current) return;
     // Mark this key as in-flight; on failure we clear it so the next tick retries.
@@ -1361,6 +1392,17 @@ function Home() {
       }
       const sessionShown = lastShownRef.current.slice(-20);
       const alreadyShown = Array.from(new Set([...sessionShown, ...crossDead])).slice(0, 80);
+      // Context snippet = the last thing(s) said by someone other than James,
+      // i.e. what these suggestions are replies to. Recorded with each choice.
+      const contextSnippet = committed
+        .filter(
+          (s) =>
+            s.speaker_label !== jamesLabel && s.speaker_label !== "__james_self__",
+        )
+        .slice(-2)
+        .map((s) => s.text)
+        .join(" ");
+      currentContextRef.current = contextSnippet;
       // 18s hard timeout so a hung free-tier provider call doesn't strand the
       // UI in "Thinking…" forever — the user can re-tap Refresh after.
       const timeoutCtl = new AbortController();
@@ -1378,6 +1420,8 @@ function Home() {
             styleEvidence: ctx.styleEvidence,
             // === Cross-conversation voice learning ===
             jamesVoiceSamples: ctx.jamesVoiceSamples,
+            // === Preference learning ===
+            choiceMemories: ctx.choiceMemories,
             alreadyShown,
             model: fastModelRef.current,
             mood: moodRef.current,
@@ -1393,6 +1437,9 @@ function Home() {
       if (r.suggestions?.length) {
         succeeded = true;
         setSuggestions(r.suggestions as Suggestion[]);
+        // Remember this batch so that if James types his own reply instead of
+        // tapping one, we can mark all of them as "missed".
+        convoSuggestionsRef.current = r.suggestions as Suggestion[];
         lastShownRef.current = [
           ...lastShownRef.current,
           ...r.suggestions.map((s: Suggestion) => s.text),
@@ -1428,6 +1475,7 @@ function Home() {
               ignored: false,
               spoken: false,
               person_id: primaryPersonId,
+              context_snippet: contextSnippet || undefined,
             })),
           );
         }
@@ -1459,6 +1507,136 @@ function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [committed.length, active, mood]);
 
+  // === Preference learning: record which suggestion won, and which lost ======
+  // When James taps a suggestion, the chosen one was "best" and the others
+  // shown alongside it were worse — mark them ignored and store the decision.
+  const recordSelectionChoice = useCallback(async (chosen: Suggestion) => {
+    const cid = conversationIdRef.current ?? lastConversationIdRef.current;
+    if (!cid) return;
+    const batch = convoSuggestionsRef.current;
+    const alternatives = batch
+      .filter((s) => s.text !== chosen.text)
+      .map((s) => s.text);
+    const personId = personIdsRef.current[0];
+    try {
+      // Mark the losers from this batch as ignored (passed over for a better one).
+      if (alternatives.length) {
+        const altSet = new Set(alternatives);
+        await db.suggestions_log
+          .where("conversation_id")
+          .equals(cid)
+          .and((l) => !l.selected && altSet.has(l.text))
+          .modify({ ignored: true });
+      }
+      const choice: SuggestionChoice = {
+        id: newId(),
+        conversation_id: cid,
+        person_id: personId,
+        ts: Date.now(),
+        context: currentContextRef.current,
+        chosen: chosen.text,
+        chosen_category: chosen.category,
+        alternatives,
+        outcome: "selected",
+      };
+      await db.suggestion_choices.add(choice);
+      // Note: we deliberately do NOT bust the context cache for a routine pick
+      // — it's the common case and latency-sensitive. The pick still feeds the
+      // styleEvidence loop, and the choice memory lands within the cache TTL.
+    } catch (err) {
+      console.warn("record selection choice failed", err);
+    }
+  }, []);
+
+  // When James composes his OWN reply instead of tapping a suggestion, every
+  // suggestion on screen missed — mark them all and store what he actually said.
+  const commitManualReply = useCallback(async (typedText: string) => {
+    const cid = conversationIdRef.current ?? lastConversationIdRef.current;
+    if (!cid) return;
+    const batch = convoSuggestionsRef.current;
+    const alternatives = batch.map((s) => s.text);
+    const personId = personIdsRef.current[0];
+    try {
+      if (alternatives.length) {
+        const altSet = new Set(alternatives);
+        await db.suggestions_log
+          .where("conversation_id")
+          .equals(cid)
+          .and((l) => !l.selected && altSet.has(l.text))
+          .modify({ ignored: true, rejected_for_manual: true });
+      }
+      const choice: SuggestionChoice = {
+        id: newId(),
+        conversation_id: cid,
+        person_id: personId,
+        ts: Date.now(),
+        context: currentContextRef.current,
+        alternatives,
+        typed_own: typedText,
+        outcome: "manual",
+      };
+      await db.suggestion_choices.add(choice);
+      invalidateContextCache();
+    } catch (err) {
+      console.warn("record manual reply failed", err);
+    }
+  }, []);
+
+  // Long-press feedback on a suggestion → store explicit signal.
+  const recordFeedback = useCallback(
+    async (s: Suggestion, feedback: SuggestionFeedback) => {
+      const cid = conversationIdRef.current ?? lastConversationIdRef.current;
+      const personId = personIdsRef.current[0];
+      try {
+        if (cid) {
+          // Annotate the matching log row(s) for this text in this conversation.
+          await db.suggestions_log
+            .where("conversation_id")
+            .equals(cid)
+            .and((l) => l.text === s.text)
+            .modify({ feedback, feedback_at: Date.now() });
+          // Strong negatives also count as "not for me" so the dead-phrase
+          // filter stops re-suggesting it.
+          if (feedback === "not_me" || feedback === "wrong_tone") {
+            await db.suggestions_log
+              .where("conversation_id")
+              .equals(cid)
+              .and((l) => l.text === s.text && !l.selected)
+              .modify({ ignored: true });
+          }
+          const choice: SuggestionChoice = {
+            id: newId(),
+            conversation_id: cid,
+            person_id: personId,
+            ts: Date.now(),
+            context: currentContextRef.current,
+            chosen: s.text,
+            chosen_category: s.category,
+            alternatives: [],
+            outcome: "feedback",
+            feedback,
+          };
+          await db.suggestion_choices.add(choice);
+          invalidateContextCache();
+        }
+        const labels: Record<SuggestionFeedback, string> = {
+          love: "Noted — more like this",
+          good: "Noted",
+          too_formal: "Noted — will keep it more casual",
+          too_casual: "Noted — will keep it more polished",
+          wrong_tone: "Noted — wrong tone",
+          not_me: "Noted — won't suggest that again",
+        };
+        toast.success(labels[feedback]);
+      } catch (err) {
+        console.warn("record feedback failed", err);
+      } finally {
+        setFeedbackTarget(null);
+      }
+    },
+    [],
+  );
+
   // Speak via TTS
   const speak = useCallback(
     async (text: string, meta?: { suggestion?: Suggestion }) => {
@@ -1468,44 +1646,53 @@ function Home() {
         const r = await ttsFn({ data: { text, voiceId } });
         const audio = new Audio(`data:${r.mime};base64,${r.audioBase64}`);
         await audio.play();
-        // Record James's spoken line as a transcript segment so the next
-        // suggestion refresh sees it as part of the conversation.
-        const targetCid =
-          conversationIdRef.current ?? lastConversationIdRef.current;
-        if (targetCid) {
-          const selfLabel = jamesLabelRef.current ?? JAMES_SELF_LABEL;
-          const seg: TranscriptSegment = {
-            id: newId(),
-            conversation_id: targetCid,
-            speaker_label: selfLabel,
-            text,
-            ts: Date.now(),
-          };
-          // Only update the live transcript view while recording is active.
-          if (conversationIdRef.current) {
-            setCommitted((prev) => [...prev, seg]);
+        // Persistence below happens AFTER audio played — wrap separately so a
+        // benign IndexedDB write error can't surface as a misleading "Speech
+        // failed" toast when James was actually heard.
+        try {
+          // Record James's spoken line as a transcript segment so the next
+          // suggestion refresh sees it as part of the conversation.
+          const targetCid =
+            conversationIdRef.current ?? lastConversationIdRef.current;
+          if (targetCid) {
+            const selfLabel = jamesLabelRef.current ?? JAMES_SELF_LABEL;
+            const seg: TranscriptSegment = {
+              id: newId(),
+              conversation_id: targetCid,
+              speaker_label: selfLabel,
+              text,
+              ts: Date.now(),
+            };
+            // Only update the live transcript view while recording is active.
+            if (conversationIdRef.current) {
+              setCommitted((prev) => [...prev, seg]);
+            }
+            await db.transcript_segments.add(seg);
           }
-          await db.transcript_segments.add(seg);
-        }
-        if (meta?.suggestion && targetCid) {
-          const logs = await db.suggestions_log
-            .where("conversation_id")
-            .equals(targetCid)
-            .and((l) => l.text === meta.suggestion!.text && !l.selected)
-            .toArray();
-          if (logs[0]) {
-            await db.suggestions_log.update(logs[0].id, {
-              selected: true,
-              spoken: true,
+          if (meta?.suggestion && targetCid) {
+            const logs = await db.suggestions_log
+              .where("conversation_id")
+              .equals(targetCid)
+              .and((l) => l.text === meta.suggestion!.text && !l.selected)
+              .toArray();
+            if (logs[0]) {
+              await db.suggestions_log.update(logs[0].id, {
+                selected: true,
+                spoken: true,
+              });
+            }
+            // Preference learning: this suggestion won; the others shown lost.
+            void recordSelectionChoice(meta.suggestion);
+          } else if (targetCid) {
+            await db.manual_replies.add({
+              id: newId(),
+              conversation_id: targetCid,
+              text,
+              ts: Date.now(),
             });
           }
-        } else if (targetCid) {
-          await db.manual_replies.add({
-            id: newId(),
-            conversation_id: targetCid,
-            text,
-            ts: Date.now(),
-          });
+        } catch (persistErr) {
+          console.warn("post-speak persistence failed", persistErr);
         }
       } catch (e: any) {
         toast.error(e?.message ?? "Speech failed");
@@ -1513,7 +1700,7 @@ function Home() {
         setSpeaking(false);
       }
     },
-    [ttsFn, voiceId],
+    [ttsFn, voiceId, recordSelectionChoice],
   );
 
   const peopleInConvo = useMemo(
@@ -1931,6 +2118,8 @@ function Home() {
       } else {
         setLastExpansion({ raw, expanded: spoken });
         setDraft("");
+        // He composed his own reply → the suggestions on screen all missed.
+        void commitManualReply(spoken);
         await speak(spoken);
       }
     } catch (e: any) {
@@ -1947,6 +2136,7 @@ function Home() {
     committed,
     speak,
     isAmbiguousInput,
+    commitManualReply,
   ]);
 
   // User tapped Speak on the pending preview.
@@ -1956,8 +2146,93 @@ function Home() {
     setLastExpansion({ raw, expanded });
     setPendingSpeech(null);
     setDraft("");
+    // He composed his own reply → the suggestions on screen all missed.
+    void commitManualReply(expanded);
     await speak(expanded);
-  }, [pendingSpeech, speak]);
+  }, [pendingSpeech, speak, commitManualReply]);
+
+  // Tap a predicted completion → speak it straight away (no expansion needed).
+  const speakPrediction = useCallback(
+    async (text: string) => {
+      // He needed to type → the conversation suggestions missed; this is closer.
+      void commitManualReply(text);
+      setDraft("");
+      predictModeRef.current = false;
+      setPredicting(false);
+      await speak(text);
+    },
+    [speak, commitManualReply],
+  );
+
+  // === Predictive typing ===
+  // The moment James types, swap the grid to predicted completions of his
+  // intent; when he clears the box, restore the conversation suggestions.
+  useEffect(() => {
+    const text = draft.trim();
+    // Predict only while recording — outside a conversation the grid has no
+    // batch to restore and predictions would fire spurious network calls.
+    if (!active || text.length < 2) {
+      if (predictModeRef.current) {
+        predictModeRef.current = false;
+        setPredicting(false);
+        // Restore the conversation suggestions (only if we actually have a
+        // batch — otherwise just let the next refresh tick repopulate).
+        if (convoSuggestionsRef.current.length) {
+          setSuggestions(convoSuggestionsRef.current);
+        }
+        lastSuggestKeyRef.current = "";
+      }
+      return;
+    }
+    predictModeRef.current = true;
+    setPredicting(true);
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      try {
+        const peopleById = new Map(allPeople.map((p) => [p.id, p] as const));
+        const rawRecent = committed.slice(-8).map((s) => {
+          if (s.person_id) {
+            const p = peopleById.get(s.person_id);
+            if (p) return { speaker: p.name, text: s.text };
+          }
+          return { speaker: s.speaker_label, text: s.text };
+        });
+        const recent = labelTranscriptForPrompt(
+          rawRecent,
+          speakerMapRef.current,
+          peopleById,
+          jamesLabelRef.current,
+        );
+        const ctx = await buildConversationContext({
+          personIds: personIdsRef.current,
+          place: placeRef.current,
+          event: selectedEventRef.current ?? undefined,
+        });
+        const r = await predictFn({
+          data: {
+            partialText: text.slice(0, 400),
+            recentTranscript: recent,
+            jamesProfile: ctx.jamesProfile,
+            people: ctx.people,
+            place: ctx.place,
+            jamesVoiceSamples: ctx.jamesVoiceSamples,
+            mood: moodRef.current,
+            model: fastModelRef.current,
+          },
+        });
+        if (!cancelled && r.predictions?.length) {
+          setSuggestions(r.predictions as Suggestion[]);
+        }
+      } catch (err) {
+        console.warn("predict failed", err);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, committed, allPeople, predictFn, active]);
 
   return (
     <ScaledShell ipadModel={ipadModel}>
@@ -1971,10 +2246,10 @@ function Home() {
           aria-label={active ? "Stop conversation" : "Start conversation"}
           className={`flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl text-white shadow-sm transition-all active:scale-95 ${
             stopping
-              ? "bg-rose-300 ring-2 ring-rose-400"
+              ? "bg-[var(--coral)]/60 ring-2 ring-[var(--coral)]"
               : active
-                ? "bg-rose-600 hover:bg-rose-500"
-                : "bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50"
+                ? "bg-[var(--coral)] hover:opacity-90"
+                : "bg-[var(--teal)] hover:bg-[var(--teal-deep)] disabled:opacity-50"
           }`}
         >
           {active ? (
@@ -2150,38 +2425,45 @@ function Home() {
         <section className="flex min-h-0 w-4/5 flex-col rounded-2xl border border-border bg-card/40">
           <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              <Sparkles className="size-4 text-[var(--accent)]" /> Suggestions
+              <Sparkles className="size-4 text-[var(--accent)]" />
+              {predicting ? "Predicting what you're typing…" : "Suggestions"}
             </h2>
             <Button
               variant="ghost"
               size="sm"
               onClick={refreshSuggestions}
-              disabled={loadingSuggestions || !active}
+              disabled={loadingSuggestions || !active || predicting}
             >
               {loadingSuggestions ? "Thinking…" : "Refresh"}
             </Button>
           </div>
           <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-3 gap-2 overflow-hidden p-2">
-            {!active && suggestions.length === 0 && (
+            {!active && suggestions.length === 0 && !predicting && (
               <Card className="col-span-3 row-span-3 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
-                Press the green mic button to start a conversation. Suggestions
+                Press the record button to start a conversation. Suggestions
                 will appear here.
               </Card>
             )}
-            {active && suggestions.length === 0 && !loadingSuggestions && (
+            {active && suggestions.length === 0 && !loadingSuggestions && !predicting && (
               <Card className="col-span-3 row-span-3 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Listening… suggestions will appear after a few words.
               </Card>
             )}
             {suggestions.slice(0, 9).map((s, i) => (
-              <button
+              <SuggestionCard
                 key={`${i}-${s.text}`}
-                onClick={() => speak(s.text, { suggestion: s })}
+                suggestion={s}
                 disabled={speaking}
-                className={`flex h-full min-h-0 w-full items-center justify-center rounded-2xl border-2 p-3 text-center text-xl font-medium leading-snug transition-transform active:scale-[0.98] ${categoryClass(s.category)}`}
-              >
-                <span className="line-clamp-5">{s.text}</span>
-              </button>
+                onActivate={() =>
+                  predicting
+                    ? speakPrediction(s.text)
+                    : speak(s.text, { suggestion: s })
+                }
+                onLongPress={() => setFeedbackTarget(s)}
+                onHoldChange={(h) => {
+                  holdingCardRef.current = h;
+                }}
+              />
             ))}
           </div>
           {/* Quick phrases */}
@@ -2244,6 +2526,15 @@ function Home() {
           />
         </div>
       </div>
+
+      {/* Suggestion feedback menu (long-press) */}
+      {feedbackTarget && (
+        <FeedbackMenu
+          suggestion={feedbackTarget}
+          onPick={(fb) => recordFeedback(feedbackTarget, fb)}
+          onClose={() => setFeedbackTarget(null)}
+        />
+      )}
 
       {/* People picker modal */}
       {showPeoplePicker && (
@@ -2630,6 +2921,169 @@ function ScaledShell({
       >
         {children}
       </div>
+    </div>
+  );
+}
+
+/** Hold duration (ms) before a suggestion's feedback menu opens. */
+const FEEDBACK_HOLD_MS = 10_000;
+
+/**
+ * A single suggestion chip. A quick tap activates it (speak / pick a
+ * prediction). Pressing and holding for FEEDBACK_HOLD_MS opens the feedback
+ * menu instead — a deliberate long gesture so it never fires by accident
+ * during normal tapping. A thin progress bar fills while holding.
+ */
+function SuggestionCard({
+  suggestion,
+  disabled,
+  onActivate,
+  onLongPress,
+  onHoldChange,
+}: {
+  suggestion: Suggestion;
+  disabled: boolean;
+  onActivate: () => void;
+  onLongPress: () => void;
+  /** Notifies the parent while this card is held, so it can pause auto-refresh
+   *  (a remount mid-hold would otherwise abort the gesture). */
+  onHoldChange?: (holding: boolean) => void;
+}) {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const firedRef = useRef(false);
+  const [holding, setHolding] = useState(false);
+  const [fill, setFill] = useState(false);
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const start = () => {
+    firedRef.current = false;
+    setHolding(true);
+    onHoldChange?.(true);
+    // Next frame: flip fill so the CSS width transition animates 0 → 100%.
+    requestAnimationFrame(() => setFill(true));
+    timerRef.current = setTimeout(() => {
+      firedRef.current = true;
+      setHolding(false);
+      setFill(false);
+      onHoldChange?.(false);
+      onLongPress();
+    }, FEEDBACK_HOLD_MS);
+  };
+
+  const cancel = () => {
+    setHolding(false);
+    setFill(false);
+    onHoldChange?.(false);
+    clearTimer();
+  };
+
+  useEffect(
+    () => () => {
+      clearTimer();
+      onHoldChange?.(false);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  return (
+    <button
+      onPointerDown={start}
+      onPointerUp={cancel}
+      onPointerLeave={cancel}
+      onPointerCancel={cancel}
+      onClick={(e) => {
+        // If the long-press already fired, swallow the click so we don't also
+        // speak the suggestion.
+        if (firedRef.current) {
+          e.preventDefault();
+          firedRef.current = false;
+          return;
+        }
+        onActivate();
+      }}
+      disabled={disabled}
+      title="Tap to speak · hold to give feedback"
+      className={`relative flex h-full min-h-0 w-full select-none items-center justify-center overflow-hidden rounded-2xl border-2 p-3 text-center text-xl font-medium leading-snug transition-transform active:scale-[0.98] ${categoryClass(suggestion.category)} ${holding ? "ring-2 ring-[var(--accent)]" : ""}`}
+    >
+      <span className="line-clamp-5">{suggestion.text}</span>
+      {holding && (
+        <span
+          className="pointer-events-none absolute bottom-0 left-0 h-1 bg-[var(--accent)]"
+          style={{
+            width: fill ? "100%" : "0%",
+            transition: fill ? `width ${FEEDBACK_HOLD_MS}ms linear` : "none",
+          }}
+        />
+      )}
+    </button>
+  );
+}
+
+/**
+ * Feedback menu shown after a long-press on a suggestion. Each option records
+ * an explicit preference signal that shapes future suggestions.
+ */
+function FeedbackMenu({
+  suggestion,
+  onPick,
+  onClose,
+}: {
+  suggestion: Suggestion;
+  onPick: (feedback: SuggestionFeedback) => void;
+  onClose: () => void;
+}) {
+  const options: Array<{ value: SuggestionFeedback; label: string; emoji: string }> = [
+    { value: "love", label: "Sounds just like me", emoji: "💚" },
+    { value: "good", label: "Good", emoji: "👍" },
+    { value: "too_formal", label: "Too formal", emoji: "🎩" },
+    { value: "too_casual", label: "Too casual", emoji: "🩳" },
+    { value: "wrong_tone", label: "Wrong tone", emoji: "🎭" },
+    { value: "not_me", label: "Not me — don't suggest again", emoji: "🚫" },
+  ];
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <Card
+        className="w-full max-w-md p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-1 flex items-center gap-2">
+          <Sparkles className="size-4 text-[var(--accent)]" />
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            How was this suggestion?
+          </h3>
+        </div>
+        <p className="mb-4 rounded-lg bg-secondary/50 px-3 py-2 text-base font-medium">
+          “{suggestion.text}”
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          {options.map((o) => (
+            <button
+              key={o.value}
+              onClick={() => onPick(o.value)}
+              className="flex items-center gap-2 rounded-xl border-2 border-border bg-background px-3 py-3 text-left text-sm font-medium hover:border-primary hover:bg-primary/5 active:scale-[0.98]"
+            >
+              <span className="text-lg">{o.emoji}</span>
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={onClose}
+          className="mt-3 w-full rounded-xl border border-border bg-secondary/40 px-3 py-2 text-sm text-muted-foreground hover:bg-secondary"
+        >
+          Cancel
+        </button>
+      </Card>
     </div>
   );
 }

@@ -88,6 +88,51 @@ export type SuggestionLog = {
    * being selected — Tier 1 uses this to detect "ignored" suggestions
    * across the cross-session dead-phrase filter. */
   displaced_at?: number;
+  /** Set true when this row was on screen but James composed/typed his own
+   * reply instead of tapping any suggestion — a strong "all of these missed"
+   * signal that the loser-marking + dead-phrase logic both consume. */
+  rejected_for_manual?: boolean;
+  /** Explicit feedback from the long-press feedback menu. */
+  feedback?: SuggestionFeedback;
+  feedback_at?: number;
+  /** The line(s) James was replying to when this suggestion was shown —
+   * a small slice of context so the row reads as a real "memory of choice". */
+  context_snippet?: string;
+};
+
+export type SuggestionFeedback =
+  | "love" // perfect, sounds exactly like me
+  | "good" // fine
+  | "too_formal"
+  | "too_casual"
+  | "wrong_tone"
+  | "not_me"; // doesn't sound like me / off
+
+/**
+ * A durable memory of a single suggestion decision: the context, which option
+ * James chose, and the alternatives he passed over. The chosen one was "best";
+ * the alternatives were worse. When `typed_own` is set he rejected ALL of them
+ * and said his own thing — so every alternative missed and `typed_own` is the
+ * target the model should have hit. Feeds the live suggestion prompt so the AI
+ * learns his preferences over time.
+ */
+export type SuggestionChoice = {
+  id: string;
+  conversation_id: string;
+  person_id?: string;
+  ts: number;
+  /** What was being replied to (recent transcript snippet). */
+  context: string;
+  /** The suggestion text he tapped (undefined when he typed his own). */
+  chosen?: string;
+  chosen_category?: string;
+  /** The other suggestion texts shown at the same time (the ones he didn't pick). */
+  alternatives: string[];
+  /** Set when he composed his own reply instead of using any suggestion. */
+  typed_own?: string;
+  outcome: "selected" | "manual" | "feedback";
+  /** Carried when outcome === "feedback". */
+  feedback?: SuggestionFeedback;
 };
 
 export type ManualReply = {
@@ -378,6 +423,8 @@ class AacDb extends Dexie {
   // === Tier 2: post-conversation analysis ===
   profile_proposals!: Table<ProfileProposal, string>;
   segment_mfccs!: Table<SegmentMfcc, string>;
+  // === Preference learning: which suggestion James chose vs. the rest ===
+  suggestion_choices!: Table<SuggestionChoice, string>;
 
   constructor() {
     super("aac_copilot");
@@ -433,6 +480,14 @@ class AacDb extends Dexie {
       profile_proposals: "id, person_id, conversation_id, status, created_at",
       segment_mfccs: "id, segment_id, conversation_id, ts",
     });
+    // === Preference learning ===
+    // suggestion_choices records each decision (chosen vs. alternatives, or a
+    // typed-own rejection) so the suggestion prompt can learn his preferences.
+    // The new SuggestionLog fields (rejected_for_manual, feedback, feedback_at,
+    // context_snippet) are non-indexed properties — no re-declaration needed.
+    this.version(10).stores({
+      suggestion_choices: "id, conversation_id, person_id, ts",
+    });
   }
 }
 
@@ -447,10 +502,13 @@ export const DEFAULT_SETTINGS: Settings = {
   cloud_sync: false,
   suggestion_refresh_ms: 3500,
   ipad_model: "auto",
-  suggestion_model: "google/gemini-2.5-flash-lite",
-  expand_model: "google/gemini-2.5-flash-lite",
-  fast_model: "google/gemini-2.5-flash-lite",
-  smart_model: "google/gemini-2.5-pro",
+  // Default to the reliable, paid Anthropic tier (prefixed ids route to it as
+  // primary; the server still falls back to Gemini/OpenAI automatically). The
+  // free Gemini tier 429s under live load, so it's a fallback, not the default.
+  suggestion_model: "anthropic/claude-haiku-4-5",
+  expand_model: "anthropic/claude-haiku-4-5",
+  fast_model: "anthropic/claude-haiku-4-5",
+  smart_model: "anthropic/claude-sonnet-4-5",
 };
 
 export type ModelOption = {
@@ -537,15 +595,50 @@ export const MODEL_OPTIONS: ModelOption[] = [
   },
 ];
 
+/**
+ * Normalize a stored model id to a provider-prefixed one. Legacy gateway ids
+ * (`google/…`, bare, or anything without a known provider prefix) are rewritten
+ * to the reliable Anthropic default for the tier, so the Settings UI, local
+ * storage, and the server's `resolveChatChain` all agree on which provider runs.
+ */
+function normalizeModelId(
+  id: string | undefined,
+  tier: "fast" | "smart",
+): string {
+  if (
+    id &&
+    (id.startsWith("anthropic/") ||
+      id.startsWith("gemini/") ||
+      id.startsWith("openai-direct/"))
+  ) {
+    return id;
+  }
+  return tier === "fast" ? "anthropic/claude-haiku-4-5" : "anthropic/claude-sonnet-4-5";
+}
+
 export async function getSettings(): Promise<Settings> {
   const existing = await db.settings.get("singleton");
   if (existing) {
-    // Backfill new tier fields for users who set up before the split.
-    if (!existing.fast_model || !existing.smart_model) {
-      const migrated = {
+    // Heal tier fields: backfill the fast/smart split for pre-split users AND
+    // rewrite any legacy `google/…` ids to provider-prefixed ones so storage,
+    // UI and routing converge. suggestion_model / expand_model track fast_model.
+    const fast = normalizeModelId(
+      existing.fast_model ?? existing.suggestion_model,
+      "fast",
+    );
+    const smart = normalizeModelId(existing.smart_model, "smart");
+    if (
+      existing.fast_model !== fast ||
+      existing.smart_model !== smart ||
+      existing.suggestion_model !== fast ||
+      existing.expand_model !== fast
+    ) {
+      const migrated: Settings = {
         ...existing,
-        fast_model: existing.fast_model ?? existing.suggestion_model ?? DEFAULT_SETTINGS.fast_model,
-        smart_model: existing.smart_model ?? DEFAULT_SETTINGS.smart_model,
+        fast_model: fast,
+        smart_model: smart,
+        suggestion_model: fast,
+        expand_model: fast,
       };
       await db.settings.put(migrated);
       return migrated;
