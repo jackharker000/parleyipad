@@ -17,19 +17,6 @@ function getOpenAIApiKey(): string | undefined {
   );
 }
 
-function requireOpenAIApiKey(): string {
-  const key = getOpenAIApiKey();
-  if (!key) {
-    throw new Error(
-      "OPENAI_API_KEY is not configured on the server. In Vercel → ipad-aac-buddy → " +
-        "Settings → Environment Variables, add OPENAI_API_KEY for ALL environments " +
-        "(Production, Preview, Development), then redeploy. A key scoped to Production " +
-        "only will not reach preview deployments.",
-    );
-  }
-  return key;
-}
-
 function getAnthropicApiKey(): string | undefined {
   return process.env.ANTHROPIC_API_KEY || process.env.VITE_ANTHROPIC_API_KEY || undefined;
 }
@@ -66,86 +53,183 @@ function getGeminiApiKey(): string | undefined {
  *      Anthropic → OpenAI → Gemini → Lovable. The default gateway model id
  *      is mapped to a sensible model for the chosen provider.
  */
-function resolveChatTarget(model: string | undefined): {
+type ChatProvider = "anthropic" | "openai" | "gemini" | "lovable";
+type ChatTarget = {
+  provider: ChatProvider;
   url: string;
   headers: Record<string, string>;
   model: string;
-} {
-  const m = model ?? "google/gemini-2.5-flash-lite";
+};
 
-  const anthropicTarget = (modelId: string) => {
+/**
+ * Build a target for each provider, or null if that provider has no key.
+ * `explicitModel` (from a "provider/model" selector) bypasses the mapper.
+ */
+function buildTarget(
+  provider: ChatProvider,
+  m: string,
+  explicitModel?: string,
+): ChatTarget | null {
+  if (provider === "anthropic") {
     const key = getAnthropicApiKey();
-    if (!key) throw new Error(missingKeyError("ANTHROPIC_API_KEY"));
-    // Anthropic's OpenAI-compatible endpoint authenticates with a Bearer
-    // token (mimicking OpenAI), NOT the native x-api-key header.
+    if (!key) return null;
     return {
+      provider,
+      // Anthropic's OpenAI-compatible endpoint authenticates with a Bearer
+      // token (mimicking OpenAI), NOT the native x-api-key header.
       url: "https://api.anthropic.com/v1/chat/completions",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      model: modelId,
+      model: explicitModel ?? mapToAnthropic(m),
     };
-  };
-  const openaiTarget = (modelId: string) => {
-    const key = requireOpenAIApiKey();
+  }
+  if (provider === "openai") {
+    const key = getOpenAIApiKey();
+    if (!key) return null;
     return {
+      provider,
       url: "https://api.openai.com/v1/chat/completions",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      model: modelId,
+      model: explicitModel ?? mapToOpenAI(m),
     };
-  };
-  const geminiTarget = (modelId: string) => {
+  }
+  if (provider === "gemini") {
     const key = getGeminiApiKey();
-    if (!key) throw new Error(missingKeyError("GEMINI_API_KEY"));
+    if (!key) return null;
     return {
+      provider,
       url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      model: modelId,
+      // Even an explicit gemini/<id> is run through the free-tier downgrade so
+      // a "pro" id never 403/429s on a free key.
+      model: mapToGemini(explicitModel ?? m),
     };
+  }
+  // lovable (legacy gateway)
+  const lk = process.env.LOVABLE_API_KEY;
+  if (!lk) return null;
+  return {
+    provider,
+    url: "https://ai.gateway.lovable.dev/v1/chat/completions",
+    headers: { Authorization: `Bearer ${lk}`, "Content-Type": "application/json" },
+    model: explicitModel ?? m,
   };
-
-  // 1. Explicit provider prefix in the selector.
-  if (m.startsWith("openai-direct/")) return openaiTarget(m.slice("openai-direct/".length));
-  if (m.startsWith("anthropic/")) return anthropicTarget(m.slice("anthropic/".length));
-  if (m.startsWith("gemini/")) return geminiTarget(m.slice("gemini/".length));
-  if (m.startsWith("google/") && getGeminiApiKey() && !process.env.LOVABLE_API_KEY) {
-    // A "google/..." id with a Gemini key and no Lovable gateway → call
-    // Gemini directly. (With Lovable configured we keep routing through it.)
-    return geminiTarget(mapToGemini(m));
-  }
-
-  // 2. Optional hard override: PARLEY_AI_PROVIDER = anthropic | openai | gemini.
-  const forced = (process.env.PARLEY_AI_PROVIDER || "").toLowerCase().trim();
-  if (forced === "anthropic") return anthropicTarget(mapToAnthropic(m));
-  if (forced === "openai") return openaiTarget(mapToOpenAI(m));
-  if (forced === "gemini" || forced === "google") return geminiTarget(mapToGemini(m));
-
-  // 3. Auto-pick by available key. Gemini first — it's the free-tier key
-  //    set on this deploy, so it's the cheapest default; then Anthropic,
-  //    then OpenAI, then the legacy Lovable gateway.
-  if (getGeminiApiKey()) return geminiTarget(mapToGemini(m));
-  if (getAnthropicApiKey()) return anthropicTarget(mapToAnthropic(m));
-  if (getOpenAIApiKey()) return openaiTarget(mapToOpenAI(m));
-  if (process.env.LOVABLE_API_KEY) {
-    return {
-      url: "https://ai.gateway.lovable.dev/v1/chat/completions",
-      headers: {
-        Authorization: `Bearer ${process.env.LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      model: m,
-    };
-  }
-  throw new Error(
-    "No AI provider key configured. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, or " +
-      "GEMINI_API_KEY in Vercel → Settings → Environment Variables (all environments), then redeploy.",
-  );
 }
 
-function missingKeyError(name: string): string {
-  return (
-    `${name} is not configured on the server. In Vercel → ipad-aac-buddy → Settings → ` +
-    `Environment Variables, add ${name} for ALL environments (Production, Preview, ` +
-    `Development), then redeploy. A key scoped to Production only will not reach preview deployments.`
-  );
+/**
+ * Resolve an ordered fallback chain of chat targets for a model selector.
+ * The first entry is the primary; the rest are automatic fallbacks tried on
+ * a retryable failure (429 rate-limit / 5xx / network) by `chatCompletion`.
+ *
+ * Primary selection:
+ *   1. Explicit "provider/model" prefix wins.
+ *   2. PARLEY_AI_PROVIDER env override.
+ *   3. Auto-pick: ANTHROPIC → OPENAI → GEMINI → LOVABLE.
+ *      Anthropic is first because it's a paid, reliable key — the live cockpit
+ *      fires suggestions every turn and the free Gemini tier 429s under that
+ *      load. Gemini stays in the chain as a fallback / cost-saver.
+ *
+ * To prefer the free Gemini tier instead, set PARLEY_AI_PROVIDER=gemini.
+ */
+function resolveChatChain(model: string | undefined): ChatTarget[] {
+  const m = model ?? "google/gemini-2.5-flash-lite";
+
+  let primary: ChatProvider | null = null;
+  let explicit: string | undefined;
+
+  // 1. Explicit provider prefix in the selector.
+  if (m.startsWith("openai-direct/")) {
+    primary = "openai";
+    explicit = m.slice("openai-direct/".length);
+  } else if (m.startsWith("anthropic/")) {
+    primary = "anthropic";
+    explicit = m.slice("anthropic/".length);
+  } else if (m.startsWith("gemini/")) {
+    primary = "gemini";
+    explicit = m.slice("gemini/".length);
+  } else {
+    // 2. Hard override: PARLEY_AI_PROVIDER = anthropic | openai | gemini | google.
+    const forced = (process.env.PARLEY_AI_PROVIDER || "").toLowerCase().trim();
+    if (forced === "anthropic" || forced === "openai") primary = forced;
+    else if (forced === "gemini" || forced === "google") primary = "gemini";
+  }
+
+  // 3. Auto-pick order — paid/reliable first so live suggestions don't 429.
+  const order: ChatProvider[] = ["anthropic", "openai", "gemini", "lovable"];
+
+  const chain: ChatTarget[] = [];
+  const seen = new Set<ChatProvider>();
+  if (primary) {
+    const t = buildTarget(primary, m, explicit);
+    if (t) {
+      chain.push(t);
+      seen.add(primary);
+    }
+  }
+  for (const p of order) {
+    if (seen.has(p)) continue;
+    const t = buildTarget(p, m);
+    if (t) {
+      chain.push(t);
+      seen.add(p);
+    }
+  }
+
+  if (chain.length === 0) {
+    throw new Error(
+      "No AI provider key configured. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, or " +
+        "GEMINI_API_KEY in Vercel → Settings → Environment Variables (all environments), then redeploy.",
+    );
+  }
+  return chain;
+}
+
+/**
+ * POST a chat-completions request, walking the provider fallback chain on
+ * retryable failures (429 rate-limit, 5xx, network). `model` is injected per
+ * attempt from each target. Returns the first successful Response, or the last
+ * failed Response so callers' existing `if (!res.ok)` handling still works.
+ */
+async function chatCompletion(
+  model: string | undefined,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const chain = resolveChatChain(model);
+  let last: Response | null = null;
+  for (let i = 0; i < chain.length; i++) {
+    const target = chain[i];
+    const isLast = i === chain.length - 1;
+    let res: Response;
+    try {
+      res = await fetch(target.url, {
+        method: "POST",
+        headers: target.headers,
+        body: JSON.stringify({ ...body, model: target.model }),
+      });
+    } catch (e) {
+      console.warn(`[ai] ${target.provider} network error${isLast ? "" : " — falling back"}`, e);
+      last = new Response(JSON.stringify({ error: String(e) }), { status: 503 });
+      if (isLast) return last;
+      continue;
+    }
+    if (res.ok) return res;
+    // Any non-2xx → try the next provider. A 429 is the common case (free-tier
+    // rate limit), but we also fall back on 4xx/5xx so one provider's request-
+    // shape quirk (e.g. a forced tool_choice it doesn't accept) or a bad/expired
+    // key can't break the feature when another provider would succeed. Only the
+    // LAST provider's error is surfaced to the caller's `if (!res.ok)` handling.
+    if (!isLast) {
+      const text = await res.text().catch(() => "");
+      console.warn(
+        `[ai] ${target.provider} ${res.status} — falling back to ${chain[i + 1].provider}`,
+        text.slice(0, 160),
+      );
+      last = new Response(text, { status: res.status });
+      continue;
+    }
+    // Last provider in the chain — return its (failed) response as-is.
+    return res;
+  }
+  return last ?? new Response("{}", { status: 500 });
 }
 
 /**
@@ -435,6 +519,10 @@ const suggestionsSchema = z.object({
   // appended to the session-shown list without truncating either source.
   alreadyShown: z.array(z.string()).max(80).optional(),
   styleEvidence: styleEvidenceSchema.optional(),
+  // === Cross-conversation voice learning ===
+  // Real lines James has actually spoken in PAST conversations (his genuine
+  // phrasing/vocabulary), so suggestions mirror how he really talks.
+  jamesVoiceSamples: z.array(z.string()).max(30).optional(),
   model: z.string().optional(),
   mood: z
     .enum(["normal", "calm", "excited", "sad", "upset", "empathetic", "amused"])
@@ -511,6 +599,16 @@ Strongly bias suggestions toward making these key points and asking these key qu
 
     const styleBlock = data.styleProfileJson
       ? `# Learned style profile (JSON)\n${data.styleProfileJson}\n`
+      : "";
+
+    // === Cross-conversation voice learning ===
+    // Real things James has said in past conversations. The strongest signal
+    // for "sound like him" — concrete examples of his actual phrasing.
+    const voiceSamplesBlock = data.jamesVoiceSamples?.length
+      ? `# How James actually talks (real quotes from his past conversations)
+These are genuine lines James has spoken before. Mirror his natural phrasing, vocabulary, sentence length, rhythm, and humour. Reuse his real turns of phrase where they fit the moment. Do NOT copy a quote verbatim unless it's a perfect fit — adapt the VOICE, not the exact words.
+${data.jamesVoiceSamples.map((s) => `- "${s}"`).join("\n")}
+`
       : "";
 
     // === Tier 1.1: style evidence block ===
@@ -685,7 +783,7 @@ ${peopleBlock}
 ${placeBlock}
 ${eventBlock}
 ${styleBlock}
-${retrievedMemoriesBlock}${styleEvidenceBlock}${arcBlock}${moodBlock}${categoryBiasBlock}
+${voiceSamplesBlock}${retrievedMemoriesBlock}${styleEvidenceBlock}${arcBlock}${moodBlock}${categoryBiasBlock}
 # Live conversation so far
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
@@ -693,12 +791,7 @@ ${data.alreadyShown?.length ? `# Recently ignored or already shown (do NOT repea
 ${questionGuidance}
 Return exactly 6 suggestions in James's voice.`;
 
-    const target = resolveChatTarget(data.model);
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model, {
         // === Tier 3.4: bump temperature when there are under-performing
         // categories so we explore variants rather than re-emitting the
         // same near-miss text.
@@ -743,7 +836,6 @@ Return exactly 6 suggestions in James's voice.`;
           type: "function",
           function: { name: "emit_suggestions" },
         },
-      }),
     });
 
     if (!res.ok) {
@@ -774,7 +866,6 @@ const summarySchema = z.object({
 export const summarizeConversation = createServerFn({ method: "POST" })
   .inputValidator((d) => summarySchema.parse(d))
   .handler(async ({ data }) => {
-    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-flash");
     const transcriptText = data.transcript.map((s) => `${s.speaker}: ${s.text}`).join("\n");
 
     if (!transcriptText.trim()) {
@@ -791,11 +882,7 @@ export const summarizeConversation = createServerFn({ method: "POST" })
 
     const ctx = `${data.placeName ? `Place: ${data.placeName}\n` : ""}${data.peopleNames?.length ? `People present: ${data.peopleNames.join(", ")}\n` : ""}\nTranscript:\n${transcriptText}`;
 
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model ?? "google/gemini-2.5-flash", {
         messages: [
           { role: "system", content: system },
           { role: "user", content: ctx },
@@ -835,7 +922,6 @@ export const summarizeConversation = createServerFn({ method: "POST" })
           type: "function",
           function: { name: "emit_summary" },
         },
-      }),
     });
 
     if (!res.ok) {
@@ -891,6 +977,8 @@ const expandSchema = z.object({
   jamesProfile: jamesProfileSchema.optional(),
   people: z.array(personCtxSchema).optional(),
   place: placeCtxSchema.optional(),
+  // Real lines James has said before — anchor the expansion to his real voice.
+  jamesVoiceSamples: z.array(z.string()).max(30).optional(),
   model: z.string().optional(),
 });
 
@@ -910,6 +998,9 @@ export const expandUtterance = createServerFn({ method: "POST" })
       ? `People present: ${data.people.map((p) => `${p.name}${p.relationship ? ` (${p.relationship})` : ""}`).join(", ")}\n`
       : "";
     const placeBlock = data.place ? `Location: ${data.place.name}\n` : "";
+    const voiceSamplesBlock = data.jamesVoiceSamples?.length
+      ? `How James actually talks (real quotes from past conversations — match this voice, vocabulary, and rhythm):\n${data.jamesVoiceSamples.map((s) => `- "${s}"`).join("\n")}\n`
+      : "";
 
     const system = `You are an AAC writing assistant for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy whose typing is heavily truncated and full of typos. Your job: take his raw typed input and rewrite it as ONE clear, natural spoken sentence (or two short sentences max) in HIS voice, appropriate as the next reply in the live conversation. Preserve his intent exactly — never add facts, opinions, claims, or details he did not type.
 
@@ -920,7 +1011,7 @@ CRITICAL — minimal expansion rule:
 
 Fix spelling, expand abbreviations to common meanings, add small connector words where structurally required. Keep it concise, conversational, and under 25 words. Output ONLY the final sentence to be spoken aloud, with no quotes, no preface, no explanation.`;
 
-    const user = `${profileBlock}${peopleBlock}${placeBlock}
+    const user = `${profileBlock}${peopleBlock}${placeBlock}${voiceSamplesBlock}
 Recent conversation:
 ${transcriptText || "(just starting)"}
 
@@ -928,17 +1019,11 @@ James typed: "${data.rawText}"
 
 Rewrite as the spoken reply:`;
 
-    const target = resolveChatTarget(data.model);
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model, {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
         ],
-      }),
     });
 
     if (!res.ok) {
@@ -990,12 +1075,7 @@ ${data.context ? `# Context for this post\n${data.context}\n` : ""}
 
 Produce one polished version (the recommended one) plus 3 alternative variations with different tones (e.g. shorter / warmer / drier-witted). Keep each under 60 words. Return them via the tool call.`;
 
-    const target = resolveChatTarget(data.model);
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model, {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -1030,7 +1110,6 @@ Produce one polished version (the recommended one) plus 3 alternative variations
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_post" } },
-      }),
     });
 
     if (!res.ok) {
@@ -1107,12 +1186,7 @@ ${docsBlock}
 ${existingBlock}
 Generate 6-10 key points and 6-10 key questions tailored to this event.`;
 
-    const target = resolveChatTarget(data.model);
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model, {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -1144,7 +1218,6 @@ Generate 6-10 key points and 6-10 key questions tailored to this event.`;
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_event_prep" } },
-      }),
     });
 
     if (!res.ok) {
@@ -1220,12 +1293,7 @@ ${data.context ? `# Context\n${data.context}\n` : ""}${incomingBlock}
 
 Produce one polished version (the recommended one) plus 3 alternative variations with different tones (e.g. shorter / warmer / drier-witted). Return them via the tool call.`;
 
-    const target = resolveChatTarget(data.model);
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model, {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -1259,7 +1327,6 @@ Produce one polished version (the recommended one) plus 3 alternative variations
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_reply" } },
-      }),
     });
 
     if (!res.ok) {
@@ -1321,12 +1388,7 @@ ${data.draft}
 
 Return 0-3 suggested profile additions.`;
 
-    const target = resolveChatTarget(data.model);
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model, {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -1362,7 +1424,6 @@ Return 0-3 suggested profile additions.`;
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_interests" } },
-      }),
     });
     if (!res.ok) return { suggestions: [], error: `AI error ${res.status}` };
     const json = (await res.json()) as any;
@@ -1416,12 +1477,7 @@ ${transcriptText}
 
 Who is ${data.unknownLabel}? Return the most likely candidate name or "unknown", with confidence 0–1.`;
 
-    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-flash-lite");
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model ?? "google/gemini-2.5-flash-lite", {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -1448,7 +1504,6 @@ Who is ${data.unknownLabel}? Return the most likely candidate name or "unknown",
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_speaker_id" } },
-      }),
     });
 
     if (!res.ok) {
@@ -1508,7 +1563,6 @@ const distillStyleProfileSchema = z.object({
 export const distillStyleProfile = createServerFn({ method: "POST" })
   .inputValidator((d) => distillStyleProfileSchema.parse(d))
   .handler(async ({ data }) => {
-    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
     if (data.samples.length < 20) {
       return {
         profile: null as any,
@@ -1542,11 +1596,7 @@ ${sampleLines.join("\n")}
 
 Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRITES (edited). Treat (ignored) lines as anti-examples. Do not over-claim if signal is thin.`;
 
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model ?? "google/gemini-2.5-pro", {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -1595,7 +1645,6 @@ Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRI
         ],
         tool_choice: { type: "function", function: { name: "emit_profile" } },
         temperature: 0.2,
-      }),
     });
 
     if (!res.ok) {
@@ -1641,7 +1690,6 @@ const tieBreakerSchema = z.object({
 export const aiRediarizeTieBreaker = createServerFn({ method: "POST" })
   .inputValidator((d) => tieBreakerSchema.parse(d))
   .handler(async ({ data }) => {
-    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
     const system = `You are a forensic transcript reviewer. A non-speaking AAC user, James, just finished a conversation. A first-pass automatic diarizer assigned each utterance a speaker label, but several were ambiguous. The user has confirmed the full list of speakers in the room.
 
 For EACH ambiguous candidate utterance you are given two possible speakers from the confirmed list. Decide who actually said it using BOTH:
@@ -1670,11 +1718,7 @@ ${data.candidates
       };
     }
 
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model ?? "google/gemini-2.5-pro", {
         messages: [
           { role: "system", content: system },
           { role: "user", content: userMsg },
@@ -1714,7 +1758,6 @@ ${data.candidates
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_decisions" } },
-      }),
     });
 
     if (!res.ok) {
@@ -1782,7 +1825,6 @@ export const enrichPersonProfile = createServerFn({ method: "POST" })
         error: null as string | null,
       };
     }
-    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
     const system = `You analyse a transcript filtered to a SINGLE pair: James (a non-speaking AAC user) and ONE other person. You propose small, conservative updates to your stored profile of that person so future AI replies feel more attuned to them.
 
 Categories (only propose what is strongly evidenced — skip categories with no evidence):
@@ -1805,11 +1847,7 @@ ${profileText}
 Filtered transcript (only turns by James and ${data.personName}):
 ${transcriptText}`;
 
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model ?? "google/gemini-2.5-pro", {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -1852,7 +1890,6 @@ ${transcriptText}`;
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_proposals" } },
-      }),
     });
 
     if (!res.ok) return { proposals: [], error: `AI error ${res.status}` };
@@ -1906,7 +1943,6 @@ export const detectIntroductions = createServerFn({ method: "POST" })
         error: null as string | null,
       };
     }
-    const target = resolveChatTarget(data.model ?? "google/gemini-2.5-pro");
     const system = `You scan a finished conversation transcript for SELF-INTRODUCTIONS by people James (a non-speaking AAC user) hadn't met before. For each genuine introduction, extract: the speaker's first name (preferred), role/relationship if explicit, and which speaker label uttered the introduction.
 
 Rules:
@@ -1923,11 +1959,7 @@ Existing people in the address book: ${data.existingPeopleNames.join(", ") || "(
 Transcript:
 ${data.transcript.map((t) => `${t.speaker}: ${t.text}`).join("\n")}`;
 
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model ?? "google/gemini-2.5-pro", {
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -1965,7 +1997,6 @@ ${data.transcript.map((t) => `${t.speaker}: ${t.text}`).join("\n")}`;
           type: "function",
           function: { name: "emit_introductions" },
         },
-      }),
     });
 
     if (!res.ok) return { introductions: [], error: `AI error ${res.status}` };
@@ -2044,12 +2075,7 @@ Prefer the tag for the LAST 3-5 turns. If conversation just shifted, use new tag
     const user = `${data.previousArc ? `Previous arc: ${data.previousArc}\n\n` : ""}Recent turns:
 ${transcriptText}`;
 
-    const target = resolveChatTarget(data.model);
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model, {
         temperature: 0.2,
         messages: [
           { role: "system", content: system },
@@ -2073,7 +2099,6 @@ ${transcriptText}`;
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_arc" } },
-      }),
     });
 
     if (!res.ok) {
@@ -2153,12 +2178,7 @@ Be CONSERVATIVE. "normal" when nothing strongly suggests another tag. Confidence
     const user = `${data.previousMood ? `Previous mood: ${data.previousMood}\n\n` : ""}${prosodyText ? `${prosodyText}\n` : ""}Recent turns:
 ${transcriptText}`;
 
-    const target = resolveChatTarget(data.model);
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: target.headers,
-      body: JSON.stringify({
-        model: target.model,
+    const res = await chatCompletion(data.model, {
         temperature: 0.3,
         messages: [
           { role: "system", content: system },
@@ -2183,7 +2203,6 @@ ${transcriptText}`;
           },
         ],
         tool_choice: { type: "function", function: { name: "emit_mood" } },
-      }),
     });
 
     if (!res.ok) {

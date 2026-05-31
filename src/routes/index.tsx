@@ -1376,6 +1376,8 @@ function Home() {
             styleProfileJson: ctx.styleProfileJson,
             // === Tier 1.1: style evidence ===
             styleEvidence: ctx.styleEvidence,
+            // === Cross-conversation voice learning ===
+            jamesVoiceSamples: ctx.jamesVoiceSamples,
             alreadyShown,
             model: fastModelRef.current,
             mood: moodRef.current,
@@ -1909,6 +1911,8 @@ function Home() {
             jamesProfile: ctx.jamesProfile,
             people: ctx.people,
             place: ctx.place,
+            // === Cross-conversation voice learning ===
+            jamesVoiceSamples: ctx.jamesVoiceSamples,
             // Use smart model for expansion — it's a one-shot operation so the
             // extra latency is acceptable, and quality matters more than speed here.
             model: smartModelRef.current,

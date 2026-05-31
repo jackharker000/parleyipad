@@ -41,6 +41,10 @@ export type ConversationContext = {
     docs: string[]; // formatted doc snippets
   };
   styleProfileJson?: string;
+  /** Cross-conversation voice learning — real lines James has actually spoken
+   *  in PAST conversations (prioritising ones with the present people), so the
+   *  suggestion + expand prompts can mirror his genuine phrasing. */
+  jamesVoiceSamples?: string[];
   // === Tier 1: feedback loop ===
   /** Aggregated per-person picks / edits / dead phrases, used to calibrate
    *  the suggestion prompt. Populated by `buildConversationContext`. */
@@ -178,6 +182,95 @@ async function followUpsForPlace(
     .map((f) => f.text);
 }
 
+/** Label every line James speaks via TTS is recorded under (see cockpit). */
+const JAMES_SELF_LABEL = "__james_self__";
+
+/** Quick phrases + safety phrases carry no style signal — exclude from samples. */
+const VOICE_SAMPLE_STOPWORDS = new Set(
+  [
+    "yes",
+    "no",
+    "give me a moment",
+    "could you repeat that?",
+    "sorry, who am i speaking with?",
+    "wait",
+    "i'm not finished",
+    "i need help",
+  ].map((s) => s.toLowerCase()),
+);
+
+/**
+ * Collect real lines James has spoken in PAST conversations, so the AI can
+ * mirror his genuine voice. Prioritises conversations that involved the
+ * present people (style is relationship-specific), then backfills from his
+ * global recent history. Deduped, trivial/quick-phrase lines dropped.
+ *
+ * Bounded scans keep this cheap: ≤60 recent conversations, ≤20 relevant ones,
+ * and a ≤600-segment global recency window.
+ */
+export async function getJamesVoiceSamples(
+  personIds: string[],
+  limit = 24,
+): Promise<string[]> {
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  const push = (raw: string) => {
+    if (out.length >= limit) return;
+    const text = (raw ?? "").trim();
+    if (!text) return;
+    const norm = text.toLowerCase().replace(/[.!?,…]+$/g, "").trim();
+    if (seen.has(norm) || VOICE_SAMPLE_STOPWORDS.has(norm)) return;
+    // Single-word lines carry little phrasing signal.
+    if (text.split(/\s+/).length < 2) return;
+    seen.add(norm);
+    out.push(text);
+  };
+
+  try {
+    // 1. Lines from past conversations that involved the present people.
+    if (personIds.length) {
+      const convos = await db.conversations
+        .orderBy("started_at")
+        .reverse()
+        .limit(60)
+        .toArray();
+      const relevantIds = convos
+        .filter((c) => c.person_ids?.some((pid) => personIds.includes(pid)))
+        .slice(0, 20)
+        .map((c) => c.id);
+      for (const cid of relevantIds) {
+        if (out.length >= limit) break;
+        const segs = await db.transcript_segments
+          .where("conversation_id")
+          .equals(cid)
+          .toArray();
+        segs.sort((a, b) => b.ts - a.ts);
+        for (const s of segs) {
+          if (s.speaker_label === JAMES_SELF_LABEL) push(s.text);
+          if (out.length >= limit) break;
+        }
+      }
+    }
+
+    // 2. Backfill from globally most-recent James lines.
+    if (out.length < limit) {
+      const recent = await db.transcript_segments
+        .orderBy("ts")
+        .reverse()
+        .limit(600)
+        .toArray();
+      for (const s of recent) {
+        if (out.length >= limit) break;
+        if (s.speaker_label === JAMES_SELF_LABEL) push(s.text);
+      }
+    }
+  } catch (err) {
+    console.warn("james voice samples lookup failed", err);
+  }
+  return out.slice(0, limit);
+}
+
 export async function buildConversationContext(opts: {
   personIds: string[];
   place?: Place;
@@ -295,6 +388,16 @@ export async function buildConversationContext(opts: {
     console.warn("style evidence lookup failed", err);
   }
 
+  // === Cross-conversation voice learning ===
+  // Real lines James has spoken before, so suggestions sound like him.
+  let jamesVoiceSamples: string[] | undefined;
+  try {
+    const samples = await getJamesVoiceSamples(opts.personIds);
+    if (samples.length) jamesVoiceSamples = samples;
+  } catch (err) {
+    console.warn("james voice samples failed", err);
+  }
+
   // Tier 3.1 — when a query embedding was supplied, hoist the per-person
   // and place semantic top-K into a deduped top-level block so the model
   // sees the cross-scope picture at a glance. Capped to keep token budget
@@ -342,6 +445,7 @@ export async function buildConversationContext(opts: {
     place,
     event,
     styleProfileJson: styleProfile?.json,
+    jamesVoiceSamples,
     styleEvidence,
     retrievedMemories,
   };
