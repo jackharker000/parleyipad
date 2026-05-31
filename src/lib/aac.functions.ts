@@ -950,8 +950,14 @@ export const summarizeConversation = createServerFn({ method: "POST" })
 
     const system = `You analyze a conversation that James (a non-speaking AAC user) just had, and produce a thorough record so the system genuinely remembers it next time. Be generous and detailed — it is better to capture too much than to miss something James might value later.
 
+ACCURACY IS PARAMOUNT — this record is re-read to shape what James says to real people:
+- Base everything STRICTLY on what was actually said in the transcript. Never invent events, feelings, decisions, plans, names, or commitments that are not supported by the words below.
+- If the conversation was short or light, write a correspondingly short, honest summary. Do NOT pad it with speculation or generic filler to hit a length.
+- Attribute statements to the right speaker. Do not infer affection, conflict, or emotion that was not actually expressed in words.
+- Quote or closely paraphrase only what is present; when unsure, leave it out.
+
 Return, via the tool:
-- summary: a detailed, multi-paragraph narrative (roughly 6–12 sentences). Cover what was actually discussed (each distinct topic), the emotional tone and how it shifted, anything decided or planned, questions left open, and anything notable about how each person was doing. Write in clear past tense about the real content — never generic filler.
+- summary: a faithful narrative of the conversation. For a substantive conversation this is multiple paragraphs (roughly 6–12 sentences); for a brief exchange it may be just 1–3 sentences — match the real content. Cover what was actually discussed (each distinct topic), the emotional tone and how it shifted, anything decided or planned, and questions left open. Write in clear past tense about the real content — never generic filler.
 - highlights: 4–8 short, concrete bullet points — the moments, facts, or exchanges most worth remembering at a glance.
 - memories: extract EVERY durable thing worth remembering for future conversations — be thorough, not minimal. Include facts (about James or the people present), stated preferences and dislikes, life events (past or upcoming), plans and commitments (todos), opinions expressed, health/work/family/hobby details, and relationships mentioned. Each memory: a single self-contained sentence plus its kind (fact | preference | event | todo). Aim for as many as the conversation genuinely supports (often 5–15 for a real conversation); return an empty list only if nothing was said.
 - followUps: specific topics or questions to raise next time (e.g. "Ask how Mum's hospital appointment went"). Be concrete.`;
@@ -2038,15 +2044,23 @@ export const enrichPersonProfile = createServerFn({ method: "POST" })
     }
     const system = `You analyse a transcript filtered to a SINGLE pair: James (a non-speaking AAC user) and ONE other person. You propose small, conservative updates to your stored profile of that person so future AI replies feel more attuned to them.
 
-Categories (only propose what is strongly evidenced — skip categories with no evidence):
+GROUNDING RULES (critical — this profile drives how James talks to real people):
+- Base EVERY proposal ONLY on what was literally said in the transcript below.
+- NEVER infer affection, warmth, closeness, or any emotional dynamic unless it is stated in plain words. Casual chat is NOT evidence of affection.
+- NEVER invent, paraphrase, embellish, or attribute a quote that is not in the transcript.
+- For each proposal you MUST supply an "evidence" field containing an EXACT, verbatim, word-for-word quote copied from the transcript that proves it. If you cannot copy such a quote, DO NOT make that proposal.
+- One observation = at most one proposal. Do not split a single fact into a tag AND a dynamic.
+- A short or small-talk exchange usually warrants ZERO proposals. Returning an empty list is the correct, expected answer when little was genuinely revealed.
+
+Categories (only propose what is directly and explicitly evidenced — skip categories with no evidence):
 - interests (array): hobbies / subjects they clearly care about, each <= 5 words.
 - style_notes (text, append): how James interacts with THIS person specifically.
 - topics_loved (text, append): topics they brought up enthusiastically.
 - topics_avoided (text, append): topics they steered away from.
-- relationship_dynamics (text, append): freeform observation about the dynamic.
+- relationship_dynamics (text, append): freeform observation about the dynamic — only when explicitly demonstrated in words.
 - dynamic_tags (array): tags from ONLY: [${ENRICH_ALLOWED_TAGS.map((t) => `"${t}"`).join(", ")}]. Max 3 new tags per proposal.
 
-NEVER propose anything already present (verbatim or paraphrased). Be terse. Each value <= 25 words. Return empty proposals if nothing meaningful to add.`;
+NEVER propose anything already present (verbatim or paraphrased). Be terse. Each value <= 25 words.`;
 
     const profileText = JSON.stringify(data.currentProfile, null, 2);
     const transcriptText = data.filteredTranscript.map((s) => `${s.speaker}: ${s.text}`).join("\n");
@@ -2089,9 +2103,14 @@ ${transcriptText}`;
                         },
                         value: { type: "string" },
                         op: { type: "string", enum: ["add", "replace"] },
+                        evidence: {
+                          type: "string",
+                          description:
+                            "An EXACT verbatim quote copied from the transcript that proves this proposal. Must appear word-for-word in the transcript.",
+                        },
                         reasoning: { type: "string" },
                       },
-                      required: ["field", "value", "op"],
+                      required: ["field", "value", "op", "evidence"],
                     },
                   },
                 },
@@ -2107,22 +2126,50 @@ ${transcriptText}`;
     const json = (await res.json()) as any;
     const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
     if (!argStr) return { proposals: [], error: "No tool call" };
+    // Normalised transcript for verbatim-evidence verification: lowercase,
+    // collapse whitespace, strip basic quote marks so the model's quote only
+    // has to match the words it actually heard, not punctuation.
+    const normalise = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/["“”'’`]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    const transcriptNorm = normalise(transcriptText);
     try {
       const parsed = JSON.parse(argStr) as {
         proposals: Array<{
           field: string;
           value: string;
           op: "add" | "replace";
+          evidence?: string;
           reasoning?: string;
         }>;
       };
-      const proposals = (parsed.proposals ?? []).filter((p) => {
-        if (!p.value || !p.value.trim()) return false;
-        if (p.field === "dynamic_tags") {
-          return ENRICH_ALLOWED_TAGS.includes(p.value.trim().toLowerCase());
-        }
-        return true;
-      });
+      const proposals = (parsed.proposals ?? [])
+        .filter((p) => {
+          if (!p.value || !p.value.trim()) return false;
+          if (p.field === "dynamic_tags") {
+            if (!ENRICH_ALLOWED_TAGS.includes(p.value.trim().toLowerCase())) return false;
+          }
+          // Anti-confabulation gate: the model must cite a verbatim quote that
+          // genuinely appears in the transcript. Drop anything it invented
+          // (the "Jack says 'Love you'" failure mode). Require a quote of real
+          // substance (>= 8 chars) so trivial words like "yes" can't pass.
+          const ev = normalise(p.evidence ?? "");
+          if (ev.length < 8) return false;
+          if (!transcriptNorm.includes(ev)) return false;
+          return true;
+        })
+        .map((p) => {
+          // Surface the grounding quote in the review UI so a reviewer can see
+          // exactly what the proposal is based on.
+          const quote = (p.evidence ?? "").trim();
+          const reasoning = p.reasoning?.trim()
+            ? `${p.reasoning.trim()} — heard: “${quote}”`
+            : `Heard: “${quote}”`;
+          return { field: p.field, value: p.value, op: p.op, reasoning };
+        });
       return { proposals, error: null };
     } catch {
       return { proposals: [], error: "Parse error" };

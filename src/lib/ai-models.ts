@@ -104,3 +104,21 @@ export function providerIdForModel(modelId: string | undefined): AiProviderId {
 export function getProvider(id: AiProviderId): AiProvider {
   return AI_PROVIDERS.find((p) => p.id === id) ?? AI_PROVIDERS[0];
 }
+
+/** The smartest model within a given model's provider, for quality-dominant,
+ *  latency-insensitive work (conversation summaries, drafts, profile
+ *  enrichment). Keeps the user's chosen provider but upgrades the tier so a
+ *  fast/cheap "smart" pick (e.g. Gemini Flash) doesn't produce thin, inaccurate
+ *  summaries. If the flagship is rate-limited the server's fallback chain still
+ *  covers it. */
+export function flagshipModelFor(modelId: string | undefined): string {
+  switch (providerIdForModel(modelId)) {
+    case "anthropic":
+      return "anthropic/claude-sonnet-4-5";
+    case "openai":
+      return "openai-direct/gpt-5";
+    case "gemini":
+    default:
+      return "gemini/gemini-2.5-pro";
+  }
+}

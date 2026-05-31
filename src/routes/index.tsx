@@ -39,6 +39,7 @@ import {
   IPAD_PRESETS,
 } from "@/lib/db";
 import { findNearestPlace, getCurrentPosition } from "@/lib/geo";
+import { flagshipModelFor } from "@/lib/ai-models";
 import {
   createScribeToken,
   createTtsStreamUrl,
@@ -120,6 +121,13 @@ type MoodId = (typeof MOODS)[number]["id"];
 // Synthetic speaker label used for things James speaks via TTS, so they get
 // recorded into the transcript and folded into future suggestion prompts.
 const JAMES_SELF_LABEL = "__james_self__";
+
+/** Clip an auto-saved voice-sample preview to a single short, tidy line so a
+ *  long multi-utterance example can't overflow the People dashboard. */
+function clipPreview(text: string, max = 80): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+}
 
 // QUICK_PHRASES is imported from the quick-phrase cache module (single source
 // of truth) so the displayed list and the pre-warmed/cached list can't drift.
@@ -1330,11 +1338,13 @@ function Home() {
           const cluster = diarizerRef.current.get(label);
           if (cluster && cluster.count >= 3) {
             await recordVoiceprint(personId, cluster.centroid);
-            const examples = committedRef.current
-              .filter((s) => s.speaker_label === label)
-              .slice(-3)
-              .map((s) => s.text)
-              .join(" / ");
+            const examples = clipPreview(
+              committedRef.current
+                .filter((s) => s.speaker_label === label)
+                .slice(-3)
+                .map((s) => s.text)
+                .join(" / "),
+            );
             await addContributionWithCap({
               id: newId(),
               person_id: personId,
@@ -1384,7 +1394,11 @@ function Home() {
                 transcript,
                 placeName: placeName ?? undefined,
                 peopleNames,
-                model: smartModelRef.current,
+                // Summaries are quality-dominant and run post-conversation (no
+                // live-latency cost), so use the provider's flagship model
+                // rather than the fast "smart" tier — fixes thin/inaccurate
+                // summaries. Falls back automatically if rate-limited.
+                model: flagshipModelFor(smartModelRef.current),
               },
             }),
             new Promise<never>((_, rej) =>
@@ -2103,11 +2117,13 @@ function Home() {
           ];
         }
         // Capture a recent example from this cluster for the user to verify later.
-        const examples = committedRef.current
-          .filter((s) => s.speaker_label === label)
-          .slice(-3)
-          .map((s) => s.text)
-          .join(" / ");
+        const examples = clipPreview(
+          committedRef.current
+            .filter((s) => s.speaker_label === label)
+            .slice(-3)
+            .map((s) => s.text)
+            .join(" / "),
+        );
         await addContributionWithCap({
           id: newId(),
           person_id: personId,

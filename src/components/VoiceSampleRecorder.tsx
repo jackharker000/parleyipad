@@ -294,7 +294,7 @@ function VoiceprintContributions({
               onClick={() => remove(c.id)}
               size="sm"
               variant="ghost"
-              className="h-auto px-1.5 py-1 text-destructive"
+              className="h-auto shrink-0 px-1.5 py-1 text-destructive"
               title="This isn't them — remove this contribution"
             >
               <Trash2 className="size-3" />

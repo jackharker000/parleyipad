@@ -483,6 +483,11 @@ export async function recordVoiceprint(personId: string, vector: number[]) {
   const existing = await db.voiceprints.get(personId);
   const merged = mergeIntoCentroid(existing?.centroid, existing?.sample_count ?? 0, vector);
   const vp: Voiceprint = {
+    // Preserve the offline-rebuild enrichment (sub_centroids / confidence /
+    // last_rebuilt_at). Without the spread, every live "Confirm speaker" or
+    // reassignment silently wiped the multi-modal voice profile and cohesion
+    // score, degrading future speaker-ID — the opposite of learning.
+    ...existing,
     id: personId,
     person_id: personId,
     centroid: merged.centroid,
