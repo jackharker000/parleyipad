@@ -12,10 +12,15 @@
  */
 
 import { db, type Memory } from "./db";
-import { cosineSimVec, EMBEDDING_MODEL } from "./embeddings";
+import { cosineSimVec, embeddingModelsCompatible, EMBEDDING_MODEL } from "./embeddings";
 
 export type RetrievalOptions = {
   queryEmbedding: number[];
+  /** The model that produced `queryEmbedding`. When supplied, a stored row's
+   *  vector is only scored if its `embedding_model` is compatible with THIS
+   *  model — never comparing across embedding spaces. Omitted → assume the
+   *  default model (back-compat for callers that don't track the query model). */
+  queryModel?: string;
   personId?: string;
   placeId?: string;
   presentPersonIds?: ReadonlySet<string>;
@@ -24,13 +29,17 @@ export type RetrievalOptions = {
 
 /**
  * Pick the top-K memories that match the query embedding, scoped by
- * person or place if provided. Memories without an embedding (or with a
- * different embedding model) are kept in a recency fallback bucket and
- * surfaced only if the embedding-scored bucket is short.
+ * person or place if provided. A stored memory is only cosine-scored when
+ * its vector is the SAME LENGTH as the query AND its `embedding_model` is
+ * compatible with the model that produced the query (so vectors from
+ * different embedding spaces are never compared). Everything else — missing
+ * embedding, length mismatch, incompatible/legacy model — falls to a recency
+ * bucket and is surfaced only if the scored bucket is short.
  */
 export async function retrieveTopK(opts: RetrievalOptions): Promise<Memory[]> {
   const k = opts.k ?? 4;
   if (k <= 0) return [];
+  const queryModel = opts.queryModel ?? EMBEDDING_MODEL;
 
   let pool: Memory[] = [];
   if (opts.personId) {
@@ -55,8 +64,8 @@ export async function retrieveTopK(opts: RetrievalOptions): Promise<Memory[]> {
     if (
       mem.embedding &&
       mem.embedding.length > 0 &&
-      mem.embedding_model === EMBEDDING_MODEL &&
-      mem.embedding.length === opts.queryEmbedding.length
+      mem.embedding.length === opts.queryEmbedding.length &&
+      embeddingModelsCompatible(mem.embedding_model, queryModel)
     ) {
       scored.push({
         mem,

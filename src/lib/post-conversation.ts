@@ -324,11 +324,28 @@ export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
 
   const labelToPerson = new Map<string, string>(Object.entries(speakerMap));
 
-  for (const personId of ctx.personIds) {
+  // Pre-resolve "is this person James?" for every label in the speaker map so
+  // the inner per-person loop is purely synchronous. Cuts the serial await
+  // chain (~5-12 db.get/await per person) out of the hot path.
+  const jamesPersonIds = new Set<string>();
+  try {
+    const all = await db.people.bulkGet([...new Set(labelToPerson.values())]);
+    for (const p of all) {
+      if (p && p.name?.toLowerCase() === jamesName.toLowerCase()) jamesPersonIds.add(p.id);
+    }
+  } catch {
+    // Best-effort — if pre-resolve fails, the loop still works (we just
+    // can't strip James's lines for privacy in worst case).
+  }
+
+  // Parallelise per-person enrichment. They're independent (each calls the
+  // LLM for its own person), so a serial loop wasted O(N×latency); on a
+  // small roster this can save several seconds of background work.
+  await Promise.all(ctx.personIds.map(async (personId) => {
     try {
       const person = await db.people.get(personId);
-      if (!person) continue;
-      if (person.name.toLowerCase() === jamesName.toLowerCase()) continue;
+      if (!person) return;
+      if (person.name.toLowerCase() === jamesName.toLowerCase()) return;
 
       // Find indices of segments belonging to this person.
       const indices: number[] = [];
@@ -337,7 +354,7 @@ export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
         const pid = s.person_id ?? labelToPerson.get(s.speaker_label);
         if (pid === personId) indices.push(i);
       }
-      if (indices.length < MIN_PERSON_TURNS_FOR_ENRICH) continue;
+      if (indices.length < MIN_PERSON_TURNS_FOR_ENRICH) return;
 
       // Build filtered transcript: person's turns + 2 surrounding segments
       // (but only emit James/person turns into the LLM input, for privacy).
@@ -347,33 +364,18 @@ export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
           keep.add(j);
         }
       }
-      // Pre-resolve speaker identities for filtered slots so we don't do
-      // async lookups inside the loop in a hot path.
-      const slotIsPerson = new Array<boolean>(allSegs.length).fill(false);
-      const slotIsJames = new Array<boolean>(allSegs.length).fill(false);
-      for (let i = 0; i < allSegs.length; i++) {
-        if (!keep.has(i)) continue;
-        const s = allSegs[i];
-        const pid = s.person_id ?? labelToPerson.get(s.speaker_label);
-        if (pid === personId) slotIsPerson[i] = true;
-        else if (pid) {
-          const other = await db.people.get(pid);
-          if (other && other.name?.toLowerCase() === jamesName.toLowerCase()) {
-            slotIsJames[i] = true;
-          }
-        }
-      }
       const filtered: { speaker: string; text: string }[] = [];
       for (let i = 0; i < allSegs.length; i++) {
         if (!keep.has(i)) continue;
         const s = allSegs[i];
-        if (slotIsPerson[i]) {
+        const pid = s.person_id ?? labelToPerson.get(s.speaker_label);
+        if (pid === personId) {
           filtered.push({ speaker: person.name, text: s.text });
-        } else if (slotIsJames[i]) {
+        } else if (pid && jamesPersonIds.has(pid)) {
           filtered.push({ speaker: jamesName, text: s.text });
         }
       }
-      if (filtered.length === 0) continue;
+      if (filtered.length === 0) return;
 
       const r = await enrichPersonProfile({
         data: {
@@ -394,7 +396,7 @@ export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
       });
 
       const capped = (r.proposals ?? []).slice(0, MAX_PROPOSALS_PER_PERSON_PER_CONV);
-      if (capped.length === 0) continue;
+      if (capped.length === 0) return;
 
       const now = Date.now();
       const rows: ProfileProposal[] = capped.map((p) => ({
@@ -412,7 +414,7 @@ export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
     } catch (e) {
       console.warn("[tier2.3] enrich failed for", personId, e);
     }
-  }
+  }));
 }
 
 /* -------------------------------------------------------------------------- */

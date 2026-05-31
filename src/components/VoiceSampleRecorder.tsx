@@ -10,6 +10,17 @@ import {
 } from "@/lib/voiceprint";
 import { db, type Voiceprint, type VoiceprintContribution } from "@/lib/db";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 const MIN_SECS = 3;
 const MAX_SECS = 8;
@@ -23,6 +34,11 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
   const tickRef = useRef<number | null>(null);
   const startedAtRef = useRef<number>(0);
   const replaceModeRef = useRef(false);
+  // Mirrors the `recording` state for code paths (timer callbacks, async
+  // handlers) that need the CURRENT value — React state is a stale snapshot
+  // captured at render time, so the MAX_SECS auto-stop was silently no-oping
+  // because stop() saw recording === false in its closure.
+  const recordingRef = useRef(false);
 
   const refresh = async () => {
     const vp = await db.voiceprints.get(personId);
@@ -49,6 +65,7 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
       captureRef.current = cap;
       startedAtRef.current = Date.now();
       setElapsed(0);
+      recordingRef.current = true;
       setRecording(true);
       tickRef.current = window.setInterval(() => {
         const e = (Date.now() - startedAtRef.current) / 1000;
@@ -61,7 +78,8 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
   };
 
   const stop = async () => {
-    if (!recording) return;
+    if (!recordingRef.current) return;
+    recordingRef.current = false;
     setRecording(false);
     if (tickRef.current) {
       clearInterval(tickRef.current);
@@ -86,10 +104,13 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
         return;
       }
       if (replaceModeRef.current) {
-        // Write the new voiceprint first so we always have a valid record.
-        // Only then delete the old contributions so a failure here doesn't
-        // leave the person with no voiceprint at all.
+        // "Replace" resets the centroid AND the sample count (this is the user
+        // intentionally starting fresh), but DO NOT clobber sub_centroids /
+        // confidence / last_rebuilt_at — those are independent enrichment that
+        // would need its own rebuild to restore.
+        const existing = await db.voiceprints.get(personId);
         await db.voiceprints.put({
+          ...existing,
           id: personId,
           person_id: personId,
           centroid: mfcc.slice(),
@@ -121,7 +142,6 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
   };
 
   const remove = async () => {
-    if (!confirm("Delete this person's voice sample?")) return;
     await deleteVoiceprint(personId);
     await db.voiceprint_contributions
       .where("person_id")
@@ -174,16 +194,36 @@ export function VoiceSampleRecorder({ personId }: { personId: string }) {
               >
                 Replace
               </Button>
-              <Button
-                onClick={remove}
-                disabled={busy}
-                size="sm"
-                variant="ghost"
-                className="text-destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    disabled={busy}
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive"
+                  >
+                    <Trash2 className="size-4" />
+                    Delete
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete this voice sample?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This removes their voiceprint and all stored contributions. You can re-record at any time.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel className="h-12 text-base">Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="h-12 bg-destructive text-base text-destructive-foreground hover:bg-destructive/90"
+                      onClick={remove}
+                    >
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </>
           )}
         </div>
@@ -225,7 +265,6 @@ function VoiceprintContributions({
 
   // Remove this contribution and recompute the centroid from the remaining ones.
   const remove = async (id: string) => {
-    if (!confirm("Remove this contribution from the voice profile?")) return;
     await db.voiceprint_contributions.delete(id);
     const remaining = await db.voiceprint_contributions
       .where("person_id")
@@ -290,15 +329,35 @@ function VoiceprintContributions({
                 <p className="mt-0.5 truncate italic">"{c.preview_text}"</p>
               )}
             </div>
-            <Button
-              onClick={() => remove(c.id)}
-              size="sm"
-              variant="ghost"
-              className="h-auto px-1.5 py-1 text-destructive"
-              title="This isn't them — remove this contribution"
-            >
-              <Trash2 className="size-3" />
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-auto shrink-0 px-1.5 py-1 text-destructive"
+                  title="This isn't them — remove this contribution"
+                >
+                  <Trash2 className="size-3" />
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Remove this contribution?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    The voice profile will be rebuilt from the remaining contributions.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel className="h-12 text-base">Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="h-12 bg-destructive text-base text-destructive-foreground hover:bg-destructive/90"
+                    onClick={() => remove(c.id)}
+                  >
+                    Remove
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </li>
         ))}
       </ul>

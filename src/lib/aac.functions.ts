@@ -217,17 +217,25 @@ async function chatCompletion(
       }
     }
     let res: Response;
+    // Per-attempt timeout so a single hung/dead provider can't burn the whole
+    // serverless function budget and starve the fallback chain. 25s is well
+    // above a legitimately slow smart-tier summary, but bounds a stuck socket.
+    const ac = new AbortController();
+    const attemptTimer = setTimeout(() => ac.abort(), 25_000);
     try {
       res = await fetch(target.url, {
         method: "POST",
         headers: target.headers,
         body: JSON.stringify(perBody),
+        signal: ac.signal,
       });
     } catch (e) {
       console.warn(`[ai] ${target.provider} network error${isLast ? "" : " — falling back"}`, e);
       last = new Response(JSON.stringify({ error: String(e) }), { status: 503 });
       if (isLast) return last;
       continue;
+    } finally {
+      clearTimeout(attemptTimer);
     }
     if (res.ok) return res;
     // Any non-2xx → try the next provider. A 429 is the common case (free-tier
@@ -654,9 +662,11 @@ ${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
       : "";
 
     // === Tier 1.1: style evidence block ===
-    // Block order (so other tiers can slot in cleanly):
-    // profile → people → place → event → style_profile → [Tier 3.1 retrieved_memories]
-    //   → style_evidence → [Tier 3.2 arc] → [Tier 3.3 mood] → [Tier 3.4 category_bias]
+    // Final message layout (see the prompt-caching note near the message array):
+    //   SYSTEM (stable prefix): instructions → profile → people → place →
+    //     event → style_profile → voice_samples → choice_memories → style_evidence
+    //   USER (volatile tail): [Tier 3.1 retrieved_memories] → [Tier 3.2 arc]
+    //     → [Tier 3.3 mood] → [Tier 3.4 category_bias] → live transcript → alreadyShown
     const styleEvidenceBlock = (() => {
       const ev = data.styleEvidence;
       if (!ev) return "";
@@ -802,7 +812,28 @@ ${nearMissCats.length ? `Under-performing categories (slow tap or often edited) 
 
     const presentNames = (data.people ?? []).map((p) => p.name);
     const presentList = presentNames.length ? presentNames.join(", ") : "(only James)";
-    const system = `You are an AAC (Augmentative and Alternative Communication) copilot. You generate reply options for ${jp?.name ?? "James"}, a non-speaking user, to TAP and speak aloud in real time. Suggestions must sound like HIM — not generic. Use his personality, humor, signature phrases, and shared history with the people present.
+
+    // === Prompt-caching layout (see note below) ===
+    // The message array is split into a LARGE STABLE PREFIX (system) and a
+    // VOLATILE TAIL (user). The system block carries the persona that does not
+    // change within a conversation — instructions, James's profile (incl. large
+    // reference documents), the present people, place, event, learned style
+    // profile, his real voice samples, revealed preferences, and style
+    // evidence. Built deterministically and placed FIRST so providers that do
+    // implicit prefix caching (OpenAI, Gemini) get a cache hit on every turn.
+    //
+    // PROMPT CACHING NOTE: this app talks to Claude/OpenAI/Gemini through the
+    // OpenAI-COMPATIBLE /v1/chat/completions surface (see resolveChatChain).
+    // Anthropic's `cache_control` / `ephemeral` breakpoints are ONLY honoured
+    // on the NATIVE /v1/messages endpoint — the OpenAI-compat endpoint ignores
+    // (or rejects) cache_control. (Confirmed via Anthropic's OpenAI-compat docs,
+    // May 2026.) So we do NOT attach cache_control here; instead we rely on
+    // deterministic stable-prefix ordering, which yields implicit caching on
+    // every provider and is also the correct shape if we later add a native
+    // Messages-API path. The volatile per-turn parts (live transcript, arc,
+    // mood, category bias, retrieved memories, alreadyShown) all come AFTER the
+    // stable prefix so they never invalidate it.
+    const stablePrefix = `You are an AAC (Augmentative and Alternative Communication) copilot. You generate reply options for ${jp?.name ?? "James"}, a non-speaking user, to TAP and speak aloud in real time. Suggestions must sound like HIM — not generic. Use his personality, humor, signature phrases, and shared history with the people present.
 
 STRICT PRIVACY & SCOPE RULES — these override everything else:
 - The ONLY other people in this conversation are: ${presentList}. Treat anyone else as NOT present.
@@ -811,22 +842,25 @@ STRICT PRIVACY & SCOPE RULES — these override everything else:
 - James's general profile (background, interests, humor, life context) is fair game because it is general knowledge about him. But specific stories or sensitive disclosures (health, family struggles, work problems, opinions about others) must NOT be carried into a conversation with someone different unless that exact topic also appears in the present people's own memories/follow-ups.
 - When in doubt about whether something is private, leave it out and prefer a neutral question or in-context reply instead.
 
-Each suggestion must be under 16 words and feel natural to say out loud. Avoid repeating any text in "alreadyShown". Prefer concrete references over generic small talk ONLY when those references come from the present people's own memories/follow-ups.`;
+Each suggestion must be under 16 words and feel natural to say out loud. Avoid repeating any text in "alreadyShown". Prefer concrete references over generic small talk ONLY when those references come from the present people's own memories/follow-ups.
+
+=== Persona & context (stable for this conversation) ===
+${profileBlock}
+${peopleBlock}
+${placeBlock}
+${eventBlock}
+${styleBlock}
+${voiceSamplesBlock}${choiceMemoriesBlock}${styleEvidenceBlock}`;
 
     const questionGuidance = data.questionAsked
       ? "A question was just asked. Prioritise direct, specific answers — include at least 3 answer suggestions. The other slots can be follow-ups or conversation-movers."
       : "Distribute the 6 suggestions: 2 direct responses to what was just said, 2 conversation-movers (deepen a topic or gently shift it), 1 practical or action suggestion, 1 humorous or light option. Vary tone clearly.";
 
-    // Block order — keep in sync with the comment above `styleEvidenceBlock`:
-    // profile → people → place → event → style_profile → [Tier 3.1 retrieved_memories]
-    //   → style_evidence → [Tier 3.2 arc] → [Tier 3.3 mood] → [Tier 3.4 category_bias]
-    const user = `${profileBlock}
-${peopleBlock}
-${placeBlock}
-${eventBlock}
-${styleBlock}
-${voiceSamplesBlock}${choiceMemoriesBlock}${retrievedMemoriesBlock}${styleEvidenceBlock}${arcBlock}${moodBlock}${categoryBiasBlock}
-# Live conversation so far
+    // Volatile tail — everything that changes turn-to-turn. Kept AFTER the
+    // stable prefix so the cacheable prefix stays byte-identical across turns:
+    // [Tier 3.1 retrieved_memories] → [Tier 3.2 arc] → [Tier 3.3 mood]
+    //   → [Tier 3.4 category_bias] → live transcript → alreadyShown.
+    const user = `${retrievedMemoriesBlock}${arcBlock}${moodBlock}${categoryBiasBlock}# Live conversation so far
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
 ${data.alreadyShown?.length ? `# Recently ignored or already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
@@ -839,7 +873,9 @@ Return exactly 6 suggestions in James's voice.`;
         // same near-miss text.
         temperature: nearMissCats.length > 0 ? 0.9 : undefined,
         messages: [
-          { role: "system", content: system },
+          // Stable persona prefix first (implicit prompt caching), volatile
+          // per-turn context second — see the prompt-caching note above.
+          { role: "system", content: stablePrefix },
           { role: "user", content: user },
         ],
         tools: [
@@ -881,8 +917,7 @@ Return exactly 6 suggestions in James's voice.`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Suggestions failed:", res.status, err);
+      console.error("Suggestions failed:", res.status);
       return { suggestions: [], error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -922,11 +957,17 @@ export const summarizeConversation = createServerFn({ method: "POST" })
 
     const system = `You analyze a conversation that James (a non-speaking AAC user) just had, and produce a thorough record so the system genuinely remembers it next time. Be generous and detailed — it is better to capture too much than to miss something James might value later.
 
+ACCURACY IS PARAMOUNT — this record is re-read to shape what James says to real people:
+- Base everything STRICTLY on what was actually said in the transcript. Never invent events, feelings, decisions, plans, names, or commitments that are not supported by the words below.
+- If the conversation was short or light, write a correspondingly short, honest summary. Do NOT pad it with speculation or generic filler to hit a length.
+- Attribute statements to the right speaker. Do not infer affection, conflict, or emotion that was not actually expressed in words.
+- Quote or closely paraphrase only what is present; when unsure, leave it out.
+
 Return, via the tool:
-- summary: a detailed, multi-paragraph narrative (roughly 6–12 sentences). Cover what was actually discussed (each distinct topic), the emotional tone and how it shifted, anything decided or planned, questions left open, and anything notable about how each person was doing. Write in clear past tense about the real content — never generic filler.
+- summary: a faithful narrative of the conversation. For a substantive conversation this is multiple paragraphs (roughly 6–12 sentences); for a brief exchange it may be just 1–3 sentences — match the real content. Cover what was actually discussed (each distinct topic), the emotional tone and how it shifted, anything decided or planned, and questions left open. Write in clear past tense about the real content — never generic filler.
 - highlights: 4–8 short, concrete bullet points — the moments, facts, or exchanges most worth remembering at a glance.
-- memories: extract EVERY durable thing worth remembering for future conversations — be thorough, not minimal. Include facts (about James or the people present), stated preferences and dislikes, life events (past or upcoming), plans and commitments (todos), opinions expressed, health/work/family/hobby details, and relationships mentioned. Each memory: a single self-contained sentence plus its kind (fact | preference | event | todo). Aim for as many as the conversation genuinely supports (often 5–15 for a real conversation); return an empty list only if nothing was said.
-- followUps: specific topics or questions to raise next time (e.g. "Ask how Mum's hospital appointment went"). Be concrete.`;
+- memories: extract EVERY durable thing worth remembering for future conversations — be thorough, not minimal. Include facts (about James or the people present), stated preferences and dislikes, life events (past or upcoming), plans and commitments (todos), opinions expressed, health/work/family/hobby details, and relationships mentioned. Each memory: a single self-contained sentence plus its kind (fact | preference | event | todo), AND a personName when the memory is clearly about ONE specific person in the conversation (use their exact transcript name; leave empty for general facts about James or things that apply to everyone). Aim for as many as the conversation genuinely supports (often 5–15 for a real conversation); return an empty list only if nothing was said.
+- followUps: specific topics or questions to raise next time (e.g. "Ask how Mum's hospital appointment went"). Be concrete; include personName when it's clearly directed at one specific person.`;
 
     const ctx = `${data.placeName ? `Place: ${data.placeName}\n` : ""}${data.peopleNames?.length ? `People present: ${data.peopleNames.join(", ")}\n` : ""}\nTranscript:\n${transcriptText}`;
 
@@ -969,6 +1010,11 @@ Return, via the tool:
                           type: "string",
                           enum: ["fact", "preference", "event", "todo"],
                         },
+                        personName: {
+                          type: "string",
+                          description:
+                            "Exact transcript name of the ONE person this memory is about. Leave empty for general facts.",
+                        },
                       },
                       required: ["text", "kind"],
                     },
@@ -976,7 +1022,14 @@ Return, via the tool:
                   followUps: {
                     type: "array",
                     description: "Specific topics/questions to raise next time.",
-                    items: { type: "string" },
+                    items: {
+                      type: "object",
+                      properties: {
+                        text: { type: "string" },
+                        personName: { type: "string" },
+                      },
+                      required: ["text"],
+                    },
                   },
                 },
                 required: ["summary", "highlights", "memories", "followUps"],
@@ -991,8 +1044,7 @@ Return, via the tool:
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Summary failed:", res.status, err);
+      console.error("Summary failed:", res.status);
       return {
         summary: "",
         highlights: [],
@@ -1068,17 +1120,24 @@ export const expandUtterance = createServerFn({ method: "POST" })
       ? `How James actually talks (real quotes from past conversations — match this voice, vocabulary, and rhythm):\n${data.jamesVoiceSamples.map((s) => `- "${promptQuote(s)}"`).join("\n")}\n`
       : "";
 
-    const system = `You are an AAC writing assistant for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy whose typing is heavily truncated and full of typos. Your job: take his raw typed input and rewrite it as ONE clear, natural spoken sentence (or two short sentences max) in HIS voice, appropriate as the next reply in the live conversation. Preserve his intent exactly — never add facts, opinions, claims, or details he did not type.
+    // Stable persona prefix (instructions + profile/people/place/voice samples)
+    // placed FIRST so the OpenAI-compatible providers cache it implicitly across
+    // expansions in a conversation. cache_control is NOT used — the compat
+    // endpoint ignores it (see the prompt-caching note in generateSuggestions).
+    // The volatile tail (live transcript + the raw typed text) follows.
+    const stablePrefix = `You are an AAC writing assistant for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy whose typing is heavily truncated and full of typos. Your job: take his raw typed input and rewrite it as ONE clear, natural spoken sentence (or two short sentences max) in HIS voice, appropriate as the next reply in the live conversation. Preserve his intent exactly — never add facts, opinions, claims, or details he did not type.
 
 CRITICAL — minimal expansion rule:
 - If his input is just 1–3 characters (e.g. "N", "Y", "ok", "mm"), produce the smallest possible natural utterance ("No.", "Yes.", "Okay.", "Mm-hmm.") and STOP. Do NOT add a follow-on clause that explains, qualifies, or answers anything he didn't type. "N" must become "No." — NOT "No, they're working." or "No, I don't think so."
 - If his input is a single short word with no spaces (e.g. "tired", "later"), produce just that thought expanded grammatically ("I'm tired.", "Maybe later.") — not a full sentence with extra reasoning.
 - Only when his input is longer than ~6 characters with multiple words may you smooth grammar and add small connector words. Even then, never invent objects, times, names, or topics he didn't include.
 
-Fix spelling, expand abbreviations to common meanings, add small connector words where structurally required. Keep it concise, conversational, and under 25 words. Output ONLY the final sentence to be spoken aloud, with no quotes, no preface, no explanation.`;
+Fix spelling, expand abbreviations to common meanings, add small connector words where structurally required. Keep it concise, conversational, and under 25 words. Output ONLY the final sentence to be spoken aloud, with no quotes, no preface, no explanation.
 
-    const user = `${profileBlock}${peopleBlock}${placeBlock}${voiceSamplesBlock}
-Recent conversation:
+=== Persona & context (stable for this conversation) ===
+${profileBlock}${peopleBlock}${placeBlock}${voiceSamplesBlock}`;
+
+    const user = `Recent conversation:
 ${transcriptText || "(just starting)"}
 
 James typed: "${data.rawText}"
@@ -1087,14 +1146,13 @@ Rewrite as the spoken reply:`;
 
     const res = await chatCompletion(data.model, {
         messages: [
-          { role: "system", content: system },
+          { role: "system", content: stablePrefix },
           { role: "user", content: user },
         ],
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Expand failed:", res.status, err);
+      console.error("Expand failed:", res.status);
       return { expanded: data.rawText, error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1198,8 +1256,7 @@ Predict the 6 most likely complete sentences he is trying to say.`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Predict failed:", res.status, err);
+      console.error("Predict failed:", res.status);
       return { predictions: [], error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1289,8 +1346,7 @@ Produce one polished version (the recommended one) plus 3 alternative variations
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("FB draft failed:", res.status, err);
+      console.error("FB draft failed:", res.status);
       return { recommended: data.rawText, alternatives: [], error: `AI error ${res.status}` };
     }
 
@@ -1397,8 +1453,7 @@ Generate 6-10 key points and 6-10 key questions tailored to this event.`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Event prep failed:", res.status, err);
+      console.error("Event prep failed:", res.status);
       return { keyPoints: [], keyQuestions: [], error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1506,8 +1561,7 @@ Produce one polished version (the recommended one) plus 3 alternative variations
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("draftReply failed:", res.status, err);
+      console.error("draftReply failed:", res.status);
       return { recommended: data.rawText, alternatives: [], error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1824,8 +1878,7 @@ Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRI
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Distill failed:", res.status, err);
+      console.error("Distill failed:", res.status);
       return { profile: null as any, error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -2003,15 +2056,23 @@ export const enrichPersonProfile = createServerFn({ method: "POST" })
     }
     const system = `You analyse a transcript filtered to a SINGLE pair: James (a non-speaking AAC user) and ONE other person. You propose small, conservative updates to your stored profile of that person so future AI replies feel more attuned to them.
 
-Categories (only propose what is strongly evidenced — skip categories with no evidence):
+GROUNDING RULES (critical — this profile drives how James talks to real people):
+- Base EVERY proposal ONLY on what was literally said in the transcript below.
+- NEVER infer affection, warmth, closeness, or any emotional dynamic unless it is stated in plain words. Casual chat is NOT evidence of affection.
+- NEVER invent, paraphrase, embellish, or attribute a quote that is not in the transcript.
+- For each proposal you MUST supply an "evidence" field containing an EXACT, verbatim, word-for-word quote copied from the transcript that proves it. If you cannot copy such a quote, DO NOT make that proposal.
+- One observation = at most one proposal. Do not split a single fact into a tag AND a dynamic.
+- A short or small-talk exchange usually warrants ZERO proposals. Returning an empty list is the correct, expected answer when little was genuinely revealed.
+
+Categories (only propose what is directly and explicitly evidenced — skip categories with no evidence):
 - interests (array): hobbies / subjects they clearly care about, each <= 5 words.
 - style_notes (text, append): how James interacts with THIS person specifically.
 - topics_loved (text, append): topics they brought up enthusiastically.
 - topics_avoided (text, append): topics they steered away from.
-- relationship_dynamics (text, append): freeform observation about the dynamic.
+- relationship_dynamics (text, append): freeform observation about the dynamic — only when explicitly demonstrated in words.
 - dynamic_tags (array): tags from ONLY: [${ENRICH_ALLOWED_TAGS.map((t) => `"${t}"`).join(", ")}]. Max 3 new tags per proposal.
 
-NEVER propose anything already present (verbatim or paraphrased). Be terse. Each value <= 25 words. Return empty proposals if nothing meaningful to add.`;
+NEVER propose anything already present (verbatim or paraphrased). Be terse. Each value <= 25 words.`;
 
     const profileText = JSON.stringify(data.currentProfile, null, 2);
     const transcriptText = data.filteredTranscript.map((s) => `${s.speaker}: ${s.text}`).join("\n");
@@ -2054,9 +2115,14 @@ ${transcriptText}`;
                         },
                         value: { type: "string" },
                         op: { type: "string", enum: ["add", "replace"] },
+                        evidence: {
+                          type: "string",
+                          description:
+                            "An EXACT verbatim quote copied from the transcript that proves this proposal. Must appear word-for-word in the transcript.",
+                        },
                         reasoning: { type: "string" },
                       },
-                      required: ["field", "value", "op"],
+                      required: ["field", "value", "op", "evidence"],
                     },
                   },
                 },
@@ -2072,22 +2138,50 @@ ${transcriptText}`;
     const json = (await res.json()) as any;
     const argStr = json.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
     if (!argStr) return { proposals: [], error: "No tool call" };
+    // Normalised transcript for verbatim-evidence verification: lowercase,
+    // collapse whitespace, strip basic quote marks so the model's quote only
+    // has to match the words it actually heard, not punctuation.
+    const normalise = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/["“”'’`]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    const transcriptNorm = normalise(transcriptText);
     try {
       const parsed = JSON.parse(argStr) as {
         proposals: Array<{
           field: string;
           value: string;
           op: "add" | "replace";
+          evidence?: string;
           reasoning?: string;
         }>;
       };
-      const proposals = (parsed.proposals ?? []).filter((p) => {
-        if (!p.value || !p.value.trim()) return false;
-        if (p.field === "dynamic_tags") {
-          return ENRICH_ALLOWED_TAGS.includes(p.value.trim().toLowerCase());
-        }
-        return true;
-      });
+      const proposals = (parsed.proposals ?? [])
+        .filter((p) => {
+          if (!p.value || !p.value.trim()) return false;
+          if (p.field === "dynamic_tags") {
+            if (!ENRICH_ALLOWED_TAGS.includes(p.value.trim().toLowerCase())) return false;
+          }
+          // Anti-confabulation gate: the model must cite a verbatim quote that
+          // genuinely appears in the transcript. Drop anything it invented
+          // (the "Jack says 'Love you'" failure mode). Require a quote of real
+          // substance (>= 8 chars) so trivial words like "yes" can't pass.
+          const ev = normalise(p.evidence ?? "");
+          if (ev.length < 8) return false;
+          if (!transcriptNorm.includes(ev)) return false;
+          return true;
+        })
+        .map((p) => {
+          // Surface the grounding quote in the review UI so a reviewer can see
+          // exactly what the proposal is based on.
+          const quote = (p.evidence ?? "").trim();
+          const reasoning = p.reasoning?.trim()
+            ? `${p.reasoning.trim()} — heard: “${quote}”`
+            : `Heard: “${quote}”`;
+          return { field: p.field, value: p.value, op: p.op, reasoning };
+        });
       return { proposals, error: null };
     } catch {
       return { proposals: [], error: "Parse error" };
@@ -2278,8 +2372,7 @@ ${transcriptText}`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Arc classification failed:", res.status, err);
+      console.error("Arc classification failed:", res.status);
       return { arc: null, confidence: 0, error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -2382,8 +2475,7 @@ ${transcriptText}`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Mood prediction failed:", res.status, err);
+      console.error("Mood prediction failed:", res.status);
       return {
         mood: null,
         confidence: 0,
@@ -2466,4 +2558,74 @@ export const embedTexts = createServerFn({ method: "POST" })
     // No embeddings provider. Return zero-length vectors so callers can
     // skip semantic features without erroring.
     return { embeddings: data.texts.map(() => []), model: "none" };
+  });
+
+/* --------------------- ElevenLabs: streaming TTS (Flash) ------------------- */
+
+/**
+ * Return an authenticated WebSocket URL for the ElevenLabs Flash v2.5
+ * streaming-input endpoint. The browser's WebSocket constructor can't set
+ * request headers, so authentication has to travel in the URL.
+ *
+ * We prefer a **single-use token** (mirroring `createScribeToken`): mint a
+ * short-lived token server-side and put it in the `token` query param so the
+ * raw `ELEVENLABS_API_KEY` never crosses the wire — even to the device's own
+ * network inspector. If the token mint fails for any reason we fall back to the
+ * api-key-in-URL form so James's voice never silently breaks (and the
+ * `createServerFn` gate in `start.ts` already blocks remote callers from
+ * reaching this route at all).
+ *
+ * `eleven_flash_v2_5` is pinned for its ~75 ms model latency (James feels every
+ * extra second). `output_format` defaults to `mp3_22050_32` to match the
+ * `synthesizeSpeech` fallback so cached audio and streamed audio share a MIME
+ * type. `auto_mode` lets ElevenLabs decide chunking for short single-shot
+ * utterances, which is what the cockpit sends.
+ */
+export const createTtsStreamUrl = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      voiceId: z.string().min(1),
+      // Constrain to the mp3 formats we actually decode in the browser.
+      outputFormat: z
+        .enum(["mp3_22050_32", "mp3_44100_64", "mp3_44100_128"])
+        .optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const apiKey = requireElevenLabsApiKey();
+    const params = new URLSearchParams({
+      model_id: "eleven_flash_v2_5",
+      output_format: data.outputFormat ?? "mp3_22050_32",
+      // Single-shot utterances: let the server flush as soon as it can.
+      auto_mode: "true",
+    });
+
+    // Prefer a single-use token so the raw key never travels in the URL.
+    // Best-effort: any failure falls through to the api-key form below.
+    let token: string | null = null;
+    try {
+      const tokRes = await fetch(
+        "https://api.elevenlabs.io/v1/single-use-token/realtime_tts",
+        { method: "POST", headers: { "xi-api-key": apiKey } },
+      );
+      if (tokRes.ok) {
+        const tok = (await tokRes.json()) as { token?: string };
+        if (tok?.token) token = tok.token;
+      } else {
+        console.error("TTS token mint failed:", tokRes.status);
+      }
+    } catch (e) {
+      console.warn("TTS token mint error — using api-key URL", e);
+    }
+
+    if (token) {
+      params.set("token", token);
+    } else {
+      params.set("xi-api-key", apiKey);
+    }
+
+    const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(
+      data.voiceId,
+    )}/stream-input?${params.toString()}`;
+    return { url };
   });

@@ -75,6 +75,7 @@ const CTX_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 /** Invalidate the context cache — call after profile or memory edits. */
 export function invalidateContextCache() {
   _ctxCache = null;
+  _scanMemo.clear();
 }
 
 export async function suggestPeopleAtPlace(placeId: string, limit = 6): Promise<Person[]> {
@@ -90,13 +91,52 @@ export async function suggestPeopleAtPlace(placeId: string, limit = 6): Promise<
   return people.filter((p): p is Person => !!p);
 }
 
-async function memoriesForPerson(personId: string, queryEmbedding?: number[]): Promise<string[]> {
+/**
+ * Resolve the person IDs the active place and event are associated with, for
+ * the speaker-ID context prior (people likely to be in the room get a gentle
+ * likelihood boost). Read-only and fail-soft — any error yields empty arrays
+ * so the live matcher simply falls back to pure-voice matching.
+ *
+ * - Place: there is no explicit roster on a Place, so we infer it from past
+ *   conversations held there (same signal as `suggestPeopleAtPlace`).
+ * - Event: people are declared directly on `event.person_ids`.
+ */
+export async function getContextPriorPersonIds(opts: {
+  place?: Place;
+  event?: EventItem;
+  /** Cap on inferred place attendees (most-frequent first). */
+  placeLimit?: number;
+}): Promise<{ placePersonIds: string[]; eventPersonIds: string[] }> {
+  let placePersonIds: string[] = [];
+  let eventPersonIds: string[] = [];
+  try {
+    if (opts.place) {
+      const people = await suggestPeopleAtPlace(opts.place.id, opts.placeLimit ?? 8);
+      placePersonIds = people.map((p) => p.id);
+    }
+  } catch (err) {
+    console.warn("[context] place prior lookup failed", err);
+  }
+  try {
+    if (opts.event) eventPersonIds = [...(opts.event.person_ids ?? [])];
+  } catch {
+    eventPersonIds = [];
+  }
+  return { placePersonIds, eventPersonIds };
+}
+
+async function memoriesForPerson(
+  personId: string,
+  queryEmbedding?: number[],
+  queryModel?: string,
+): Promise<string[]> {
   // Tier 3.1 — when we have a query embedding, prefer semantic top-K
   // (with recency fallback inside retrieveTopK). Otherwise keep the
   // original behaviour of "most recent N".
   if (queryEmbedding && queryEmbedding.length > 0) {
     const top = await retrieveTopK({
       queryEmbedding,
+      queryModel,
       personId,
       k: RECENT_MEMORY_LIMIT,
     });
@@ -147,10 +187,12 @@ async function memoriesForPlace(
   placeId: string,
   presentPersonIds: Set<string>,
   queryEmbedding?: number[],
+  queryModel?: string,
 ): Promise<string[]> {
   if (queryEmbedding && queryEmbedding.length > 0) {
     const top = await retrieveTopK({
       queryEmbedding,
+      queryModel,
       placeId,
       presentPersonIds,
       k: RECENT_MEMORY_LIMIT,
@@ -226,7 +268,33 @@ export function sanitizeForPrompt(s: string, max = 160): string {
  * Bounded scans keep this cheap: ≤60 recent conversations and a ≤600-segment
  * global recency window (only when no participants are set).
  */
+/** Short-TTL memo for the two expensive per-turn scans below, so that with
+ *  Tier-3 semantic memory active (which rebuilds context every turn) we don't
+ *  re-run the 600-segment voice-sample scan and 200-row choice scan on every
+ *  turn. Keyed by sorted personIds; slow-moving signal, so ~90s is plenty. */
+const _scanMemo = new Map<string, { at: number; value: string[] }>();
+const SCAN_MEMO_TTL_MS = 90_000;
+async function memoScan(
+  key: string,
+  compute: () => Promise<string[]>,
+): Promise<string[]> {
+  const hit = _scanMemo.get(key);
+  if (hit && Date.now() - hit.at < SCAN_MEMO_TTL_MS) return hit.value;
+  const value = await compute();
+  _scanMemo.set(key, { at: Date.now(), value });
+  return value;
+}
+
 export async function getJamesVoiceSamples(
+  personIds: string[],
+  limit = 24,
+): Promise<string[]> {
+  return memoScan(`voice|${limit}|${[...personIds].sort().join(",")}`, () =>
+    getJamesVoiceSamplesUncached(personIds, limit),
+  );
+}
+
+async function getJamesVoiceSamplesUncached(
   personIds: string[],
   limit = 24,
 ): Promise<string[]> {
@@ -303,6 +371,15 @@ export async function getRecentChoiceMemories(
   personIds: string[],
   limit = 12,
 ): Promise<string[]> {
+  return memoScan(`choice|${limit}|${[...personIds].sort().join(",")}`, () =>
+    getRecentChoiceMemoriesUncached(personIds, limit),
+  );
+}
+
+async function getRecentChoiceMemoriesUncached(
+  personIds: string[],
+  limit = 12,
+): Promise<string[]> {
   const trim = (s: string, n = 80) => sanitizeForPrompt(s, n);
   try {
     let rows = await db.suggestion_choices
@@ -351,6 +428,9 @@ export async function buildConversationContext(opts: {
   /** Tier 3.1 — when provided, person/place memories are retrieved by
    *  semantic similarity (top-K cosine) rather than pure recency. */
   queryEmbedding?: number[];
+  /** Tier 3.1 — the model that produced `queryEmbedding`, so retrieval only
+   *  compares against stored vectors from a compatible embedding space. */
+  queryEmbeddingModel?: string;
 }): Promise<ConversationContext> {
   const fingerprint = [
     [...opts.personIds].sort().join(","),
@@ -403,7 +483,7 @@ export async function buildConversationContext(opts: {
       interests: p.interests,
       notes: await notesWithDocsForPerson(p.id, p.notes),
       style_notes: p.style_notes,
-      recentMemories: await memoriesForPerson(p.id, opts.queryEmbedding),
+      recentMemories: await memoriesForPerson(p.id, opts.queryEmbedding, opts.queryEmbeddingModel),
       followUps: await followUpsForPerson(p.id),
     })),
   );
@@ -414,7 +494,12 @@ export async function buildConversationContext(opts: {
     place = {
       name: opts.place.name,
       notes: opts.place.notes,
-      recentMemories: await memoriesForPlace(opts.place.id, presentIds, opts.queryEmbedding),
+      recentMemories: await memoriesForPlace(
+        opts.place.id,
+        presentIds,
+        opts.queryEmbedding,
+        opts.queryEmbeddingModel,
+      ),
       followUps: await followUpsForPlace(opts.place.id, presentIds),
     };
   }

@@ -2,19 +2,36 @@
  * Embedding backfill (Tier 3.1).
  *
  * On app mount, scan the IndexedDB memory store for rows that don't yet
- * have an embedding (or whose embedding was generated with a different
+ * have a usable embedding (missing, empty, or produced by an INCOMPATIBLE
  * model), and quietly populate them in the background. Bounded to a few
- * batches per session so we never hammer the OpenAI API on a cold start
+ * batches per session so we never hammer the embeddings API on a cold start
  * with thousands of historical memories.
+ *
+ * The real embedding model is threaded through from `embedWithModel` and
+ * stored verbatim — vectors are never mislabeled with a fixed provider id,
+ * so cross-space cosine comparisons can't happen (retrieval's guard relies
+ * on the stored label being truthful).
  */
 
 import { db, type Memory } from "./db";
-import { embed, EMBEDDING_MODEL } from "./embeddings";
+import { embedWithModel, embeddingModelsCompatible, EMBEDDING_MODEL } from "./embeddings";
 
 const BATCH = 32;
 const MAX_MEMORIES_PER_RUN = 128;
 
-/** Find memories missing an up-to-date embedding. */
+/** A row counts as "fresh" if it has a non-empty embedding whose stored
+ *  model is compatible with the model we'd produce now. Rows embedded by a
+ *  different-but-compatible provider (e.g. Gemini when OpenAI is the current
+ *  key) are left alone — their vectors still share the 1536-dim space. */
+function hasUsableEmbedding(m: Memory): boolean {
+  return (
+    !!m.embedding &&
+    m.embedding.length > 0 &&
+    embeddingModelsCompatible(m.embedding_model, EMBEDDING_MODEL)
+  );
+}
+
+/** Find memories missing a usable embedding. */
 async function findStaleMemories(limit: number): Promise<Memory[]> {
   // Reverse-chronological so recent memories get embedded first.
   const recent = await db.memories.orderBy("created_at").reverse().toArray();
@@ -23,9 +40,7 @@ async function findStaleMemories(limit: number): Promise<Memory[]> {
     if (stale.length >= limit) break;
     if (m.status === "hidden") continue;
     if (!m.text || !m.text.trim()) continue;
-    if (!m.embedding || m.embedding.length === 0 || m.embedding_model !== EMBEDDING_MODEL) {
-      stale.push(m);
-    }
+    if (!hasUsableEmbedding(m)) stale.push(m);
   }
   return stale;
 }
@@ -43,12 +58,15 @@ export async function backfillMemoryEmbeddings(): Promise<{
   for (let off = 0; off < stale.length; off += BATCH) {
     const chunk = stale.slice(off, off + BATCH);
     try {
-      const vecs = await embed(chunk.map((m) => m.text));
-      const updates = chunk.map((m, i) => ({
-        ...m,
-        embedding: vecs[i],
-        embedding_model: EMBEDDING_MODEL,
-      }));
+      const { vectors, model } = await embedWithModel(chunk.map((m) => m.text));
+      // No embeddings provider configured → empty vectors labeled "none".
+      // Don't persist those (they'd mark rows non-stale and stop retrying);
+      // a later run after a key is set will pick them up.
+      if (model === "none" || vectors.length === 0) break;
+      const updates = chunk
+        .map((m, i) => ({ ...m, embedding: vectors[i], embedding_model: model }))
+        .filter((u) => u.embedding && u.embedding.length > 0);
+      if (updates.length === 0) break;
       await db.memories.bulkPut(updates);
       embedded += updates.length;
     } catch (e) {
@@ -69,12 +87,12 @@ export async function embedNewMemories(memoryIds: string[]): Promise<void> {
   const rows = (await db.memories.bulkGet(memoryIds)).filter((r): r is Memory => !!r);
   if (rows.length === 0) return;
   try {
-    const vecs = await embed(rows.map((r) => r.text));
-    const updates = rows.map((r, i) => ({
-      ...r,
-      embedding: vecs[i],
-      embedding_model: EMBEDDING_MODEL,
-    }));
+    const { vectors, model } = await embedWithModel(rows.map((r) => r.text));
+    if (model === "none" || vectors.length === 0) return;
+    const updates = rows
+      .map((r, i) => ({ ...r, embedding: vectors[i], embedding_model: model }))
+      .filter((u) => u.embedding && u.embedding.length > 0);
+    if (updates.length === 0) return;
     await db.memories.bulkPut(updates);
   } catch (e) {
     console.warn("[embed-backfill] embedNewMemories failed", e);

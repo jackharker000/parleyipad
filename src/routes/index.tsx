@@ -39,20 +39,38 @@ import {
   IPAD_PRESETS,
 } from "@/lib/db";
 import { findNearestPlace, getCurrentPosition } from "@/lib/geo";
+import { flagshipModelFor } from "@/lib/ai-models";
 import {
   createScribeToken,
+  createTtsStreamUrl,
   generateSuggestions,
   summarizeConversation,
   synthesizeSpeech,
   expandUtterance,
   predictUtterances,
   identifySpeakerFromContext,
+  classifyConversationArc,
+  predictMood,
 } from "@/lib/aac.functions";
+import { speakText, stopSpeaking } from "@/lib/audio/speak-text";
+import { warmQuickPhraseCache, QUICK_PHRASES } from "@/lib/audio/quick-phrase-cache";
 import {
   buildConversationContext,
   suggestPeopleAtPlace,
   invalidateContextCache,
+  getContextPriorPersonIds,
 } from "@/lib/context";
+// === Tier 3 wiring ===
+import { embedOneWithModel } from "@/lib/embeddings";
+import { embedNewMemories, backfillMemoryEmbeddings } from "@/lib/embed-backfill";
+import {
+  isArcDue,
+  ARC_REFRESH_TURNS,
+  type ConversationArc,
+  type ArcCacheEntry,
+} from "@/lib/arc";
+import { loadRecentBias, hasUsefulBias, type CategoryBiasLabel } from "@/lib/suggestion-stats";
+import { isMoodDue, MOOD_MIN_CONFIDENCE } from "@/lib/mood";
 import { getCrossSessionDeadPhrases } from "@/lib/style-evidence";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
@@ -68,7 +86,7 @@ import {
   VoiceCapture,
   computeMfccMean,
   recordVoiceprint,
-  bestMatch,
+  bestMatchWithPrior,
   Diarizer,
   cosineSim,
   discriminativeSim,
@@ -83,6 +101,11 @@ export const Route = createFileRoute("/")({
 });
 
 type Suggestion = { text: string; category: string; why?: string };
+
+// === Tier 3.1: one-shot guard for the historical-memory embedding backfill.
+// Module-scoped so it runs at most once per page load even if the cockpit
+// mount effect re-fires (StrictMode double-invoke, route remount, etc.).
+let _memoryBackfillStarted = false;
 
 const MOODS = [
   { id: "normal", label: "Normal", color: "bg-secondary text-secondary-foreground" },
@@ -99,13 +122,15 @@ type MoodId = (typeof MOODS)[number]["id"];
 // recorded into the transcript and folded into future suggestion prompts.
 const JAMES_SELF_LABEL = "__james_self__";
 
-const QUICK_PHRASES = [
-  "Yes",
-  "No",
-  "Give me a moment",
-  "Could you repeat that?",
-  "Sorry, who am I speaking with?",
-];
+/** Clip an auto-saved voice-sample preview to a single short, tidy line so a
+ *  long multi-utterance example can't overflow the People dashboard. */
+function clipPreview(text: string, max = 80): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+}
+
+// QUICK_PHRASES is imported from the quick-phrase cache module (single source
+// of truth) so the displayed list and the pre-warmed/cached list can't drift.
 
 /** Append a suggestion chip onto a cluster status, de-duped by name. */
 function mergeSuggestion(
@@ -225,9 +250,51 @@ function Home() {
   const lastShownRef = useRef<string[]>([]);
   const [mood, setMood] = useState<MoodId>("normal");
   const moodRef = useRef<MoodId>("normal");
+  // True once James has manually picked a mood chip — suppresses A4 auto-mood
+  // prediction entirely so it can NEVER override his explicit choice.
+  const moodManuallySetRef = useRef(false);
   useEffect(() => {
     moodRef.current = mood;
   }, [mood]);
+
+  // === Tier 3.3: auto-mood (soft hint only) ===
+  // A predicted mood used purely to SUBTLY highlight the matching chip. It is
+  // never written to `mood`/`moodRef` — James's manual selection always wins.
+  const [predictedMood, setPredictedMood] = useState<MoodId | null>(null);
+  const predictedMoodRef = useRef<MoodId | null>(null);
+  useEffect(() => {
+    predictedMoodRef.current = predictedMood;
+  }, [predictedMood]);
+  const predictedMoodInFlightRef = useRef(false);
+
+  // === Tier 3.1: per-turn query-embedding cache ===
+  // Keyed by the id of the last committed segment so we embed the recent
+  // transcript window AT MOST ONCE per turn (not per render). Holds the vector
+  // and the model that produced it, so retrieval only compares same-space rows.
+  const queryEmbedCacheRef = useRef<{
+    segId: string;
+    vector: number[];
+    model: string;
+  } | null>(null);
+
+  // === Tier 3.2: conversation-arc cache ===
+  // The arc classifier runs at most once every ARC_REFRESH_TURNS turns; the
+  // result is cached here and passed to the suggestion prompt between runs.
+  const arcCacheRef = useRef<ArcCacheEntry | null>(null);
+  const arcInFlightRef = useRef(false);
+  // Last turn we ATTEMPTED an arc classification (independent of whether it
+  // produced a confident result), so a persistently-ambiguous early opener
+  // doesn't re-fire the classifier every single turn.
+  const arcLastAttemptTurnRef = useRef(-Infinity);
+
+  // === Tier 3.4: category-bias cache ===
+  // Derived from the suggestion log; refreshed ~once/minute or when the
+  // present-person set changes. Empty until cold-start is cleared.
+  const biasCacheRef = useRef<{
+    key: string;
+    at: number;
+    bias: Record<string, CategoryBiasLabel>;
+  } | null>(null);
 
   // === Predictive typing ===
   // When James types, the grid switches to predicted completions of his intent.
@@ -320,6 +387,18 @@ function Home() {
   // Cached voiceprints for in-memory speaker recognition — avoids IDB reads
   // in the hot processUtterance path. Refreshed at start and after each confirm.
   const allVoiceprintsRef = useRef<import("@/lib/db").Voiceprint[]>([]);
+  // Context-prior inputs for the Bayesian speaker matcher (people associated
+  // with the active place / expected at the active event). Loaded once at
+  // conversation start; empty when there's no place/event so matching degrades
+  // to pure cosine.
+  const contextPriorRef = useRef<{ placePersonIds: string[]; eventPersonIds: string[] }>({
+    placePersonIds: [],
+    eventPersonIds: [],
+  });
+  // Recently-heard (suggested/confirmed) person IDs, newest first. Feeds the
+  // matcher's recency prior so a speaker who just talked is gently favoured on
+  // the next turn. Capped short so it stays a *recent* signal.
+  const recentSpeakerPersonIdsRef = useRef<string[]>([]);
   // Confirmed speakers' centroids keyed by personId (sync, no IDB reads).
   const confirmedVoiceprintsRef = useRef<Map<string, number[]>>(new Map());
   // Refresh participant voiceprints if the participant list changes mid-conversation
@@ -348,6 +427,15 @@ function Home() {
     speakerMapRef.current = speakerMap;
   }, [speakerMap]);
 
+  // Push a person to the front of the recency list (dedup, newest-first, cap 5)
+  // for the speaker-matcher recency prior. Pure ref mutation — safe to call
+  // from the hot scribe-callback path.
+  const noteRecentSpeaker = useCallback((personId: string | undefined | null) => {
+    if (!personId) return;
+    const prev = recentSpeakerPersonIdsRef.current.filter((id) => id !== personId);
+    recentSpeakerPersonIdsRef.current = [personId, ...prev].slice(0, 5);
+  }, []);
+
   // Refresh voiceprint status for the picker — runs whenever it opens or the
   // selection changes, so the green/amber badges and inline record buttons
   // stay in sync after a recording completes.
@@ -375,16 +463,27 @@ function Home() {
     // suggestions_log rows so style-evidence aggregation has signal from
     // pre-existing conversations. ===
     void backfillSuggestionsLogPersonIds();
+    // === Durability: ask the browser to keep IndexedDB across storage
+    // pressure. Without this, iPad Safari can silently evict the whole DB —
+    // voiceprints, memories, James's profile, all gone with no warning. The
+    // call is a no-op if already granted or unsupported. ===
+    if (typeof navigator !== "undefined" && navigator.storage?.persist) {
+      void navigator.storage.persist().catch(() => {});
+    }
   }, []);
 
   // Server fns
   const tokenFn = useServerFn(createScribeToken);
   const ttsFn = useServerFn(synthesizeSpeech);
+  const ttsStreamUrlFn = useServerFn(createTtsStreamUrl);
   const suggestFn = useServerFn(generateSuggestions);
   const summarizeFn = useServerFn(summarizeConversation);
   const expandFn = useServerFn(expandUtterance);
   const predictFn = useServerFn(predictUtterances);
   const identifyFn = useServerFn(identifySpeakerFromContext);
+  // === Tier 3.2 / 3.3 ===
+  const arcFn = useServerFn(classifyConversationArc);
+  const moodPredictFn = useServerFn(predictMood);
 
   // Per-utterance processing — extracted so we can call it twice when we
   // split a Scribe chunk that spans two speakers.
@@ -708,7 +807,7 @@ function Home() {
         }
       }
 
-      console.debug("[diarize]", {
+      if (import.meta.env.DEV) console.debug("[diarize]", {
         chosen: speakerLabel,
         sim: assignSim.toFixed(3),
         isNew: assignNew,
@@ -744,6 +843,15 @@ function Home() {
       try {
         const cluster = diarizerRef.current.get(speakerLabel);
         const status = clusterStatusRef.current[speakerLabel];
+        // Recency prior: note whoever this turn is currently attributed to (a
+        // confirmed mapping, else a suggested/confirmed cluster status) so the
+        // matcher gently favours them on the next turn.
+        noteRecentSpeaker(
+          speakerMapRef.current[speakerLabel] ??
+            (status?.kind === "suggested" || status?.kind === "confirmed"
+              ? status.personId
+              : undefined),
+        );
         if (cluster && status?.kind !== "confirmed") {
           const introHere = extractIntroducedNames([
             { text, speaker_label: speakerLabel },
@@ -764,11 +872,21 @@ function Home() {
             const excludedIds = new Set(
               status?.kind === "unknown" ? (status.excludedPersonIds ?? []) : [],
             );
-            const match = bestMatch(
+            // Bayesian context-prior re-ranking: people associated with the
+            // active place / expected at the event / recently heard get a
+            // gentle likelihood boost, with an explicit unknown-speaker reserve
+            // so a stranger isn't force-matched. With no place/event/recency
+            // context this degrades to the previous pure-cosine `bestMatch`.
+            const match = bestMatchWithPrior(
               cluster.centroid,
               candidates,
               VOICEPRINT_MATCH_THRESHOLD,
-              excludedIds,
+              {
+                excludedPersonIds: excludedIds,
+                placePersonIds: contextPriorRef.current.placePersonIds,
+                eventPersonIds: contextPriorRef.current.eventPersonIds,
+                recentSpeakers: recentSpeakerPersonIdsRef.current,
+              },
             );
             if (match) {
               const highConf = match.sim >= 0.88;
@@ -908,7 +1026,7 @@ function Home() {
         console.warn("voiceprint match failed", err);
       }
     },
-    [allPeople, identifyFn],
+    [allPeople, identifyFn, noteRecentSpeaker],
   );
 
   const scribe = useScribe({
@@ -981,7 +1099,7 @@ function Home() {
               speakerShiftTimestampsRef.current =
                 speakerShiftTimestampsRef.current.filter((t) => t !== shiftTs);
               if (preMfcc && postMfcc) {
-                console.debug("[diarize] split chunk at shift", {
+                if (import.meta.env.DEV) console.debug("[diarize] split chunk at shift", {
                   shiftAtSec: shiftSecFromUtteranceStart.toFixed(2),
                   preText,
                   postText,
@@ -996,7 +1114,7 @@ function Home() {
               } else {
                 // MFCC failed for one or both halves — fall through to single-
                 // utterance processing below. Timestamp is already consumed.
-                console.debug("[diarize] split MFCC failed, processing as single utterance");
+                if (import.meta.env.DEV) console.debug("[diarize] split MFCC failed, processing as single utterance");
               }
             }
           }
@@ -1023,6 +1141,19 @@ function Home() {
   // Initial load: settings + people + GPS-based suggestions
   useEffect(() => {
     let cancelled = false;
+    // === Tier 3.1: embed historical memories once per page load, in the
+    // background. Module-guarded so it can't run on every render/mount, and
+    // delayed so it never competes with the cold-start render or the first
+    // suggestion call. Bounded internally (≤128 memories/run) and fully
+    // fire-and-forget — failure just defers to a later session.
+    if (!_memoryBackfillStarted) {
+      _memoryBackfillStarted = true;
+      setTimeout(() => {
+        void backfillMemoryEmbeddings().catch((err) =>
+          console.warn("[tier3.1] backfillMemoryEmbeddings failed", err),
+        );
+      }, 4000);
+    }
     (async () => {
       const s = await getSettings();
       if (cancelled) return;
@@ -1065,6 +1196,17 @@ function Home() {
       cancelled = true;
     };
   }, []);
+
+  // Warm the quick-phrase audio cache in the background whenever the voice is
+  // known or changes. Pre-synthesising the five canned phrases means taps play
+  // instantly with zero network — the durable-degradation surface when the AI
+  // or network is down. `pruneOldVoices` drops phrase rows for a previous voice
+  // so the cache doesn't grow unbounded after a voice change. Soft-fails: if
+  // the synth call errors (e.g. missing key), the live/stream path still works.
+  useEffect(() => {
+    if (!voiceId) return;
+    void warmQuickPhraseCache({ voiceId, synth: ttsFn, pruneOldVoices: true });
+  }, [voiceId, ttsFn]);
 
   // Recent (when not active)
   const [recent, setRecent] = useState<Conversation[]>([]);
@@ -1113,6 +1255,8 @@ function Home() {
       participantVoiceprintsRef.current = [];
       allVoiceprintsRef.current = [];
       confirmedVoiceprintsRef.current.clear();
+      recentSpeakerPersonIdsRef.current = [];
+      contextPriorRef.current = { placePersonIds: [], eventPersonIds: [] };
       // Pre-load ALL stored voiceprints into memory BEFORE connecting Scribe
       // so the very first utterance gets participant matching without IDB reads.
       try {
@@ -1124,6 +1268,17 @@ function Home() {
             .map((vp) => ({ personId: vp.person_id, centroid: vp.centroid }));
         }
       } catch {}
+      // Load the speaker-matcher context prior (people tied to the active place
+      // / expected at the active event). Fail-soft: on any error the matcher
+      // simply runs pure-cosine.
+      try {
+        contextPriorRef.current = await getContextPriorPersonIds({
+          place: placeRef.current,
+          event: selectedEventRef.current ?? undefined,
+        });
+      } catch {
+        contextPriorRef.current = { placePersonIds: [], eventPersonIds: [] };
+      }
 
       const conv: Conversation = {
         id,
@@ -1151,7 +1306,7 @@ function Home() {
           speakerShiftTimestampsRef.current =
             speakerShiftTimestampsRef.current.filter((t) => t > cutoff);
         });
-        console.debug("[voiceprint] capture started", {
+        if (import.meta.env.DEV) console.debug("[voiceprint] capture started", {
           sampleRate: cap.sampleRate,
         });
       } catch (err) {
@@ -1190,11 +1345,13 @@ function Home() {
           const cluster = diarizerRef.current.get(label);
           if (cluster && cluster.count >= 3) {
             await recordVoiceprint(personId, cluster.centroid);
-            const examples = committedRef.current
-              .filter((s) => s.speaker_label === label)
-              .slice(-3)
-              .map((s) => s.text)
-              .join(" / ");
+            const examples = clipPreview(
+              committedRef.current
+                .filter((s) => s.speaker_label === label)
+                .slice(-3)
+                .map((s) => s.text)
+                .join(" / "),
+            );
             await addContributionWithCap({
               id: newId(),
               person_id: personId,
@@ -1234,54 +1391,136 @@ function Home() {
             .filter((p): p is Person => !!p)
             .map((p) => p.name);
           toast.loading("Saving summary…", { id: "sum" });
-          const r = await summarizeFn({
-            data: {
-              transcript,
-              placeName: placeName ?? undefined,
-              peopleNames,
-              model: smartModelRef.current,
-            },
-          });
+          // Client timeout so a hung/slow summary doesn't leave "Saving…" up
+          // forever (the smart model + provider-fallback walk can run long).
+          const sumAbort = new AbortController();
+          const sumTimer = setTimeout(() => sumAbort.abort(), 30_000);
+          const runSummary = (model: string) =>
+            Promise.race([
+              summarizeFn({
+                data: {
+                  transcript,
+                  placeName: placeName ?? undefined,
+                  peopleNames,
+                  model,
+                },
+              }),
+              new Promise<never>((_, rej) =>
+                sumAbort.signal.addEventListener("abort", () =>
+                  rej(new Error("Summary timed out — transcript saved without it")),
+                ),
+              ),
+            ]);
+          let r;
+          try {
+            // Summaries are quality-dominant and run post-conversation (no
+            // live-latency cost), so prefer the provider's flagship model
+            // (e.g. Gemini Pro) rather than the fast "smart" tier — this is
+            // what fixes thin/inaccurate summaries.
+            r = await runSummary(flagshipModelFor(smartModelRef.current));
+            // If the flagship failed or came back empty (e.g. a free-tier key
+            // can't reach Gemini Pro, and no other provider key is set), retry
+            // with the user's configured smart model — known-good for their
+            // tier — so we never regress to "no summary".
+            if ((r.error || !r.summary?.trim()) && !sumAbort.signal.aborted) {
+              r = await runSummary(smartModelRef.current);
+            }
+          } finally {
+            clearTimeout(sumTimer);
+          }
           await db.conversations.update(cid, {
             summary: r.summary,
             highlights: r.highlights,
           });
           if (r.memories?.length) {
             const primary = personIdsRef.current[0];
-            await db.memories.bulkAdd(
-              r.memories.map(
-                (m: {
-                  text: string;
-                  kind: "fact" | "preference" | "event" | "todo";
-                }) => ({
-                  id: newId(),
-                  conversation_id: cid,
-                  place_id: placeIdRef.current,
-                  person_id: primary,
-                  text: m.text,
-                  kind: m.kind,
-                  status: "auto" as const,
-                  created_at: Date.now(),
-                }),
-              ),
+            // Resolve a personName (from the AI) to the actual personId in the
+            // current conversation roster. Falls back to the primary person
+            // when the name is missing or doesn't match a participant — but
+            // memories that ARE about a specific person are now attributed
+            // correctly, instead of all being pinned to personIds[0].
+            const conversationPeople = (await db.people.bulkGet(personIdsRef.current))
+              .filter((p): p is Person => !!p);
+            const resolvePersonId = (name?: string): string | undefined => {
+              if (!name?.trim()) return primary;
+              const lower = name.trim().toLowerCase();
+              const exact = conversationPeople.find((p) => p.name.toLowerCase() === lower);
+              if (exact) return exact.id;
+              const partial = conversationPeople.find(
+                (p) => p.name.toLowerCase().includes(lower) || lower.includes(p.name.toLowerCase()),
+              );
+              return partial?.id ?? primary;
+            };
+            const memoryRows = r.memories.map(
+              (m: {
+                text: string;
+                kind: "fact" | "preference" | "event" | "todo";
+                personName?: string;
+              }) => ({
+                id: newId(),
+                conversation_id: cid,
+                place_id: placeIdRef.current,
+                person_id: resolvePersonId(m.personName),
+                text: m.text,
+                kind: m.kind,
+                status: "auto" as const,
+                created_at: Date.now(),
+              }),
+            );
+            await db.memories.bulkAdd(memoryRows);
+            // === Tier 3.1: embed the new memories so they're semantically
+            // retrievable on the next conversation. Fire-and-forget + guarded
+            // inside embedNewMemories; failure is non-fatal (the mount-time
+            // backfill will cover any that miss).
+            void embedNewMemories(memoryRows.map((row: { id: string }) => row.id)).catch(
+              (err) => console.warn("[tier3.1] embedNewMemories failed", err),
             );
           }
           if (r.followUps?.length) {
             const primary = personIdsRef.current[0];
+            const conversationPeople = (await db.people.bulkGet(personIdsRef.current))
+              .filter((p): p is Person => !!p);
+            const resolvePersonId = (name?: string): string | undefined => {
+              if (!name?.trim()) return primary;
+              const lower = name.trim().toLowerCase();
+              const exact = conversationPeople.find((p) => p.name.toLowerCase() === lower);
+              if (exact) return exact.id;
+              const partial = conversationPeople.find(
+                (p) => p.name.toLowerCase().includes(lower) || lower.includes(p.name.toLowerCase()),
+              );
+              return partial?.id ?? primary;
+            };
+            // Normalise: AI now returns objects with optional personName, but
+            // legacy/older fallback paths may still return plain strings.
+            type FUEmit = string | { text: string; personName?: string };
             await db.follow_ups.bulkAdd(
-              r.followUps.map((t: string) => ({
-                id: newId(),
-                for_place_id: placeIdRef.current,
-                for_person_id: primary,
-                text: t,
-                created_at: Date.now(),
-                used: false,
-              })),
+              (r.followUps as FUEmit[])
+                .map((entry) =>
+                  typeof entry === "string" ? { text: entry, personName: undefined } : entry,
+                )
+                .filter((f) => f.text?.trim())
+                .map((f) => ({
+                  id: newId(),
+                  for_place_id: placeIdRef.current,
+                  for_person_id: resolvePersonId(f.personName),
+                  text: f.text,
+                  created_at: Date.now(),
+                  used: false,
+                })),
             );
           }
-          toast.success("Saved", { id: "sum" });
+          // Honest toast: don't claim "Saved" if the summary actually errored
+          // or came back empty (the transcript IS saved either way).
+          if (r.error || !r.summary?.trim()) {
+            toast.message("Transcript saved — summary didn't generate", { id: "sum" });
+          } else {
+            toast.success("Saved", { id: "sum" });
+          }
 
-          /* Post-stop pipeline: summary → [Tier 2 jobs in Promise.all] → [Tier 3 embed memories] */
+          /* Post-stop pipeline: summary saved → kick off Tier-2 in the
+             background so Stop returns immediately (was locked 10-30s while
+             rediarize + voiceprint rebuild + enrichment + intro detection
+             ran in sequence — James felt every second). */
           const tier2Ctx = {
             conversationId: cid,
             segs,
@@ -1290,20 +1529,23 @@ function Home() {
             smartModel: smartModelRef.current,
             fastModel: fastModelRef.current,
           };
-          toast.loading("Analysing conversation…", { id: "tier2" });
-          try {
-            // 2.1 must complete before 2.4 (needs corrected labels + centroids).
-            const rediarizeResult = await rediarizeAfterStop(tier2Ctx);
-            await Promise.all([
-              rebuildVoiceprintsAfterStop(tier2Ctx),
-              enrichProfilesAfterStop(tier2Ctx),
-              detectIntroductionsAfterStop(tier2Ctx, rediarizeResult),
-            ]);
-            toast.success("Updated profiles", { id: "tier2" });
-          } catch (e) {
-            console.warn("[tier2] post-pass failed", e);
-            toast.dismiss("tier2");
-          }
+          toast.message("Analysing in background…", { id: "tier2", duration: 4000 });
+          // Fire-and-forget. 2.1 must complete before 2.4 (needs corrected
+          // labels + centroids), and 2.2/2.3 are independent — parallelise.
+          void (async () => {
+            try {
+              const rediarizeResult = await rediarizeAfterStop(tier2Ctx);
+              await Promise.all([
+                rebuildVoiceprintsAfterStop(tier2Ctx),
+                enrichProfilesAfterStop(tier2Ctx),
+                detectIntroductionsAfterStop(tier2Ctx, rediarizeResult),
+              ]);
+              toast.success("Profiles updated", { id: "tier2", duration: 2000 });
+            } catch (e) {
+              console.warn("[tier2] post-pass failed", e);
+              toast.dismiss("tier2");
+            }
+          })();
         }
       }
       // === Tier 1.2: auto-distil style profile ===
@@ -1322,9 +1564,27 @@ function Home() {
       convoSuggestionsRef.current = [];
       currentContextRef.current = "";
       lastSuggestKeyRef.current = "";
+      // === Tier 3: reset per-conversation caches/state. Arc is keyed by turn
+      // count (which resets next session) and the predicted-mood hint + manual
+      // override must not bleed into the next conversation.
+      arcCacheRef.current = null;
+      arcInFlightRef.current = false;
+      arcLastAttemptTurnRef.current = -Infinity;
+      queryEmbedCacheRef.current = null;
+      biasCacheRef.current = null;
+      moodManuallySetRef.current = false;
+      setPredictedMood(null);
       setSuggestions([]);
+      // Stop any in-flight TTS playback / streaming socket so audio doesn't
+      // outlive the conversation and the WS isn't left open.
+      stopSpeaking();
     }
   }, [active, stopping, scribe, summarizeFn, placeName]);
+
+  // Tear down any in-flight TTS (audio + streaming socket) if the cockpit
+  // unmounts mid-utterance (navigating to Settings / People / Recent), so a
+  // module-level singleton can't keep audio playing across routes.
+  useEffect(() => () => stopSpeaking(), []);
 
   // (No auto-mapping effect: speakers are confirmed only via the SpeakerPanel.)
 
@@ -1367,10 +1627,41 @@ function Home() {
         peopleById,
         jamesLabelRef.current,
       );
+      // === Tier 3.1: semantic memory — compute the query embedding for the
+      // recent-transcript window, cached per turn (keyed by the last committed
+      // segment id) so we embed at most ONCE per turn, not per render. If the
+      // embedder rate-limits / returns empty, we skip silently and the context
+      // builder falls back to recency-based memory selection (graceful).
+      let queryEmbedding: number[] | undefined;
+      let queryEmbeddingModel: string | undefined;
+      try {
+        const lastSeg = committed[committed.length - 1];
+        if (lastSeg && recent.length > 0) {
+          const cached = queryEmbedCacheRef.current;
+          if (cached && cached.segId === lastSeg.id) {
+            queryEmbedding = cached.vector;
+            queryEmbeddingModel = cached.model;
+          } else {
+            // Embed the last few turns — the live "query" the memories answer.
+            const queryText = recent.slice(-4).map((s) => `${s.speaker}: ${s.text}`).join("\n");
+            const { vector, model } = await embedOneWithModel(queryText);
+            if (vector && vector.length > 0) {
+              queryEmbedding = vector;
+              queryEmbeddingModel = model;
+              queryEmbedCacheRef.current = { segId: lastSeg.id, vector, model };
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[tier3.1] query embedding failed — falling back to recency", err);
+      }
+
       const ctx = await buildConversationContext({
         personIds: personIdsRef.current,
         place: placeRef.current,
         event: selectedEventRef.current ?? undefined,
+        queryEmbedding,
+        queryEmbeddingModel,
       });
       // Detect if a question was just asked so the AI can prioritise answers.
       const jamesLabel = jamesLabelRef.current ?? "__james_self__";
@@ -1416,6 +1707,102 @@ function Home() {
         .map((s) => s.text)
         .join(" ");
       currentContextRef.current = contextSnippet;
+
+      // === Tier 3.4: category-bias — derived from the suggestion log (local,
+      // no network). Cached ~60s and keyed by the present-person set so a
+      // change of participants refreshes it. Only passed when it's crossed
+      // cold-start AND has a non-neutral signal worth steering on.
+      let categoryBias: Record<string, CategoryBiasLabel> | undefined;
+      try {
+        const cachedBias = biasCacheRef.current;
+        if (cachedBias && cachedBias.key === personKey && Date.now() - cachedBias.at < 60_000) {
+          if (hasUsefulBias(cachedBias.bias)) categoryBias = cachedBias.bias;
+        } else {
+          const bias = await loadRecentBias();
+          biasCacheRef.current = { key: personKey, at: Date.now(), bias };
+          if (hasUsefulBias(bias)) categoryBias = bias;
+        }
+      } catch (err) {
+        console.warn("[tier3.4] category bias load failed", err);
+      }
+
+      // === Tier 3.2: conversation arc — pass whatever arc is currently cached
+      // (zero added latency every turn). When a refresh is DUE, kick off the
+      // classifier in the BACKGROUND so the result is ready for the next turn,
+      // rather than stacking a second sequential AI call onto this turn's
+      // suggestion path (latency always). Guarded so only one runs at a time.
+      const committedTurns = committed.length;
+      const arc: ConversationArc | undefined = arcCacheRef.current?.arc;
+      if (
+        isArcDue(committedTurns, arcCacheRef.current) &&
+        !arcInFlightRef.current &&
+        committedTurns - arcLastAttemptTurnRef.current >= ARC_REFRESH_TURNS
+      ) {
+        arcInFlightRef.current = true;
+        arcLastAttemptTurnRef.current = committedTurns;
+        const prevArc = arcCacheRef.current?.arc;
+        void arcFn({
+          data: {
+            recentTranscript: recent,
+            previousArc: prevArc,
+            model: fastModelRef.current,
+          },
+        })
+          .then((res) => {
+            if (res?.arc && (res.confidence ?? 0) >= 0.55) {
+              arcCacheRef.current = { arc: res.arc as ConversationArc, atTurn: committedTurns };
+            } else {
+              // Low confidence — keep the previous arc but bump the turn marker
+              // so we don't re-run the classifier on every single turn.
+              arcCacheRef.current = prevArc
+                ? { arc: prevArc, atTurn: committedTurns }
+                : arcCacheRef.current;
+            }
+          })
+          .catch((err) => console.warn("[tier3.2] arc classify failed", err))
+          .finally(() => {
+            arcInFlightRef.current = false;
+          });
+      }
+
+      // === Tier 3.3: auto-mood (soft hint only) — every few turns, predict
+      // the likely mood for James's reply and SUBTLY highlight the matching
+      // chip. Fire-and-forget so it never adds latency to the suggestion path,
+      // and fully suppressed once James has manually picked a mood — his
+      // explicit choice is never overridden, only gently suggested otherwise.
+      if (
+        !moodManuallySetRef.current &&
+        isMoodDue(committedTurns) &&
+        !predictedMoodInFlightRef.current
+      ) {
+        predictedMoodInFlightRef.current = true;
+        void moodPredictFn({
+          data: {
+            recentTranscript: recent.slice(-12),
+            previousMood: predictedMoodRef.current ?? undefined,
+            model: fastModelRef.current,
+          },
+        })
+          .then((res) => {
+            // Only surface a confident, non-default prediction; never touch the
+            // active `mood`. If James has tapped a chip in the meantime, drop it.
+            if (moodManuallySetRef.current) return;
+            if (
+              res?.mood &&
+              res.mood !== "normal" &&
+              (res.confidence ?? 0) >= MOOD_MIN_CONFIDENCE
+            ) {
+              setPredictedMood(res.mood as MoodId);
+            } else {
+              setPredictedMood(null);
+            }
+          })
+          .catch((err) => console.warn("[tier3.3] mood predict failed", err))
+          .finally(() => {
+            predictedMoodInFlightRef.current = false;
+          });
+      }
+
       // 18s hard timeout so a hung free-tier provider call doesn't strand the
       // UI in "Thinking…" forever — the user can re-tap Refresh after.
       const timeoutCtl = new AbortController();
@@ -1435,6 +1822,13 @@ function Home() {
             jamesVoiceSamples: ctx.jamesVoiceSamples,
             // === Preference learning ===
             choiceMemories: ctx.choiceMemories,
+            // === Tier 3.1: semantically-retrieved memories (populated only
+            // when a query embedding was available; falls back to recency). ===
+            retrievedMemories: ctx.retrievedMemories,
+            // === Tier 3.2: conversation arc (cached; refreshed in background) ===
+            arc,
+            // === Tier 3.4: per-category performance bias ===
+            categoryBias,
             alreadyShown,
             model: fastModelRef.current,
             mood: moodRef.current,
@@ -1449,6 +1843,8 @@ function Home() {
       ]).finally(() => clearTimeout(timer));
       if (r.suggestions?.length) {
         succeeded = true;
+        // AI is reachable again — clear any "AI down" notice.
+        toast.dismiss("ai-down");
         setSuggestions(r.suggestions as Suggestion[]);
         // Remember this batch so that if James types his own reply instead of
         // tapping one, we can mark all of them as "missed".
@@ -1492,6 +1888,15 @@ function Home() {
             })),
           );
         }
+      } else if (r.error) {
+        // Every provider returned an error object (e.g. all keys 401/429) — the
+        // server fn resolves with {suggestions:[], error} rather than throwing,
+        // so this path used to leave the grid silently blank. Surface a
+        // persistent, de-duped notice; quick phrases + typed speech still work.
+        toast.error(
+          "Can't reach the AI right now — quick phrases and typed speech still work.",
+          { id: "ai-down", duration: Infinity },
+        );
       }
     } catch (e: any) {
       console.error(e);
@@ -1506,7 +1911,7 @@ function Home() {
       // + mood signature → call permanently skipped.
       if (!succeeded) lastSuggestKeyRef.current = "";
     }
-  }, [committed, suggestFn, loadingSuggestions, allPeople, active]);
+  }, [committed, suggestFn, arcFn, moodPredictFn, loadingSuggestions, allPeople, active]);
 
   useEffect(() => {
     if (!active) return;
@@ -1656,9 +2061,12 @@ function Home() {
       if (!text.trim()) return;
       try {
         setSpeaking(true);
-        const r = await ttsFn({ data: { text, voiceId } });
-        const audio = new Audio(`data:${r.mime};base64,${r.audioBase64}`);
-        await audio.play();
+        // Produce the sound. speakText prefers cached audio (quick phrases +
+        // repeated suggestions, zero-network), then streaming Flash v2.5 over
+        // WebSocket (lowest live latency), and falls back to the full-synth
+        // HTTP path (synthesizeSpeech) if the socket fails — so James is never
+        // left silent. It resolves once playback has STARTED.
+        await speakText({ text, voiceId, streamUrlFn: ttsStreamUrlFn, synthFn: ttsFn });
         // Persistence below happens AFTER audio played — wrap separately so a
         // benign IndexedDB write error can't surface as a misleading "Speech
         // failed" toast when James was actually heard.
@@ -1713,7 +2121,7 @@ function Home() {
         setSpeaking(false);
       }
     },
-    [ttsFn, voiceId, recordSelectionChoice],
+    [ttsFn, ttsStreamUrlFn, voiceId, recordSelectionChoice],
   );
 
   const peopleInConvo = useMemo(
@@ -1774,11 +2182,13 @@ function Home() {
           ];
         }
         // Capture a recent example from this cluster for the user to verify later.
-        const examples = committedRef.current
-          .filter((s) => s.speaker_label === label)
-          .slice(-3)
-          .map((s) => s.text)
-          .join(" / ");
+        const examples = clipPreview(
+          committedRef.current
+            .filter((s) => s.speaker_label === label)
+            .slice(-3)
+            .map((s) => s.text)
+            .join(" / "),
+        );
         await addContributionWithCap({
           id: newId(),
           person_id: personId,
@@ -2113,9 +2523,9 @@ function Home() {
             place: ctx.place,
             // === Cross-conversation voice learning ===
             jamesVoiceSamples: ctx.jamesVoiceSamples,
-            // Use smart model for expansion — it's a one-shot operation so the
-            // extra latency is acceptable, and quality matters more than speed here.
-            model: smartModelRef.current,
+            // Expand is latency-critical (James is mid-conversation waiting to
+            // speak) — CLAUDE.md puts expand on the FAST tier, not smart.
+            model: fastModelRef.current,
           },
         }),
         new Promise<never>((_, rej) => {
@@ -2469,7 +2879,7 @@ function Home() {
               {loadingSuggestions ? "Thinking…" : "Refresh"}
             </Button>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-3 gap-2 overflow-hidden p-2">
+          <div className="grid min-h-0 flex-1 grid-cols-3 grid-rows-2 gap-2 overflow-hidden p-2">
             {!active && suggestions.length === 0 && !predicting && (
               <Card className="col-span-3 row-span-3 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
                 Press the record button to start a conversation. Suggestions
@@ -2481,7 +2891,7 @@ function Home() {
                 Listening… suggestions will appear after a few words.
               </Card>
             )}
-            {suggestions.slice(0, 9).map((s, i) => (
+            {suggestions.slice(0, 6).map((s, i) => (
               <SuggestionCard
                 key={`${i}-${s.text}`}
                 suggestion={s}
@@ -2534,16 +2944,27 @@ function Home() {
             </span>
             {MOODS.map((m) => {
               const selected = mood === m.id;
+              // Tier 3.3 — soft auto-mood hint: subtly ring the predicted chip
+              // when nothing is selected yet, WITHOUT changing the active mood.
+              const hinted = !selected && predictedMood === m.id;
               return (
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => setMood(m.id)}
+                  onClick={() => {
+                    // Manual selection always wins and disables auto-prediction.
+                    moodManuallySetRef.current = true;
+                    setPredictedMood(null);
+                    setMood(m.id);
+                  }}
                   aria-pressed={selected}
+                  title={hinted ? "Suggested based on the conversation" : undefined}
                   className={`rounded-full border-2 px-5 py-2.5 text-base font-medium transition ${
                     selected
                       ? `${m.color} border-transparent shadow`
-                      : "border-border bg-background text-muted-foreground hover:bg-secondary"
+                      : hinted
+                        ? "border-primary/60 bg-background text-foreground ring-2 ring-primary/30"
+                        : "border-border bg-background text-muted-foreground hover:bg-secondary"
                   }`}
                 >
                   {m.label}

@@ -1,9 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useLiveQuery } from "dexie-react-hooks";
-import { ChevronLeft, Search, X } from "lucide-react";
+import { Check, ChevronLeft, Pencil, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -11,8 +13,41 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { db, type Conversation } from "@/lib/db";
+
+/** Delete a conversation and everything derived from it (best-effort cascade
+ *  across all tables keyed by conversation_id). */
+async function deleteConversationCascade(cid: string): Promise<void> {
+  await db.conversations.delete(cid);
+  const byConv = [
+    db.transcript_segments,
+    db.suggestions_log,
+    db.manual_replies,
+    db.memories,
+    db.profile_proposals,
+    db.segment_mfccs,
+    db.suggestion_choices,
+  ];
+  for (const table of byConv) {
+    try {
+      await table.where("conversation_id").equals(cid).delete();
+    } catch {
+      // Best-effort: a missing table/index shouldn't block the delete.
+    }
+  }
+}
 
 export const Route = createFileRoute("/recent")({
   component: RecentPage,
@@ -32,6 +67,14 @@ function RecentPage() {
   const [keyword, setKeyword] = useState("");
   const [placeFilter, setPlaceFilter] = useState<string>("__all__");
   const [personFilter, setPersonFilter] = useState<string>("__all__");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftSummary, setDraftSummary] = useState("");
+
+  async function saveSummary(cid: string) {
+    await db.conversations.update(cid, { summary: draftSummary.trim() });
+    setEditingId(null);
+    toast.success("Summary updated");
+  }
 
   const peopleById = useMemo(
     () => new Map((people ?? []).map((p) => [p.id, p] as const)),
@@ -194,23 +237,98 @@ function RecentPage() {
           const peopleNames = (c.person_ids ?? [])
             .map((id) => peopleById.get(id)?.name)
             .filter(Boolean) as string[];
+          const isEditing = editingId === c.id;
           return (
             <Card key={c.id} className="p-3">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <span>{new Date(c.started_at).toLocaleString()}</span>
-                {placeName && <span>· {placeName}</span>}
-                {peopleNames.length > 0 && (
-                  <span>· {peopleNames.join(", ")}</span>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  <span>{new Date(c.started_at).toLocaleString()}</span>
+                  {placeName && <span>· {placeName}</span>}
+                  {peopleNames.length > 0 && (
+                    <span>· {peopleNames.join(", ")}</span>
+                  )}
+                </div>
+                {!isEditing && (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-8"
+                      aria-label="Edit summary"
+                      onClick={() => {
+                        setDraftSummary(c.summary ?? "");
+                        setEditingId(c.id);
+                      }}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-8"
+                          aria-label="Delete conversation"
+                        >
+                          <Trash2 className="size-4 text-destructive" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Delete this conversation?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This permanently removes the conversation, its transcript, summary,
+                            and any memories or profile suggestions learned from it. This can't be
+                            undone.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel className="h-12 text-base">Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            className="h-12 bg-destructive text-base text-destructive-foreground hover:bg-destructive/90"
+                            onClick={async () => {
+                              await deleteConversationCascade(c.id);
+                              if (editingId === c.id) setEditingId(null);
+                              toast.success("Conversation deleted");
+                            }}
+                          >
+                            Delete
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
                 )}
               </div>
-              {c.summary ? (
-                <p className="mt-1 leading-snug">{c.summary}</p>
+              {isEditing ? (
+                <div className="mt-2 space-y-2">
+                  <Textarea
+                    rows={5}
+                    value={draftSummary}
+                    onChange={(e) => setDraftSummary(e.target.value)}
+                    placeholder="Conversation summary…"
+                  />
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => saveSummary(c.id)}>
+                      <Check className="mr-1 size-4" /> Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setEditingId(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : c.summary ? (
+                <p className="mt-1 whitespace-pre-wrap leading-snug">{c.summary}</p>
               ) : (
                 <p className="mt-1 text-xs italic text-muted-foreground">
                   {c.ended_at ? "No summary" : "In progress…"}
                 </p>
               )}
-              {c.highlights && c.highlights.length > 0 && (
+              {!isEditing && c.highlights && c.highlights.length > 0 && (
                 <ul className="mt-2 list-disc pl-5 text-sm text-muted-foreground">
                   {c.highlights.map((h, i) => (
                     <li key={i}>{h}</li>

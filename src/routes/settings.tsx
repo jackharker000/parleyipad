@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -34,6 +34,8 @@ import {
   Map as MapIcon,
   FileText,
   Upload,
+  Download,
+  Lock,
   Calendar as CalendarIcon,
   Check,
   Mic,
@@ -76,6 +78,8 @@ import {
   updateSettings,
   getJamesProfile,
   updateJamesProfile,
+  deletePersonCascade,
+  deletePlaceCascade,
   newId,
   type JamesProfile,
   type JamesDocument,
@@ -90,6 +94,11 @@ import {
   IPAD_PRESETS,
   type IPadModel,
 } from "@/lib/db";
+import {
+  exportEncryptedBackup,
+  importEncryptedBackup,
+  suggestedBackupFilename,
+} from "@/lib/backup";
 import { AI_PROVIDERS, providerIdForModel, getProvider } from "@/lib/ai-models";
 import {
   listVoices,
@@ -101,7 +110,6 @@ import {
 import { getCurrentPosition } from "@/lib/geo";
 import { getPersonStats, groupMemories } from "@/lib/people-stats";
 import { runStyleDistillation } from "@/lib/style-distill";
-import { AccountCard } from "@/components/AccountCard";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -252,13 +260,23 @@ function SystemTab() {
   }
 
   async function clearAllData() {
-    // Clear EVERY table except `settings` (keeps voice/model/display prefs).
-    // Driven off `db.tables` so new tables (voiceprints, choice memories,
-    // profile proposals, events, …) are always included — the old hand-kept
-    // list silently left more than half the data behind.
+    // Clear EVERY table except `settings` (keeps voice/model/display prefs)
+    // and `james_profile` (his identity/background isn't user data the user
+    // would expect to be wiped by a "clear conversations" action — wiping it
+    // would break every future suggestion until he re-enters it).
+    const KEEP = new Set(["settings", "james_profile"]);
     await Promise.all(
-      db.tables.filter((t) => t.name !== "settings").map((t) => t.clear()),
+      db.tables.filter((t) => !KEEP.has(t.name)).map((t) => t.clear()),
     );
+    // Reset the localStorage seed flags so seeding can re-run cleanly against
+    // the now-empty people table (otherwise James loses all roster + relations
+    // and the app can't re-seed them).
+    try {
+      localStorage.removeItem("aac_seeded_v1");
+      localStorage.removeItem("suggestions_log_person_id_backfill_v1");
+    } catch {
+      /* private mode / disabled storage — best-effort */
+    }
     toast.success("All data cleared");
   }
 
@@ -275,7 +293,6 @@ function SystemTab() {
 
   return (
     <div className="space-y-3">
-      <AccountCard />
       <Accordion type="multiple" defaultValue={[]} className="space-y-2">
         <AccordionItem value="voice" className="rounded-xl border border-border bg-card px-5">
           <AccordionTrigger className="text-base font-semibold hover:no-underline">
@@ -472,6 +489,38 @@ function SystemTab() {
                       }
                     />
                   </div>
+
+                  {/* Speaker-ID engine selector — neural is scaffolded but
+                      OFF until device-verified on the real iPad. */}
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card p-3">
+                    <div className="min-w-0 flex-1">
+                      <label className="text-sm font-medium">
+                        Neural speaker-ID engine (experimental)
+                      </label>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        When on, uses an on-device neural model (WavLM-class
+                        via WebGPU/WASM) instead of MFCC for speaker matching.
+                        Higher accuracy in noise, but heavier and not yet
+                        verified on this iPad — leave OFF unless you're
+                        actively testing. Enrolment supports both formats; the
+                        matcher never compares across engines.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={settings.speaker_id_engine === "neural"}
+                      onCheckedChange={(v) =>
+                        updateSettings({
+                          speaker_id_engine: v ? "neural" : "mfcc",
+                        }).then(() =>
+                          toast.success(
+                            v
+                              ? "Neural engine on — restart conversation to take effect"
+                              : "Reverted to MFCC engine",
+                          ),
+                        )
+                      }
+                    />
+                  </div>
                 </>
               );
             })()}
@@ -538,33 +587,36 @@ function SystemTab() {
             <span className="flex items-center gap-2"><FileText className="size-4" /> Storage &amp; privacy</span>
           </AccordionTrigger>
           <AccordionContent className="pb-5">
-            <p className="mb-5 text-sm text-muted-foreground">
-              Your data lives on this iPad and is automatically backed up to your Lovable Cloud account whenever it changes. Sign in with the same email on another device to restore everything.
+            <p className="mb-3 text-sm text-muted-foreground">
+              Your data lives on this iPad only. No account, no server, no cloud sync. Export an encrypted backup any time and save it to Files or iCloud Drive yourself — that's how you move data to a new iPad or recover from an accidental wipe.
             </p>
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="destructive" className="h-11">
-                  Clear all local data
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Clear all local data?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This will permanently delete all conversations, memories, people, places, events, and profile data stored on this device. This cannot be undone.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel className="h-12 text-base">Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    className="h-12 bg-destructive text-base text-destructive-foreground hover:bg-destructive/90"
-                    onClick={clearAllData}
-                  >
-                    Delete everything
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+            <EncryptedBackupCard />
+            <div className="mt-5">
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" className="h-11">
+                    Clear all local data
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Clear all local data?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will permanently delete all conversations, memories, people, places, events, and profile data stored on this device. James's profile is preserved. This cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel className="h-12 text-base">Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="h-12 bg-destructive text-base text-destructive-foreground hover:bg-destructive/90"
+                      onClick={clearAllData}
+                    >
+                      Delete everything
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
           </AccordionContent>
         </AccordionItem>
       </Accordion>
@@ -1180,15 +1232,7 @@ function PeopleTab() {
   }
 
   async function remove(id: string) {
-    await db.people.delete(id);
-    // Tier 2.4: when removing an auto-detected person, also clean up the
-    // voiceprint + contributions we created so a re-introduction can start fresh.
-    try {
-      await db.voiceprints.delete(id);
-      await db.voiceprint_contributions.where("person_id").equals(id).delete();
-    } catch {
-      // Best-effort cleanup.
-    }
+    await deletePersonCascade(id);
     if (selectedId === id) setSelectedId(null);
   }
 
@@ -2326,7 +2370,7 @@ function PlacesTab() {
 
   async function remove(id: string) {
     if (!confirm("Remove this location?")) return;
-    await db.places.delete(id);
+    await deletePlaceCascade(id);
     if (editing?.id === id) setEditing(null);
   }
 
@@ -3090,5 +3134,131 @@ function EventLocationField({
         </Select>
       </div>
     </Field>
+  );
+}
+
+/** Encrypted local backup — export to a downloadable file (save it to Files /
+ *  iCloud Drive yourself) or import an earlier file. AES-GCM with a
+ *  PBKDF2-derived key from a user passphrase; the passphrase is never stored.
+ *  This replaces the deleted Supabase cloud-sync as the only way to move data
+ *  between devices or recover from a wipe. */
+function EncryptedBackupCard() {
+  const [exportPass, setExportPass] = useState("");
+  const [importPass, setImportPass] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [replaceOnImport, setReplaceOnImport] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function doExport() {
+    if (exportPass.length < 6) {
+      toast.error("Passphrase must be at least 6 characters");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { blob, meta } = await exportEncryptedBackup(exportPass);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = suggestedBackupFilename(meta.exportedAt);
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${meta.rowCount} rows — save the file to Files / iCloud`);
+      setExportPass("");
+    } catch (err: any) {
+      toast.error(err?.message ?? "Export failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doImport() {
+    if (!importFile) {
+      toast.error("Pick a backup file first");
+      return;
+    }
+    if (importPass.length < 6) {
+      toast.error("Enter the passphrase you used when exporting");
+      return;
+    }
+    setBusy(true);
+    try {
+      const bytes = await importFile.arrayBuffer();
+      const meta = await importEncryptedBackup(bytes, importPass, { replace: replaceOnImport });
+      toast.success(`Imported ${meta.rowCount} rows`);
+      setImportPass("");
+      setImportFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (err: any) {
+      toast.error(err?.message ?? "Import failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4 rounded-xl border border-border bg-secondary/30 p-4">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Lock className="size-4 text-muted-foreground" />
+        Encrypted local backup
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground">
+          Export — encrypts everything with your passphrase and downloads a single file. <strong>Keep the passphrase safe</strong>; without it the file cannot be opened, even by us.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            type="password"
+            value={exportPass}
+            onChange={(e) => setExportPass(e.target.value)}
+            placeholder="Passphrase (≥ 6 characters)"
+            className="h-11 flex-1 min-w-[180px]"
+            autoComplete="new-password"
+          />
+          <Button onClick={doExport} disabled={busy} className="h-11">
+            <Download className="mr-1 size-4" /> Export backup
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-2 border-t border-border pt-3">
+        <p className="text-xs text-muted-foreground">
+          Import — restore from a Parley backup file. Use the same passphrase that was set when the file was exported.
+        </p>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".parlbak,application/octet-stream"
+          onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+          className="block w-full text-xs file:mr-3 file:h-9 file:cursor-pointer file:rounded-md file:border-0 file:bg-secondary file:px-3 file:text-sm file:font-medium file:text-foreground"
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            type="password"
+            value={importPass}
+            onChange={(e) => setImportPass(e.target.value)}
+            placeholder="Backup passphrase"
+            className="h-11 flex-1 min-w-[180px]"
+            autoComplete="off"
+          />
+          <Button onClick={doImport} disabled={busy} className="h-11">
+            <Upload className="mr-1 size-4" /> Import
+          </Button>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={replaceOnImport}
+            onChange={(e) => setReplaceOnImport(e.target.checked)}
+            className="size-4"
+          />
+          Replace existing data (clear first, then import — instead of merging)
+        </label>
+      </div>
+    </div>
   );
 }

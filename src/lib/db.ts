@@ -189,6 +189,12 @@ export type Settings = {
     name: string;
     labels?: Record<string, string>;
   }>;
+  /** Speaker-ID engine selector. The neural engine (Silero VAD + WavLM/ECAPA
+   *  via @huggingface/transformers, WebGPU→WASM fallback) sits in rebuild-src/
+   *  ready to port, but the live cockpit pipeline is MFCC-only. This flag
+   *  reserves the toggle so it can ship gated and OFF — the active engine
+   *  stays MFCC until the neural path is device-verified on the real iPad. */
+  speaker_id_engine?: "mfcc" | "neural";
 };
 
 export type IPadModel =
@@ -318,9 +324,17 @@ export type EventDocument = {
 export type Voiceprint = {
   id: string; // == person_id
   person_id: string;
-  centroid: number[]; // mean MFCC vector (length = MFCC_COEFFS)
+  centroid: number[]; // mean embedding vector (MFCC today; neural in future)
   sample_count: number;
   updated_at: number;
+  /** Which engine produced `centroid`. Tagged so dual-format enrollment can
+   *  coexist and the matcher refuses to cosine-compare across engines (would
+   *  return garbage similarities). Absent on legacy rows == "mfcc". */
+  engine?: "mfcc" | "neural";
+  /** Embedding dimension. Belt-and-braces guard on top of the engine tag for
+   *  the same cross-format-cosine concern (same fix the embedding-model
+   *  retrieval gate uses). */
+  dim?: number;
   /** Optional sub-centroids when the speaker has multiple stable modes
    *  (e.g. calm vs animated, in-person vs phone). Written by the offline
    *  re-clustering pass when 2-means split is significantly tighter than
@@ -383,6 +397,31 @@ export type ProfileProposal = {
 };
 
 /**
+ * Pre-synthesised / cached TTS audio, stored on-device so repeated speech
+ * (the five canned quick phrases, and any suggestion James has spoken before)
+ * plays with zero network and zero LLM latency.
+ *
+ * Two kinds share this table, distinguished by `kind`:
+ *  - "phrase":     one of QUICK_PHRASES, warmed in the background on cockpit
+ *                  mount. The load-bearing durable-degradation surface — these
+ *                  MUST play when the network/AI is down.
+ *  - "suggestion": any other spoken text, populated opportunistically after a
+ *                  successful synth so a repeat doesn't re-synthesise.
+ *
+ * `id` is a deterministic `${text}::${voiceId}` key so look-ups are a single
+ * primary-key get and re-warming is idempotent.
+ */
+export type CachedPhraseAudio = {
+  id: string; // `${text}::${voiceId}`
+  kind: "phrase" | "suggestion";
+  text: string;
+  voiceId: string;
+  mimeType: string; // e.g. "audio/mpeg"
+  audioBuffer: ArrayBuffer;
+  cachedAt: number;
+};
+
+/**
  * Per-utterance mean-MFCC vector, captured during the live session and
  * persisted so the post-conversation re-diarize pass can re-cluster
  * speakers using stored voiceprints as seeds.
@@ -428,6 +467,8 @@ class AacDb extends Dexie {
   segment_mfccs!: Table<SegmentMfcc, string>;
   // === Preference learning: which suggestion James chose vs. the rest ===
   suggestion_choices!: Table<SuggestionChoice, string>;
+  // === Cached TTS audio (quick phrases + repeated suggestions) ===
+  cachedPhraseAudio!: Table<CachedPhraseAudio, string>;
 
   constructor() {
     super("aac_copilot");
@@ -491,6 +532,13 @@ class AacDb extends Dexie {
     this.version(10).stores({
       suggestion_choices: "id, conversation_id, person_id, ts",
     });
+    // === Cached TTS audio ===
+    // Pre-synthesised quick phrases + repeated-suggestion audio, keyed by
+    // `${text}::${voiceId}`. `kind` and `voiceId` are indexed so we can prune
+    // stale voices and cap the suggestion cache without a full scan.
+    this.version(11).stores({
+      cachedPhraseAudio: "id, kind, voiceId, cachedAt",
+    });
   }
 }
 
@@ -514,6 +562,8 @@ export const DEFAULT_SETTINGS: Settings = {
   fast_model: "gemini/gemini-2.5-flash-lite",
   smart_model: "gemini/gemini-2.5-flash",
   suggestion_feedback_enabled: true,
+  // Default OFF — neural engine ships disabled until device-verified.
+  speaker_id_engine: "mfcc",
 };
 
 /**
@@ -617,4 +667,58 @@ export async function updateJamesProfile(patch: Partial<JamesProfile>) {
   const next = { ...cur, ...patch, id: "singleton" as const, updated_at: Date.now() };
   await db.james_profile.put(next);
   return next;
+}
+
+/** Remove a Person and every Dexie row that referenced them. Without this,
+ *  deleting a person left orphaned voiceprints / memories / events / proposals
+ *  / suggestion-log rows scattered across ~8 tables, gradually poisoning
+ *  retrieval and style-evidence with ghost references. */
+export async function deletePersonCascade(personId: string): Promise<void> {
+  await db.people.delete(personId);
+  await Promise.allSettled([
+    db.voiceprints.delete(personId),
+    db.voiceprint_contributions.where("person_id").equals(personId).delete(),
+    db.memories.where("person_id").equals(personId).delete(),
+    db.follow_ups.where("for_person_id").equals(personId).delete(),
+    db.profile_proposals.where("person_id").equals(personId).delete(),
+    db.suggestion_choices.where("person_id").equals(personId).delete(),
+    db.style_evidence_cache.where("person_id").equals(personId).delete(),
+  ]);
+  // Scrub embedded person_ids[] on conversations + events (no index on the
+  // array field — full scan, but rare and bounded).
+  try {
+    const convs = await db.conversations.toArray();
+    for (const c of convs) {
+      const ids = c.person_ids ?? [];
+      if (ids.includes(personId)) {
+        await db.conversations.update(c.id, {
+          person_ids: ids.filter((i: string) => i !== personId),
+          speaker_map: Object.fromEntries(
+            Object.entries(c.speaker_map ?? {}).filter(([, pid]) => pid !== personId),
+          ),
+        });
+      }
+    }
+    const evs = await db.events.toArray();
+    for (const e of evs) {
+      const ids = e.person_ids ?? [];
+      if (ids.includes(personId)) {
+        await db.events.update(e.id, { person_ids: ids.filter((i: string) => i !== personId) });
+      }
+    }
+  } catch (err) {
+    console.warn("[deletePersonCascade] scrub failed", err);
+  }
+}
+
+/** Remove a Place and clean up everything that referenced it. Memories/follow-
+ *  ups/conversations keep their content but lose the place pointer (we don't
+ *  delete a conversation because the user removed its location). */
+export async function deletePlaceCascade(placeId: string): Promise<void> {
+  await db.places.delete(placeId);
+  await Promise.allSettled([
+    db.memories.where("place_id").equals(placeId).modify({ place_id: undefined }),
+    db.follow_ups.where("for_place_id").equals(placeId).modify({ for_place_id: undefined }),
+    db.conversations.where("place_id").equals(placeId).modify({ place_id: undefined }),
+  ]);
 }

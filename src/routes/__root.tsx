@@ -10,7 +10,6 @@ import {
 
 import appCss from "../styles.css?url";
 import { Toaster } from "@/components/ui/sonner";
-import { AuthGate } from "@/components/AuthGate";
 
 function NotFoundComponent() {
   return (
@@ -131,11 +130,12 @@ function RootShell({ children }: { children: React.ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  // Single-user, local-first — no auth wall (CLAUDE.md mandate). The
+  // Supabase-backed AuthGate / AccountCard / cloud-sync paths are gone in
+  // favour of an encrypted local backup the user saves via Files / iCloud.
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthGate>
-        <Outlet />
-      </AuthGate>
+      <Outlet />
       <Toaster richColors position="top-center" />
     </QueryClientProvider>
   );
