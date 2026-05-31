@@ -7,12 +7,6 @@ function requireElevenLabsApiKey(): string {
   return key;
 }
 
-function requireLovableApiKey(): string {
-  const key = process.env.LOVABLE_API_KEY;
-  if (!key) throw new Error("LOVABLE_API_KEY is not configured");
-  return key;
-}
-
 function getOpenAIApiKey(): string | undefined {
   // Accept the common alternate names so a key set under any of them works.
   return (
@@ -36,11 +30,38 @@ function requireOpenAIApiKey(): string {
   return key;
 }
 
+function getAnthropicApiKey(): string | undefined {
+  return process.env.ANTHROPIC_API_KEY || process.env.VITE_ANTHROPIC_API_KEY || undefined;
+}
+
+function getGeminiApiKey(): string | undefined {
+  return (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+    undefined
+  );
+}
+
 /**
  * Resolve the chat-completions endpoint + auth + model id for a given
- * model selector. Selectors prefixed with "openai-direct/" call the OpenAI
- * API directly using the user-provided OPENAI_API_KEY; everything else
- * routes through the Lovable AI Gateway.
+ * model selector, supporting Anthropic, OpenAI, and Google Gemini.
+ *
+ * All three providers expose an OpenAI-compatible /v1/chat/completions
+ * surface (same request body with `messages` + `tools` + `tool_choice`,
+ * same `choices[0].message.tool_calls[0]` response), so every call site
+ * stays unchanged regardless of which key is configured:
+ *   - Anthropic: https://api.anthropic.com/v1/chat/completions
+ *   - Gemini:    https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+ *   - OpenAI:    https://api.openai.com/v1/chat/completions
+ *   - Lovable:   https://ai.gateway.lovable.dev/v1/chat/completions (legacy)
+ *
+ * Provider selection:
+ *   1. An explicit selector prefix wins: "openai-direct/", "anthropic/",
+ *      "gemini/" (or "google/"). The text after the slash is the model id.
+ *   2. Otherwise auto-pick by whichever key is present, in priority order
+ *      Anthropic → OpenAI → Gemini → Lovable. The default gateway model id
+ *      is mapped to a sensible model for the chosen provider.
  */
 function resolveChatTarget(model: string | undefined): {
   url: string;
@@ -48,22 +69,51 @@ function resolveChatTarget(model: string | undefined): {
   model: string;
 } {
   const m = model ?? "google/gemini-2.5-flash-lite";
-  if (m.startsWith("openai-direct/")) {
-    const apiKey = requireOpenAIApiKey();
+
+  const anthropicTarget = (modelId: string) => {
+    const key = getAnthropicApiKey();
+    if (!key) throw new Error(missingKeyError("ANTHROPIC_API_KEY"));
+    // Anthropic's OpenAI-compatible endpoint authenticates with a Bearer
+    // token (mimicking OpenAI), NOT the native x-api-key header.
+    return {
+      url: "https://api.anthropic.com/v1/chat/completions",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      model: modelId,
+    };
+  };
+  const openaiTarget = (modelId: string) => {
+    const key = requireOpenAIApiKey();
     return {
       url: "https://api.openai.com/v1/chat/completions",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      model: m.slice("openai-direct/".length),
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      model: modelId,
     };
+  };
+  const geminiTarget = (modelId: string) => {
+    const key = getGeminiApiKey();
+    if (!key) throw new Error(missingKeyError("GEMINI_API_KEY"));
+    return {
+      url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      model: modelId,
+    };
+  };
+
+  // 1. Explicit provider prefix in the selector.
+  if (m.startsWith("openai-direct/")) return openaiTarget(m.slice("openai-direct/".length));
+  if (m.startsWith("anthropic/")) return anthropicTarget(m.slice("anthropic/".length));
+  if (m.startsWith("gemini/")) return geminiTarget(m.slice("gemini/".length));
+  if (m.startsWith("google/") && getGeminiApiKey() && !process.env.LOVABLE_API_KEY) {
+    // A "google/..." id with a Gemini key and no Lovable gateway → call
+    // Gemini directly. (With Lovable configured we keep routing through it.)
+    return geminiTarget(mapToGemini(m));
   }
-  // Default model ids are Lovable-gateway ids. Prefer the gateway when its
-  // key is set (original behaviour preserved); otherwise fall back to OpenAI
-  // directly with OPENAI_API_KEY so the app works on Vercel without a Lovable
-  // account. The gateway is OpenAI-compatible, so only the model id needs
-  // mapping (gateway ids like "google/gemini-..." → an OpenAI model).
+
+  // 2. Auto-pick by available key, Anthropic first (it's what's set on this
+  //    deploy), then OpenAI, then Gemini, then the legacy Lovable gateway.
+  if (getAnthropicApiKey()) return anthropicTarget(mapToAnthropic(m));
+  if (getOpenAIApiKey()) return openaiTarget(mapToOpenAI(m));
+  if (getGeminiApiKey()) return geminiTarget(mapToGemini(m));
   if (process.env.LOVABLE_API_KEY) {
     return {
       url: "https://ai.gateway.lovable.dev/v1/chat/completions",
@@ -74,15 +124,40 @@ function resolveChatTarget(model: string | undefined): {
       model: m,
     };
   }
-  const openaiKey = requireOpenAIApiKey();
-  return {
-    url: "https://api.openai.com/v1/chat/completions",
-    headers: {
-      Authorization: `Bearer ${openaiKey}`,
-      "Content-Type": "application/json",
-    },
-    model: m.startsWith("gpt") ? m : "gpt-4o-mini",
-  };
+  throw new Error(
+    "No AI provider key configured. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, or " +
+      "GEMINI_API_KEY in Vercel → Settings → Environment Variables (all environments), then redeploy.",
+  );
+}
+
+function missingKeyError(name: string): string {
+  return (
+    `${name} is not configured on the server. In Vercel → ipad-aac-buddy → Settings → ` +
+    `Environment Variables, add ${name} for ALL environments (Production, Preview, ` +
+    `Development), then redeploy. A key scoped to Production only will not reach preview deployments.`
+  );
+}
+
+/**
+ * Map a Lovable-gateway / generic model selector to a concrete model id for
+ * each provider. The app's default selectors are gateway ids like
+ * "google/gemini-2.5-flash" or tier hints; these collapse to one solid
+ * default per provider (callers that pass a real provider-native id keep it).
+ */
+function mapToAnthropic(m: string): string {
+  if (m.startsWith("claude")) return m;
+  // "pro"-tier selectors → a stronger model; everything else → fast Haiku.
+  return /pro|opus|sonnet/i.test(m) ? "claude-sonnet-4-5" : "claude-haiku-4-5";
+}
+function mapToOpenAI(m: string): string {
+  if (m.startsWith("gpt")) return m;
+  return /pro|opus|sonnet/i.test(m) ? "gpt-4o" : "gpt-4o-mini";
+}
+function mapToGemini(m: string): string {
+  // Strip the "google/" prefix if present; otherwise pick a default.
+  if (m.startsWith("google/")) return m.slice("google/".length);
+  if (m.startsWith("gemini-")) return m;
+  return /pro/i.test(m) ? "gemini-2.5-pro" : "gemini-2.5-flash";
 }
 
 /* ------------------------- ElevenLabs: Scribe token ------------------------- */
@@ -2127,27 +2202,39 @@ const embedSchema = z.object({
 export const embedTexts = createServerFn({ method: "POST" })
   .inputValidator((d) => embedSchema.parse(d))
   .handler(async ({ data }) => {
-    const apiKey = requireOpenAIApiKey();
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "text-embedding-3-small",
-        input: data.texts,
-      }),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Embed failed: ${res.status} ${err}`);
+    // Embeddings power Tier-3 semantic memory retrieval — a nice-to-have,
+    // not core. Use OpenAI when its key is present, else Gemini, else
+    // degrade to empty embeddings so an Anthropic-only deploy still works
+    // fully (just without semantic recall) instead of throwing.
+    const openaiKey = getOpenAIApiKey();
+    if (openaiKey) {
+      const res = await fetch("https://api.openai.com/v1/embeddings", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${openaiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "text-embedding-3-small", input: data.texts }),
+      });
+      if (!res.ok) throw new Error(`Embed failed: ${res.status} ${await res.text()}`);
+      const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
+      return { embeddings: json.data.map((d) => d.embedding), model: "text-embedding-3-small" };
     }
-    const json = (await res.json()) as {
-      data: Array<{ embedding: number[] }>;
-    };
-    return {
-      embeddings: json.data.map((d) => d.embedding),
-      model: "text-embedding-3-small",
-    };
+
+    const geminiKey = getGeminiApiKey();
+    if (geminiKey) {
+      // Gemini's OpenAI-compatible embeddings endpoint.
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/openai/embeddings",
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${geminiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "text-embedding-004", input: data.texts }),
+        },
+      );
+      if (!res.ok) throw new Error(`Embed failed: ${res.status} ${await res.text()}`);
+      const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
+      return { embeddings: json.data.map((d) => d.embedding), model: "text-embedding-004" };
+    }
+
+    // No embeddings provider (e.g. Anthropic-only). Return zero-length
+    // vectors so callers can skip semantic features without erroring.
+    return { embeddings: data.texts.map(() => []), model: "none" };
   });
