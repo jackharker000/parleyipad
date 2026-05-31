@@ -76,6 +76,8 @@ import {
   updateSettings,
   getJamesProfile,
   updateJamesProfile,
+  deletePersonCascade,
+  deletePlaceCascade,
   newId,
   type JamesProfile,
   type JamesDocument,
@@ -252,13 +254,23 @@ function SystemTab() {
   }
 
   async function clearAllData() {
-    // Clear EVERY table except `settings` (keeps voice/model/display prefs).
-    // Driven off `db.tables` so new tables (voiceprints, choice memories,
-    // profile proposals, events, …) are always included — the old hand-kept
-    // list silently left more than half the data behind.
+    // Clear EVERY table except `settings` (keeps voice/model/display prefs)
+    // and `james_profile` (his identity/background isn't user data the user
+    // would expect to be wiped by a "clear conversations" action — wiping it
+    // would break every future suggestion until he re-enters it).
+    const KEEP = new Set(["settings", "james_profile"]);
     await Promise.all(
-      db.tables.filter((t) => t.name !== "settings").map((t) => t.clear()),
+      db.tables.filter((t) => !KEEP.has(t.name)).map((t) => t.clear()),
     );
+    // Reset the localStorage seed flags so seeding can re-run cleanly against
+    // the now-empty people table (otherwise James loses all roster + relations
+    // and the app can't re-seed them).
+    try {
+      localStorage.removeItem("aac_seeded_v1");
+      localStorage.removeItem("suggestions_log_person_id_backfill_v1");
+    } catch {
+      /* private mode / disabled storage — best-effort */
+    }
     toast.success("All data cleared");
   }
 
@@ -1180,15 +1192,7 @@ function PeopleTab() {
   }
 
   async function remove(id: string) {
-    await db.people.delete(id);
-    // Tier 2.4: when removing an auto-detected person, also clean up the
-    // voiceprint + contributions we created so a re-introduction can start fresh.
-    try {
-      await db.voiceprints.delete(id);
-      await db.voiceprint_contributions.where("person_id").equals(id).delete();
-    } catch {
-      // Best-effort cleanup.
-    }
+    await deletePersonCascade(id);
     if (selectedId === id) setSelectedId(null);
   }
 
@@ -2326,7 +2330,7 @@ function PlacesTab() {
 
   async function remove(id: string) {
     if (!confirm("Remove this location?")) return;
-    await db.places.delete(id);
+    await deletePlaceCascade(id);
     if (editing?.id === id) setEditing(null);
   }
 

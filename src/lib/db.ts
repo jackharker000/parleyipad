@@ -652,3 +652,57 @@ export async function updateJamesProfile(patch: Partial<JamesProfile>) {
   await db.james_profile.put(next);
   return next;
 }
+
+/** Remove a Person and every Dexie row that referenced them. Without this,
+ *  deleting a person left orphaned voiceprints / memories / events / proposals
+ *  / suggestion-log rows scattered across ~8 tables, gradually poisoning
+ *  retrieval and style-evidence with ghost references. */
+export async function deletePersonCascade(personId: string): Promise<void> {
+  await db.people.delete(personId);
+  await Promise.allSettled([
+    db.voiceprints.delete(personId),
+    db.voiceprint_contributions.where("person_id").equals(personId).delete(),
+    db.memories.where("person_id").equals(personId).delete(),
+    db.follow_ups.where("for_person_id").equals(personId).delete(),
+    db.profile_proposals.where("person_id").equals(personId).delete(),
+    db.suggestion_choices.where("person_id").equals(personId).delete(),
+    db.style_evidence_cache.where("person_id").equals(personId).delete(),
+  ]);
+  // Scrub embedded person_ids[] on conversations + events (no index on the
+  // array field — full scan, but rare and bounded).
+  try {
+    const convs = await db.conversations.toArray();
+    for (const c of convs) {
+      const ids = c.person_ids ?? [];
+      if (ids.includes(personId)) {
+        await db.conversations.update(c.id, {
+          person_ids: ids.filter((i: string) => i !== personId),
+          speaker_map: Object.fromEntries(
+            Object.entries(c.speaker_map ?? {}).filter(([, pid]) => pid !== personId),
+          ),
+        });
+      }
+    }
+    const evs = await db.events.toArray();
+    for (const e of evs) {
+      const ids = e.person_ids ?? [];
+      if (ids.includes(personId)) {
+        await db.events.update(e.id, { person_ids: ids.filter((i: string) => i !== personId) });
+      }
+    }
+  } catch (err) {
+    console.warn("[deletePersonCascade] scrub failed", err);
+  }
+}
+
+/** Remove a Place and clean up everything that referenced it. Memories/follow-
+ *  ups/conversations keep their content but lose the place pointer (we don't
+ *  delete a conversation because the user removed its location). */
+export async function deletePlaceCascade(placeId: string): Promise<void> {
+  await db.places.delete(placeId);
+  await Promise.allSettled([
+    db.memories.where("place_id").equals(placeId).modify({ place_id: undefined }),
+    db.follow_ups.where("for_place_id").equals(placeId).modify({ for_place_id: undefined }),
+    db.conversations.where("place_id").equals(placeId).modify({ place_id: undefined }),
+  ]);
+}

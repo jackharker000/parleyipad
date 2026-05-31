@@ -463,6 +463,13 @@ function Home() {
     // suggestions_log rows so style-evidence aggregation has signal from
     // pre-existing conversations. ===
     void backfillSuggestionsLogPersonIds();
+    // === Durability: ask the browser to keep IndexedDB across storage
+    // pressure. Without this, iPad Safari can silently evict the whole DB —
+    // voiceprints, memories, James's profile, all gone with no warning. The
+    // call is a no-op if already granted or unsupported. ===
+    if (typeof navigator !== "undefined" && navigator.storage?.persist) {
+      void navigator.storage.persist().catch(() => {});
+    }
   }, []);
 
   // Server fns
