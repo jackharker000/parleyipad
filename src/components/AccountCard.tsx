@@ -2,12 +2,20 @@ import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { LogOut, Cloud, Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
 import { signOutAndClear } from "@/components/AuthGate";
 import { flushPush } from "@/lib/cloud-sync";
 import { toast } from "sonner";
 
 export function AccountCard() {
+  // Local-first / anonymous mode: when Supabase isn't configured on the
+  // deploy, this whole card has nothing to render. Returning null keeps the
+  // Supabase proxy untouched so it never throws on first property access.
+  if (!isSupabaseConfigured()) return null;
+  return <AccountCardContent />;
+}
+
+function AccountCardContent() {
   const [email, setEmail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [backingUp, setBackingUp] = useState(false);

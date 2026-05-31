@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
 
 /**
  * Cloud backup strategy: snapshot-based.
@@ -74,6 +74,7 @@ async function applySnapshot(snap: Snapshot) {
 
 async function pushNow() {
   if (!currentUserId) return;
+  if (!isSupabaseConfigured()) return;
   try {
     const snap = await takeSnapshot();
     const { error } = await supabase
@@ -113,6 +114,11 @@ function wireDexieHooks() {
 
 /** Pull cloud data for this user into Dexie, replacing local content. */
 export async function pullForUser(userId: string) {
+  // Local-first / anonymous mode: when Supabase isn't configured, do
+  // nothing — the user is using the app standalone and the local Dexie
+  // is the only source of truth. The Supabase proxy throws on first
+  // property access, so we MUST exit before reaching it.
+  if (!isSupabaseConfigured()) return;
   currentUserId = userId;
   const { data, error } = await supabase
     .from("user_backups")
