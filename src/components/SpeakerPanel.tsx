@@ -59,11 +59,33 @@ export function SpeakerPanel({
   onReassignSegment?: (segmentId: string, personId: string) => void;
 }) {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef<boolean>(true);
   const [reassigningSegId, setReassigningSegId] = useState<string | null>(null);
 
-  useEffect(() => {
+  // Track whether the user is at the bottom so manual scroll-up isn't stolen.
+  function onTranscriptScroll() {
     const el = transcriptRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = fromBottom < 40;
+  }
+
+  // Auto-scroll on any transcript update — new segments, partial text growing,
+  // or the last segment's text being edited (e.g. STT finalisation). rAF
+  // ensures the new content has painted before we measure scrollHeight.
+  const lastSeg = segments[segments.length - 1];
+  const lastSegSig = lastSeg ? `${lastSeg.id}:${lastSeg.text.length}` : "";
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    const el = transcriptRef.current;
+    if (!el) return;
+    const id = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [segments.length, lastSegSig, partial]);
+
+  useEffect(() => {
     // Dismiss reassign popover when new transcript arrives, so it doesn't
     // block the latest lines. User can tap again if they need to correct it.
     if (segments.length > 0) setReassigningSegId(null);
@@ -135,6 +157,7 @@ export function SpeakerPanel({
         </div>
         <div
           ref={transcriptRef}
+          onScroll={onTranscriptScroll}
           className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2 text-sm"
         >
           {tail.length === 0 && !partial && (
@@ -217,7 +240,7 @@ export function SpeakerPanel({
         </div>
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
           {participantCount != null && participantCount > 0 && clusters.length > participantCount && (
-            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-800 dark:text-amber-300">
+            <div className="rounded-lg border border-[var(--accent)]/50 bg-[var(--accent)]/15 px-2 py-1.5 text-xs text-foreground">
               You declared {participantCount} {participantCount === 1 ? "person" : "people"} — confirm who's who to improve accuracy.
             </div>
           )}
@@ -391,20 +414,20 @@ function ClusterCard({
     const status = cluster.status;
     const person = people.find((p) => p.id === status.personId);
     return (
-      <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-sm">
+      <div className="rounded-xl border border-[var(--sage)]/50 bg-[var(--sage)]/15 px-2 py-1.5 text-sm">
         <div className="flex items-center gap-1.5">
-          <Check className="size-4 text-emerald-600" />
+          <Check className="size-4 text-[var(--sage)]" />
           <span className="font-medium">{person?.name ?? cluster.label}</span>
           <span className="ml-auto text-[10px] text-muted-foreground">
             {cluster.label} · {cluster.count}
           </span>
           <button
             onClick={() => setEditing(true)}
-            className="rounded p-0.5 hover:bg-emerald-500/20"
+            className="rounded p-0.5 hover:bg-[var(--sage)]/25"
             aria-label="Edit"
             title="Reassign or clear"
           >
-            <Pencil className="size-3.5 text-emerald-700" />
+            <Pencil className="size-3.5 text-[var(--ink-soft)]" />
           </button>
         </div>
         <MergeSection />
@@ -416,9 +439,9 @@ function ClusterCard({
   if (cluster.status.kind === "confirmed" && editing) {
     const others = people.filter((p) => p.id !== (cluster.status as any).personId);
     return (
-      <div className="space-y-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-2 text-sm">
+      <div className="space-y-1.5 rounded-xl border border-[var(--sage)]/50 bg-[var(--sage)]/5 p-2 text-sm">
         <div className="flex items-center gap-1.5">
-          <Pencil className="size-4 text-emerald-700" />
+          <Pencil className="size-4 text-[var(--ink-soft)]" />
           <span className="font-medium">Edit {cluster.label}</span>
           <button
             onClick={() => setEditing(false)}
@@ -495,9 +518,9 @@ function ClusterCard({
     const confidenceLabel =
       status.sim >= 0.9 ? "Sounds like" : status.sim >= 0.83 ? "Probably" : "Maybe";
     return (
-      <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-2 text-sm">
+      <div className="rounded-xl border border-[var(--accent)]/50 bg-[var(--accent)]/15 p-2 text-sm">
         <div className="flex items-center gap-1.5">
-          <Mic2 className="size-4 text-amber-700" />
+          <Mic2 className="size-4 text-[var(--ink-soft)]" />
           <span className="font-medium">{cluster.label}</span>
           <span className="ml-auto text-[10px] text-muted-foreground">
             {Math.round(status.sim * 100)}% · {cluster.count}
@@ -510,7 +533,7 @@ function ClusterCard({
         <div className="mt-1.5 flex gap-1.5">
           <button
             onClick={() => onConfirmKnown(cluster.label, status.personId)}
-            className="flex-1 rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-500"
+            className="flex-1 rounded-md bg-primary px-2 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
           >
             Confirm
           </button>
@@ -531,7 +554,7 @@ function ClusterCard({
                 key={s.name + s.source}
                 onClick={() => onConfirmNew(cluster.label, s.name)}
                 title={sourceLabel(s.source)}
-                className="rounded-full border border-amber-500/40 bg-background px-2 py-0.5 text-[11px] hover:bg-amber-500/20"
+                className="rounded-full border border-[var(--accent)]/50 bg-background px-2 py-0.5 text-[11px] hover:bg-[var(--accent)]/20"
               >
                 <SuggestionIcon source={s.source} />
                 {s.name}

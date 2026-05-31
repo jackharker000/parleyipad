@@ -230,6 +230,14 @@ function Home() {
     raw: string;
     expanded: string;
   } | null>(null);
+  // When James types something very short/ambiguous (e.g. "N", "ok"), the AI's
+  // expansion can leap far from his intent. We surface it as a pending preview
+  // he must explicitly confirm before TTS speaks, so the system never narrates
+  // a guess for him.
+  const [pendingSpeech, setPendingSpeech] = useState<{
+    raw: string;
+    expanded: string;
+  } | null>(null);
   const [voiceId, setVoiceId] = useState<string>("EXAVITQu4vr4xnSDxMaL");
   const [ipadModel, setIpadModel] = useState<string>("auto");
   const fastModelRef = useRef<string>("google/gemini-2.5-flash-lite");
@@ -1295,8 +1303,10 @@ function Home() {
     if (loadingSuggestions || !active) return;
     const key = `${committed.length}:${moodRef.current}`;
     if (key === lastSuggestKeyRef.current) return;
+    // Mark this key as in-flight; on failure we clear it so the next tick retries.
     lastSuggestKeyRef.current = key;
     setLoadingSuggestions(true);
+    let succeeded = false;
     try {
       const peopleById = new Map(allPeople.map((p) => [p.id, p] as const));
       const rawRecent = committed.slice(-8).map((s) => {
@@ -1351,23 +1361,35 @@ function Home() {
       }
       const sessionShown = lastShownRef.current.slice(-20);
       const alreadyShown = Array.from(new Set([...sessionShown, ...crossDead])).slice(0, 80);
-      const r = await suggestFn({
-        data: {
-          recentTranscript: recent,
-          jamesProfile: ctx.jamesProfile,
-          people: ctx.people,
-          place: ctx.place,
-          event: ctx.event,
-          styleProfileJson: ctx.styleProfileJson,
-          // === Tier 1.1: style evidence ===
-          styleEvidence: ctx.styleEvidence,
-          alreadyShown,
-          model: fastModelRef.current,
-          mood: moodRef.current,
-          questionAsked,
-        },
-      });
+      // 18s hard timeout so a hung free-tier provider call doesn't strand the
+      // UI in "Thinking…" forever — the user can re-tap Refresh after.
+      const timeoutCtl = new AbortController();
+      const timer = setTimeout(() => timeoutCtl.abort(), 18_000);
+      const r = await Promise.race([
+        suggestFn({
+          data: {
+            recentTranscript: recent,
+            jamesProfile: ctx.jamesProfile,
+            people: ctx.people,
+            place: ctx.place,
+            event: ctx.event,
+            styleProfileJson: ctx.styleProfileJson,
+            // === Tier 1.1: style evidence ===
+            styleEvidence: ctx.styleEvidence,
+            alreadyShown,
+            model: fastModelRef.current,
+            mood: moodRef.current,
+            questionAsked,
+          },
+        }),
+        new Promise<never>((_, rej) => {
+          timeoutCtl.signal.addEventListener("abort", () =>
+            rej(new Error("AI request timed out — tap Refresh to retry")),
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
       if (r.suggestions?.length) {
+        succeeded = true;
         setSuggestions(r.suggestions as Suggestion[]);
         lastShownRef.current = [
           ...lastShownRef.current,
@@ -1408,10 +1430,18 @@ function Home() {
           );
         }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      // Surface to the user — the cockpit shouldn't sit on "Thinking…" silently.
+      const msg = e?.message ?? "AI request failed";
+      // Lightweight toast: don't spam if the call was simply cancelled.
+      if (!String(msg).includes("aborted")) toast.error(msg);
     } finally {
       setLoadingSuggestions(false);
+      // CRITICAL: on failure, clear the dedupe key so the next render's effect
+      // can retry. Without this the cockpit gets stuck — same committed.length
+      // + mood signature → call permanently skipped.
+      if (!succeeded) lastSuggestKeyRef.current = "";
     }
   }, [committed, suggestFn, loadingSuggestions, allPeople, active]);
 
@@ -1832,7 +1862,18 @@ function Home() {
   );
 
 
-  // Expand James's truncated typing via LLM, then speak the expanded version
+  // Expand James's truncated typing via LLM, then speak the expanded version.
+  // For ambiguous input (very short, single-word, no punctuation) we stop at
+  // a preview and wait for an explicit Speak confirmation — never narrate a
+  // guess for James.
+  const isAmbiguousInput = useCallback((s: string) => {
+    const t = s.trim();
+    if (t.length <= 3) return true;
+    // Single short word with no spaces → likely an abbreviation, ask first.
+    if (!/\s/.test(t) && t.length <= 6) return true;
+    return false;
+  }, []);
+
   const expandAndSpeak = useCallback(async () => {
     const raw = draft.trim();
     if (!raw || expanding || speaking) return;
@@ -1857,28 +1898,62 @@ function Home() {
         place: placeRef.current,
         event: selectedEventRef.current ?? undefined,
       });
-      const r = await expandFn({
-        data: {
-          rawText: raw,
-          recentTranscript: recent,
-          jamesProfile: ctx.jamesProfile,
-          people: ctx.people,
-          place: ctx.place,
-          // Use smart model for expansion — it's a one-shot operation so the
-          // extra latency is acceptable, and quality matters more than speed here.
-          model: smartModelRef.current,
-        },
-      });
+      // 15s timeout — if a free-tier provider hangs, don't strand the user.
+      const timeoutCtl = new AbortController();
+      const timer = setTimeout(() => timeoutCtl.abort(), 15_000);
+      const r = await Promise.race([
+        expandFn({
+          data: {
+            rawText: raw,
+            recentTranscript: recent,
+            jamesProfile: ctx.jamesProfile,
+            people: ctx.people,
+            place: ctx.place,
+            // Use smart model for expansion — it's a one-shot operation so the
+            // extra latency is acceptable, and quality matters more than speed here.
+            model: smartModelRef.current,
+          },
+        }),
+        new Promise<never>((_, rej) => {
+          timeoutCtl.signal.addEventListener("abort", () =>
+            rej(new Error("Expansion timed out — try again")),
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
       const spoken = (r.expanded || raw).trim();
-      setLastExpansion({ raw, expanded: spoken });
-      setDraft("");
-      await speak(spoken);
+      if (isAmbiguousInput(raw)) {
+        // Ambiguous → preview, wait for explicit tap.
+        setPendingSpeech({ raw, expanded: spoken });
+      } else {
+        setLastExpansion({ raw, expanded: spoken });
+        setDraft("");
+        await speak(spoken);
+      }
     } catch (e: any) {
       toast.error(e?.message ?? "Could not expand text");
     } finally {
       setExpanding(false);
     }
-  }, [draft, expanding, speaking, expandFn, allPeople, committed, speak]);
+  }, [
+    draft,
+    expanding,
+    speaking,
+    expandFn,
+    allPeople,
+    committed,
+    speak,
+    isAmbiguousInput,
+  ]);
+
+  // User tapped Speak on the pending preview.
+  const confirmPendingSpeech = useCallback(async () => {
+    if (!pendingSpeech) return;
+    const { raw, expanded } = pendingSpeech;
+    setLastExpansion({ raw, expanded });
+    setPendingSpeech(null);
+    setDraft("");
+    await speak(expanded);
+  }, [pendingSpeech, speak]);
 
   return (
     <ScaledShell ipadModel={ipadModel}>
@@ -1913,9 +1988,43 @@ function Home() {
 
         {/* Text entry — fills remaining width so it stays visible above the on-screen keyboard */}
         <div className="flex flex-1 flex-col gap-1">
-          {lastExpansion && (
+          {pendingSpeech && (
+            <div className="flex items-center gap-2 rounded-md border-2 border-[var(--accent)] bg-[var(--accent)]/15 px-2 py-1.5 text-sm">
+              <Sparkles className="size-4 shrink-0 text-[var(--accent)]" />
+              <div className="flex-1 leading-snug">
+                <span className="text-xs text-muted-foreground">
+                  Speak this? (typed “{pendingSpeech.raw}”)
+                </span>
+                <div className="font-medium">{pendingSpeech.expanded}</div>
+              </div>
+              <button
+                onClick={confirmPendingSpeech}
+                className="rounded-md bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+              >
+                Speak
+              </button>
+              <button
+                onClick={() => {
+                  // Edit: put the expansion back into the draft for tweaking.
+                  setDraft(pendingSpeech.expanded);
+                  setPendingSpeech(null);
+                }}
+                className="rounded-md border border-border bg-secondary/60 px-2 py-1 text-xs hover:bg-secondary"
+              >
+                Edit
+              </button>
+              <button
+                onClick={() => setPendingSpeech(null)}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Cancel"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          )}
+          {lastExpansion && !pendingSpeech && (
             <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs">
-              <Sparkles className="mt-0.5 size-3 shrink-0 text-primary" />
+              <Sparkles className="mt-0.5 size-3 shrink-0 text-[var(--accent)]" />
               <div className="flex-1 leading-snug">
                 <span className="text-muted-foreground">Spoke: </span>
                 <span className="font-medium">{lastExpansion.expanded}</span>
@@ -2037,7 +2146,7 @@ function Home() {
         <section className="flex min-h-0 w-4/5 flex-col rounded-2xl border border-border bg-card/40">
           <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
             <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              <Sparkles className="size-4" /> Suggestions
+              <Sparkles className="size-4 text-[var(--accent)]" /> Suggestions
             </h2>
             <Button
               variant="ghost"
