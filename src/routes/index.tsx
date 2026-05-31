@@ -57,6 +57,7 @@ import {
   buildConversationContext,
   suggestPeopleAtPlace,
   invalidateContextCache,
+  getContextPriorPersonIds,
 } from "@/lib/context";
 // === Tier 3 wiring ===
 import { embedOneWithModel } from "@/lib/embeddings";
@@ -84,7 +85,7 @@ import {
   VoiceCapture,
   computeMfccMean,
   recordVoiceprint,
-  bestMatch,
+  bestMatchWithPrior,
   Diarizer,
   cosineSim,
   discriminativeSim,
@@ -383,6 +384,18 @@ function Home() {
   // Cached voiceprints for in-memory speaker recognition — avoids IDB reads
   // in the hot processUtterance path. Refreshed at start and after each confirm.
   const allVoiceprintsRef = useRef<import("@/lib/db").Voiceprint[]>([]);
+  // Context-prior inputs for the Bayesian speaker matcher (people associated
+  // with the active place / expected at the active event). Loaded once at
+  // conversation start; empty when there's no place/event so matching degrades
+  // to pure cosine.
+  const contextPriorRef = useRef<{ placePersonIds: string[]; eventPersonIds: string[] }>({
+    placePersonIds: [],
+    eventPersonIds: [],
+  });
+  // Recently-heard (suggested/confirmed) person IDs, newest first. Feeds the
+  // matcher's recency prior so a speaker who just talked is gently favoured on
+  // the next turn. Capped short so it stays a *recent* signal.
+  const recentSpeakerPersonIdsRef = useRef<string[]>([]);
   // Confirmed speakers' centroids keyed by personId (sync, no IDB reads).
   const confirmedVoiceprintsRef = useRef<Map<string, number[]>>(new Map());
   // Refresh participant voiceprints if the participant list changes mid-conversation
@@ -410,6 +423,15 @@ function Home() {
   useEffect(() => {
     speakerMapRef.current = speakerMap;
   }, [speakerMap]);
+
+  // Push a person to the front of the recency list (dedup, newest-first, cap 5)
+  // for the speaker-matcher recency prior. Pure ref mutation — safe to call
+  // from the hot scribe-callback path.
+  const noteRecentSpeaker = useCallback((personId: string | undefined | null) => {
+    if (!personId) return;
+    const prev = recentSpeakerPersonIdsRef.current.filter((id) => id !== personId);
+    recentSpeakerPersonIdsRef.current = [personId, ...prev].slice(0, 5);
+  }, []);
 
   // Refresh voiceprint status for the picker — runs whenever it opens or the
   // selection changes, so the green/amber badges and inline record buttons
@@ -811,6 +833,15 @@ function Home() {
       try {
         const cluster = diarizerRef.current.get(speakerLabel);
         const status = clusterStatusRef.current[speakerLabel];
+        // Recency prior: note whoever this turn is currently attributed to (a
+        // confirmed mapping, else a suggested/confirmed cluster status) so the
+        // matcher gently favours them on the next turn.
+        noteRecentSpeaker(
+          speakerMapRef.current[speakerLabel] ??
+            (status?.kind === "suggested" || status?.kind === "confirmed"
+              ? status.personId
+              : undefined),
+        );
         if (cluster && status?.kind !== "confirmed") {
           const introHere = extractIntroducedNames([
             { text, speaker_label: speakerLabel },
@@ -831,11 +862,21 @@ function Home() {
             const excludedIds = new Set(
               status?.kind === "unknown" ? (status.excludedPersonIds ?? []) : [],
             );
-            const match = bestMatch(
+            // Bayesian context-prior re-ranking: people associated with the
+            // active place / expected at the event / recently heard get a
+            // gentle likelihood boost, with an explicit unknown-speaker reserve
+            // so a stranger isn't force-matched. With no place/event/recency
+            // context this degrades to the previous pure-cosine `bestMatch`.
+            const match = bestMatchWithPrior(
               cluster.centroid,
               candidates,
               VOICEPRINT_MATCH_THRESHOLD,
-              excludedIds,
+              {
+                excludedPersonIds: excludedIds,
+                placePersonIds: contextPriorRef.current.placePersonIds,
+                eventPersonIds: contextPriorRef.current.eventPersonIds,
+                recentSpeakers: recentSpeakerPersonIdsRef.current,
+              },
             );
             if (match) {
               const highConf = match.sim >= 0.88;
@@ -975,7 +1016,7 @@ function Home() {
         console.warn("voiceprint match failed", err);
       }
     },
-    [allPeople, identifyFn],
+    [allPeople, identifyFn, noteRecentSpeaker],
   );
 
   const scribe = useScribe({
@@ -1204,6 +1245,8 @@ function Home() {
       participantVoiceprintsRef.current = [];
       allVoiceprintsRef.current = [];
       confirmedVoiceprintsRef.current.clear();
+      recentSpeakerPersonIdsRef.current = [];
+      contextPriorRef.current = { placePersonIds: [], eventPersonIds: [] };
       // Pre-load ALL stored voiceprints into memory BEFORE connecting Scribe
       // so the very first utterance gets participant matching without IDB reads.
       try {
@@ -1215,6 +1258,17 @@ function Home() {
             .map((vp) => ({ personId: vp.person_id, centroid: vp.centroid }));
         }
       } catch {}
+      // Load the speaker-matcher context prior (people tied to the active place
+      // / expected at the active event). Fail-soft: on any error the matcher
+      // simply runs pure-cosine.
+      try {
+        contextPriorRef.current = await getContextPriorPersonIds({
+          place: placeRef.current,
+          event: selectedEventRef.current ?? undefined,
+        });
+      } catch {
+        contextPriorRef.current = { placePersonIds: [], eventPersonIds: [] };
+      }
 
       const conv: Conversation = {
         id,

@@ -21,6 +21,43 @@ const FRAME = 512;
 export const CENTROID_UPDATE_THRESHOLD = 0.76;
 const RMS_GATE = 0.012; // skip near-silent frames
 
+/**
+ * AudioWorklet processor source for off-main-thread mic capture. It just
+ * forwards each render quantum's mono samples to the main thread; all MFCC
+ * work still happens on demand in `recentSlice`/`computeMfccMean`, but the
+ * raw PCM copy now runs on the audio thread instead of jankeing the UI the way
+ * the deprecated ScriptProcessorNode did.
+ *
+ * Delivered via a blob: URL rather than `new URL(..., import.meta.url)` —
+ * the latter trips Safari's AudioWorklet CORS check on bundler-built assets
+ * ("Cross-origin script load denied"), even same-origin. Blob URLs are always
+ * same-origin, so this loads identically in dev and in the production build.
+ */
+const CAPTURE_PROCESSOR_SOURCE = `
+class ParleyVoiceCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const channel = inputs[0] && inputs[0][0];
+    if (channel && channel.length > 0) {
+      // Slice (copy) — the input buffer is reused by the audio thread for the
+      // next render quantum, so posting it without copying would corrupt it.
+      this.port.postMessage(channel.slice());
+    }
+    return true;
+  }
+}
+registerProcessor("parley-voice-capture", ParleyVoiceCaptureProcessor);
+`;
+
+let captureProcessorUrl: string | null = null;
+function getCaptureProcessorUrl(): string {
+  if (captureProcessorUrl) return captureProcessorUrl;
+  const blob = new Blob([CAPTURE_PROCESSOR_SOURCE], {
+    type: "application/javascript",
+  });
+  captureProcessorUrl = URL.createObjectURL(blob);
+  return captureProcessorUrl;
+}
+
 // Meyda is configured globally; set defaults once.
 (Meyda as any).bufferSize = FRAME;
 (Meyda as any).numberOfMFCCCoefficients = MFCC_COEFFS;
@@ -28,7 +65,14 @@ const RMS_GATE = 0.012; // skip near-silent frames
 export class VoiceCapture {
   private ctx: AudioContext | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  /** AudioWorkletNode (preferred) or ScriptProcessorNode (fallback). Both feed
+   *  the same PCM ring buffer; the rest of the class is node-agnostic. */
+  private worklet: AudioWorkletNode | null = null;
   private processor: ScriptProcessorNode | null = null;
+  /** A muted GainNode keeps the graph pulling without echoing the mic. */
+  private sink: GainNode | null = null;
+  /** Which capture path actually started — for debug/telemetry. */
+  captureMode: "worklet" | "scriptprocessor" | null = null;
   private stream: MediaStream | null = null;
   /** Mono PCM samples captured since start(). */
   private buffer: Float32Array[] = [];
@@ -100,33 +144,13 @@ export class VoiceCapture {
     this.sampleRate = ctx.sampleRate;
     this.maxSamples = this.sampleRate * 60 * 5; // keep last 5 minutes
     this.source = ctx.createMediaStreamSource(stream);
-    // ScriptProcessorNode is deprecated but works on iOS Safari & is reliable.
-    this.processor = ctx.createScriptProcessor(4096, 1, 1);
     this.startTimeMs = Date.now();
-    this.processor.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0);
-      // copy — input buffer is reused
-      const copy = new Float32Array(input.length);
-      copy.set(input);
-      this.buffer.push(copy);
-      this.bufferLen += copy.length;
-      // Trim oldest chunks if over cap
-      while (this.bufferLen > this.maxSamples && this.buffer.length > 1) {
-        const dropped = this.buffer.shift()!;
-        this.bufferLen -= dropped.length;
-        this.startTimeMs += (dropped.length / this.sampleRate) * 1000;
-      }
-    };
-    this.source.connect(this.processor);
-    // Required for ScriptProcessor to fire; route through gain at zero so we don't echo.
-    const sink = ctx.createGain();
-    sink.gain.value = 0;
-    this.processor.connect(sink);
-    sink.connect(ctx.destination);
+
     // iOS Safari (and Chrome under autoplay policies) starts the AudioContext
-    // in "suspended" state. Without resuming, ScriptProcessor.onaudioprocess
-    // never fires, the buffer stays empty, and no voiceprints are ever
-    // captured. This is the #1 reason fingerprints don't appear.
+    // in "suspended" state. Without resuming, neither the worklet nor a
+    // ScriptProcessor fires, the buffer stays empty, and no voiceprints are
+    // ever captured. This is the #1 reason fingerprints don't appear. Resume
+    // BEFORE attaching nodes so the first frames aren't dropped.
     if (ctx.state === "suspended") {
       try {
         await ctx.resume();
@@ -134,10 +158,77 @@ export class VoiceCapture {
         console.warn("[voiceprint] AudioContext.resume failed", e);
       }
     }
+
+    // Prefer an AudioWorklet (off the main thread → no UI jank). Fall back to
+    // the deprecated-but-reliable ScriptProcessorNode if the worklet can't be
+    // loaded (older Safari, blocked module, etc.).
+    let usedWorklet = false;
+    if (ctx.audioWorklet) {
+      try {
+        await ctx.audioWorklet.addModule(getCaptureProcessorUrl());
+        const node = new AudioWorkletNode(ctx, "parley-voice-capture", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          channelCount: 1,
+        });
+        node.port.onmessage = (e) => this.pushFrame(e.data as Float32Array);
+        this.source.connect(node);
+        // Some browsers stop scheduling a node that isn't routed to the
+        // destination; route through a muted gain so we pull frames without
+        // echoing the mic back through the speakers.
+        const sink = ctx.createGain();
+        sink.gain.value = 0;
+        node.connect(sink);
+        sink.connect(ctx.destination);
+        this.worklet = node;
+        this.sink = sink;
+        this.captureMode = "worklet";
+        usedWorklet = true;
+      } catch (err) {
+        console.warn("[voiceprint] AudioWorklet unavailable, falling back to ScriptProcessor", err);
+        this.worklet = null;
+      }
+    }
+
+    if (!usedWorklet) {
+      // ScriptProcessorNode is deprecated but works on iOS Safari & is reliable.
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (e) => {
+        this.pushFrame(e.inputBuffer.getChannelData(0));
+      };
+      this.source.connect(processor);
+      // Required for ScriptProcessor to fire; route through gain at zero so we
+      // don't echo.
+      const sink = ctx.createGain();
+      sink.gain.value = 0;
+      processor.connect(sink);
+      sink.connect(ctx.destination);
+      this.processor = processor;
+      this.sink = sink;
+      this.captureMode = "scriptprocessor";
+    }
+
     console.debug("[voiceprint] capture ready", {
       sampleRate: this.sampleRate,
       ctxState: ctx.state,
+      captureMode: this.captureMode,
     });
+  }
+
+  /** Append one render quantum of mono PCM to the rolling buffer and trim to
+   *  the 5-minute cap. Shared by the worklet and ScriptProcessor paths. The
+   *  worklet already hands us a fresh copy; the ScriptProcessor reuses its
+   *  input buffer, so we always copy here to be safe. */
+  private pushFrame(input: Float32Array) {
+    const copy = new Float32Array(input.length);
+    copy.set(input);
+    this.buffer.push(copy);
+    this.bufferLen += copy.length;
+    while (this.bufferLen > this.maxSamples && this.buffer.length > 1) {
+      const dropped = this.buffer.shift()!;
+      this.bufferLen -= dropped.length;
+      this.startTimeMs += (dropped.length / this.sampleRate) * 1000;
+    }
   }
 
   /** True if the capture has accumulated any audio samples. */
@@ -217,7 +308,16 @@ export class VoiceCapture {
   stop() {
     this.stopShiftMonitor();
     try {
+      if (this.worklet) this.worklet.port.onmessage = null;
+    } catch {}
+    try {
+      this.worklet?.disconnect();
+    } catch {}
+    try {
       this.processor?.disconnect();
+    } catch {}
+    try {
+      this.sink?.disconnect();
     } catch {}
     try {
       this.source?.disconnect();
@@ -230,7 +330,10 @@ export class VoiceCapture {
     } catch {}
     this.ctx = null;
     this.source = null;
+    this.worklet = null;
     this.processor = null;
+    this.sink = null;
+    this.captureMode = null;
     this.stream = null;
     this.buffer = [];
     this.bufferLen = 0;
@@ -372,24 +475,178 @@ export function bestMatch(
 ): { print: Voiceprint; sim: number } | null {
   let best: { print: Voiceprint; sim: number } | null = null;
   for (const p of prints) {
-    if (p.centroid.length !== vector.length) continue;
     if (excludedPersonIds?.has(p.person_id)) continue;
-    // Use discriminativeSim (drops c0) to match the same metric used for
-    // in-session clustering — prevents stored voiceprints from over-matching
-    // due to shared-mic energy characteristics.
-    let sim = discriminativeSim(vector, p.centroid);
-    if (!Number.isFinite(sim)) continue;
-    if (p.sub_centroids?.length) {
-      for (const sub of p.sub_centroids) {
-        if (sub.centroid.length !== vector.length) continue;
-        const subSim = discriminativeSim(vector, sub.centroid);
-        if (Number.isFinite(subSim) && subSim > sim) sim = subSim;
-      }
-    }
+    const sim = printSimilarity(vector, p);
+    if (sim === null) continue;
     if (!best || sim > best.sim) best = { print: p, sim };
   }
   if (best && best.sim >= threshold) return best;
   return null;
+}
+
+/** Effective discriminative cosine similarity between `vector` and a stored
+ *  voiceprint, taking the max over its centroid and any sub-centroids. Returns
+ *  null when the print can't be compared (dimension mismatch / degenerate). */
+function printSimilarity(vector: number[], p: Voiceprint): number | null {
+  if (p.centroid.length !== vector.length) return null;
+  // Use discriminativeSim (drops c0) to match the same metric used for
+  // in-session clustering — prevents stored voiceprints from over-matching
+  // due to shared-mic energy characteristics.
+  let sim = discriminativeSim(vector, p.centroid);
+  if (!Number.isFinite(sim)) return null;
+  if (p.sub_centroids?.length) {
+    for (const sub of p.sub_centroids) {
+      if (sub.centroid.length !== vector.length) continue;
+      const subSim = discriminativeSim(vector, sub.centroid);
+      if (Number.isFinite(subSim) && subSim > sim) sim = subSim;
+    }
+  }
+  return sim;
+}
+
+/** Numerically-stable softmax over a list of scores at a given temperature. */
+function softmax(scores: number[], temperature: number): number[] {
+  if (scores.length === 0) return [];
+  const t = temperature > 0 ? temperature : 1;
+  const scaled = scores.map((s) => s / t);
+  const max = Math.max(...scaled);
+  const exps = scaled.map((s) => Math.exp(s - max));
+  const sum = exps.reduce((a, b) => a + b, 0) || 1;
+  return exps.map((e) => e / sum);
+}
+
+/** Conservative context-prior multipliers. Match the PR #5 plan's feel: a
+ *  modest place tilt, a stronger event tilt, and a small (halved) recency
+ *  boost. These only re-rank candidates; they never manufacture a match the
+ *  voice doesn't already support (the cosine `threshold` gate still applies). */
+export const PRIOR_PLACE_BOOST = 1.5;
+export const PRIOR_EVENT_BOOST = 2.0;
+export const PRIOR_RECENCY_BASE = 0.3;
+/** Probability mass reserved for "speaker is not enrolled" before normalising.
+ *  Keeps a genuine stranger from being force-matched onto an expected person. */
+export const PRIOR_UNKNOWN_RESERVE = 0.2;
+/** Floor on the unknown candidate's likelihood so a strong prior can't fully
+ *  suppress "this is somebody new" when the actual similarity is weak. */
+const PRIOR_UNKNOWN_LIKELIHOOD_FLOOR = 0.1;
+/** Softmax temperature for similarity → likelihood. 0.1 keeps a clearly-better
+ *  match dominant while leaving borderline cases visibly uncertain. */
+const PRIOR_SOFTMAX_TEMPERATURE = 0.1;
+
+export type PriorContext = {
+  /** Skip these people entirely (already-confirmed speakers). */
+  excludedPersonIds?: ReadonlySet<string>;
+  /** People associated with the active place. */
+  placePersonIds?: readonly string[];
+  /** People expected at the active event. */
+  eventPersonIds?: readonly string[];
+  /** Recently-heard person IDs, newest first. */
+  recentSpeakers?: readonly string[];
+};
+
+/**
+ * Bayesian-ish context-prior speaker match.
+ *
+ *   posterior(person | voice, context) ∝ likelihood(voice | person) × prior(person | context)
+ *
+ * Likelihood is a sharp-temperature softmax over the candidates' discriminative
+ * cosine similarities. The prior multiplies in place/event/recency boosts, and
+ * an explicit "unknown speaker" candidate always retains some mass so a genuine
+ * stranger isn't force-matched onto an expected person.
+ *
+ * Contract matches {@link bestMatch}: returns the winning enrolled person with
+ * its raw cosine `sim` when (a) it tops the posterior including the unknown slot
+ * AND (b) its cosine clears `threshold`; otherwise null. With no place/event/
+ * recency context the priors are uniform, so the posterior order equals the
+ * similarity order and the gate is the same cosine `threshold` — i.e. this
+ * degrades exactly to today's pure-cosine `bestMatch`.
+ *
+ * Never throws: any unexpected failure falls back to a plain `bestMatch`.
+ */
+export function bestMatchWithPrior(
+  vector: number[],
+  prints: Voiceprint[],
+  threshold = 0.86,
+  ctx: PriorContext = {},
+): { print: Voiceprint; sim: number } | null {
+  try {
+    const candidates: Array<{ print: Voiceprint; sim: number }> = [];
+    for (const p of prints) {
+      if (ctx.excludedPersonIds?.has(p.person_id)) continue;
+      const sim = printSimilarity(vector, p);
+      if (sim === null) continue;
+      candidates.push({ print: p, sim });
+    }
+    if (candidates.length === 0) return null;
+
+    // No context signal → identical ranking + gate to pure-cosine bestMatch.
+    const hasPriorSignal =
+      (ctx.placePersonIds && ctx.placePersonIds.length > 0) ||
+      (ctx.eventPersonIds && ctx.eventPersonIds.length > 0) ||
+      (ctx.recentSpeakers && ctx.recentSpeakers.length > 0);
+    if (!hasPriorSignal) {
+      let best = candidates[0];
+      for (const c of candidates) if (c.sim > best.sim) best = c;
+      return best.sim >= threshold ? best : null;
+    }
+
+    const sims = candidates.map((c) => c.sim);
+    const likelihoods = softmax(sims, PRIOR_SOFTMAX_TEMPERATURE);
+
+    const rawPriors = candidates.map((c) => computePrior(c.print.person_id, ctx));
+    const priorSum = rawPriors.reduce((a, b) => a + b, 0) || 1;
+    const normPriors = rawPriors.map((p) => p / priorSum);
+
+    const unnorm = candidates.map((_, i) => likelihoods[i] * normPriors[i]);
+
+    // Reserve mass for an unenrolled speaker, floored so a strong prior can't
+    // bury it when the actual voice match is weak.
+    const topSim = Math.max(...sims);
+    const unknownLikelihood = Math.max(
+      PRIOR_UNKNOWN_LIKELIHOOD_FLOOR,
+      1 - Math.max(0, Math.min(1, topSim)),
+    );
+    const unknownUnnorm = unknownLikelihood * PRIOR_UNKNOWN_RESERVE;
+
+    const total = unnorm.reduce((a, b) => a + b, 0) + unknownUnnorm;
+    const norm = total > 0 ? total : 1;
+    const unknownPosterior = unknownUnnorm / norm;
+
+    let bestIdx = -1;
+    let bestPosterior = -1;
+    for (let i = 0; i < candidates.length; i++) {
+      const posterior = unnorm[i] / norm;
+      if (posterior > bestPosterior) {
+        bestPosterior = posterior;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx < 0) return null;
+    // The unknown slot winning means the prior wasn't enough to pick anyone —
+    // surface "no confident match" rather than force the top enrolled person.
+    if (bestPosterior < unknownPosterior) return null;
+
+    const winner = candidates[bestIdx];
+    // Voice gate: never report a match the raw similarity doesn't support.
+    if (winner.sim < threshold) return null;
+    return winner;
+  } catch {
+    // Any failure → safe fall back to the unbiased matcher. Speaker-ID must
+    // never throw into the live loop.
+    return bestMatch(vector, prints, threshold, ctx.excludedPersonIds);
+  }
+}
+
+/** Multiplicative prior for one person from the active context. */
+function computePrior(personId: string, ctx: PriorContext): number {
+  let prior = 1;
+  if (ctx.placePersonIds?.includes(personId)) prior *= PRIOR_PLACE_BOOST;
+  if (ctx.eventPersonIds?.includes(personId)) prior *= PRIOR_EVENT_BOOST;
+  if (ctx.recentSpeakers) {
+    const idx = ctx.recentSpeakers.indexOf(personId);
+    if (idx >= 0) prior *= 1 + PRIOR_RECENCY_BASE / Math.pow(2, idx);
+  }
+  return prior;
 }
 
 /* --------------------- Offline (post-conversation) rebuild ---------------- */

@@ -90,6 +90,40 @@ export async function suggestPeopleAtPlace(placeId: string, limit = 6): Promise<
   return people.filter((p): p is Person => !!p);
 }
 
+/**
+ * Resolve the person IDs the active place and event are associated with, for
+ * the speaker-ID context prior (people likely to be in the room get a gentle
+ * likelihood boost). Read-only and fail-soft — any error yields empty arrays
+ * so the live matcher simply falls back to pure-voice matching.
+ *
+ * - Place: there is no explicit roster on a Place, so we infer it from past
+ *   conversations held there (same signal as `suggestPeopleAtPlace`).
+ * - Event: people are declared directly on `event.person_ids`.
+ */
+export async function getContextPriorPersonIds(opts: {
+  place?: Place;
+  event?: EventItem;
+  /** Cap on inferred place attendees (most-frequent first). */
+  placeLimit?: number;
+}): Promise<{ placePersonIds: string[]; eventPersonIds: string[] }> {
+  let placePersonIds: string[] = [];
+  let eventPersonIds: string[] = [];
+  try {
+    if (opts.place) {
+      const people = await suggestPeopleAtPlace(opts.place.id, opts.placeLimit ?? 8);
+      placePersonIds = people.map((p) => p.id);
+    }
+  } catch (err) {
+    console.warn("[context] place prior lookup failed", err);
+  }
+  try {
+    if (opts.event) eventPersonIds = [...(opts.event.person_ids ?? [])];
+  } catch {
+    eventPersonIds = [];
+  }
+  return { placePersonIds, eventPersonIds };
+}
+
 async function memoriesForPerson(
   personId: string,
   queryEmbedding?: number[],
