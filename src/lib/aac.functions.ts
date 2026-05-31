@@ -2467,3 +2467,46 @@ export const embedTexts = createServerFn({ method: "POST" })
     // skip semantic features without erroring.
     return { embeddings: data.texts.map(() => []), model: "none" };
   });
+
+/* --------------------- ElevenLabs: streaming TTS (Flash) ------------------- */
+
+/**
+ * Return an authenticated WebSocket URL for the ElevenLabs Flash v2.5
+ * streaming-input endpoint. The browser's WebSocket constructor can't set
+ * request headers, so — exactly like `createScribeToken` mints a token rather
+ * than handing out the key — we build the URL server-side with the API key in
+ * the query string (`xi-api-key=…`). The raw key is read from
+ * `process.env.ELEVENLABS_API_KEY` and never returned to the client by any
+ * other route; only this signed URL crosses the wire, and it's used
+ * immediately to open the socket.
+ *
+ * `eleven_flash_v2_5` is pinned for its ~75 ms model latency (James feels every
+ * extra second). `output_format` defaults to `mp3_22050_32` to match the
+ * `synthesizeSpeech` fallback so cached audio and streamed audio share a MIME
+ * type. `auto_mode` lets ElevenLabs decide chunking for short single-shot
+ * utterances, which is what the cockpit sends.
+ */
+export const createTtsStreamUrl = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      voiceId: z.string().min(1),
+      // Constrain to the mp3 formats we actually decode in the browser.
+      outputFormat: z
+        .enum(["mp3_22050_32", "mp3_44100_64", "mp3_44100_128"])
+        .optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    const apiKey = requireElevenLabsApiKey();
+    const params = new URLSearchParams({
+      model_id: "eleven_flash_v2_5",
+      output_format: data.outputFormat ?? "mp3_22050_32",
+      // Single-shot utterances: let the server flush as soon as it can.
+      auto_mode: "true",
+      "xi-api-key": apiKey,
+    });
+    const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(
+      data.voiceId,
+    )}/stream-input?${params.toString()}`;
+    return { url };
+  });
