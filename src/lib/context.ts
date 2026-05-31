@@ -90,13 +90,18 @@ export async function suggestPeopleAtPlace(placeId: string, limit = 6): Promise<
   return people.filter((p): p is Person => !!p);
 }
 
-async function memoriesForPerson(personId: string, queryEmbedding?: number[]): Promise<string[]> {
+async function memoriesForPerson(
+  personId: string,
+  queryEmbedding?: number[],
+  queryModel?: string,
+): Promise<string[]> {
   // Tier 3.1 — when we have a query embedding, prefer semantic top-K
   // (with recency fallback inside retrieveTopK). Otherwise keep the
   // original behaviour of "most recent N".
   if (queryEmbedding && queryEmbedding.length > 0) {
     const top = await retrieveTopK({
       queryEmbedding,
+      queryModel,
       personId,
       k: RECENT_MEMORY_LIMIT,
     });
@@ -147,10 +152,12 @@ async function memoriesForPlace(
   placeId: string,
   presentPersonIds: Set<string>,
   queryEmbedding?: number[],
+  queryModel?: string,
 ): Promise<string[]> {
   if (queryEmbedding && queryEmbedding.length > 0) {
     const top = await retrieveTopK({
       queryEmbedding,
+      queryModel,
       placeId,
       presentPersonIds,
       k: RECENT_MEMORY_LIMIT,
@@ -351,6 +358,9 @@ export async function buildConversationContext(opts: {
   /** Tier 3.1 — when provided, person/place memories are retrieved by
    *  semantic similarity (top-K cosine) rather than pure recency. */
   queryEmbedding?: number[];
+  /** Tier 3.1 — the model that produced `queryEmbedding`, so retrieval only
+   *  compares against stored vectors from a compatible embedding space. */
+  queryEmbeddingModel?: string;
 }): Promise<ConversationContext> {
   const fingerprint = [
     [...opts.personIds].sort().join(","),
@@ -403,7 +413,7 @@ export async function buildConversationContext(opts: {
       interests: p.interests,
       notes: await notesWithDocsForPerson(p.id, p.notes),
       style_notes: p.style_notes,
-      recentMemories: await memoriesForPerson(p.id, opts.queryEmbedding),
+      recentMemories: await memoriesForPerson(p.id, opts.queryEmbedding, opts.queryEmbeddingModel),
       followUps: await followUpsForPerson(p.id),
     })),
   );
@@ -414,7 +424,12 @@ export async function buildConversationContext(opts: {
     place = {
       name: opts.place.name,
       notes: opts.place.notes,
-      recentMemories: await memoriesForPlace(opts.place.id, presentIds, opts.queryEmbedding),
+      recentMemories: await memoriesForPlace(
+        opts.place.id,
+        presentIds,
+        opts.queryEmbedding,
+        opts.queryEmbeddingModel,
+      ),
       followUps: await followUpsForPlace(opts.place.id, presentIds),
     };
   }

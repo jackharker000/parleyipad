@@ -47,12 +47,25 @@ import {
   expandUtterance,
   predictUtterances,
   identifySpeakerFromContext,
+  classifyConversationArc,
+  predictMood,
 } from "@/lib/aac.functions";
 import {
   buildConversationContext,
   suggestPeopleAtPlace,
   invalidateContextCache,
 } from "@/lib/context";
+// === Tier 3 wiring ===
+import { embedOneWithModel } from "@/lib/embeddings";
+import { embedNewMemories, backfillMemoryEmbeddings } from "@/lib/embed-backfill";
+import {
+  isArcDue,
+  ARC_REFRESH_TURNS,
+  type ConversationArc,
+  type ArcCacheEntry,
+} from "@/lib/arc";
+import { loadRecentBias, hasUsefulBias, type CategoryBiasLabel } from "@/lib/suggestion-stats";
+import { isMoodDue, MOOD_MIN_CONFIDENCE } from "@/lib/mood";
 import { getCrossSessionDeadPhrases } from "@/lib/style-evidence";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
@@ -83,6 +96,11 @@ export const Route = createFileRoute("/")({
 });
 
 type Suggestion = { text: string; category: string; why?: string };
+
+// === Tier 3.1: one-shot guard for the historical-memory embedding backfill.
+// Module-scoped so it runs at most once per page load even if the cockpit
+// mount effect re-fires (StrictMode double-invoke, route remount, etc.).
+let _memoryBackfillStarted = false;
 
 const MOODS = [
   { id: "normal", label: "Normal", color: "bg-secondary text-secondary-foreground" },
@@ -225,9 +243,51 @@ function Home() {
   const lastShownRef = useRef<string[]>([]);
   const [mood, setMood] = useState<MoodId>("normal");
   const moodRef = useRef<MoodId>("normal");
+  // True once James has manually picked a mood chip — suppresses A4 auto-mood
+  // prediction entirely so it can NEVER override his explicit choice.
+  const moodManuallySetRef = useRef(false);
   useEffect(() => {
     moodRef.current = mood;
   }, [mood]);
+
+  // === Tier 3.3: auto-mood (soft hint only) ===
+  // A predicted mood used purely to SUBTLY highlight the matching chip. It is
+  // never written to `mood`/`moodRef` — James's manual selection always wins.
+  const [predictedMood, setPredictedMood] = useState<MoodId | null>(null);
+  const predictedMoodRef = useRef<MoodId | null>(null);
+  useEffect(() => {
+    predictedMoodRef.current = predictedMood;
+  }, [predictedMood]);
+  const predictedMoodInFlightRef = useRef(false);
+
+  // === Tier 3.1: per-turn query-embedding cache ===
+  // Keyed by the id of the last committed segment so we embed the recent
+  // transcript window AT MOST ONCE per turn (not per render). Holds the vector
+  // and the model that produced it, so retrieval only compares same-space rows.
+  const queryEmbedCacheRef = useRef<{
+    segId: string;
+    vector: number[];
+    model: string;
+  } | null>(null);
+
+  // === Tier 3.2: conversation-arc cache ===
+  // The arc classifier runs at most once every ARC_REFRESH_TURNS turns; the
+  // result is cached here and passed to the suggestion prompt between runs.
+  const arcCacheRef = useRef<ArcCacheEntry | null>(null);
+  const arcInFlightRef = useRef(false);
+  // Last turn we ATTEMPTED an arc classification (independent of whether it
+  // produced a confident result), so a persistently-ambiguous early opener
+  // doesn't re-fire the classifier every single turn.
+  const arcLastAttemptTurnRef = useRef(-Infinity);
+
+  // === Tier 3.4: category-bias cache ===
+  // Derived from the suggestion log; refreshed ~once/minute or when the
+  // present-person set changes. Empty until cold-start is cleared.
+  const biasCacheRef = useRef<{
+    key: string;
+    at: number;
+    bias: Record<string, CategoryBiasLabel>;
+  } | null>(null);
 
   // === Predictive typing ===
   // When James types, the grid switches to predicted completions of his intent.
@@ -385,6 +445,9 @@ function Home() {
   const expandFn = useServerFn(expandUtterance);
   const predictFn = useServerFn(predictUtterances);
   const identifyFn = useServerFn(identifySpeakerFromContext);
+  // === Tier 3.2 / 3.3 ===
+  const arcFn = useServerFn(classifyConversationArc);
+  const moodPredictFn = useServerFn(predictMood);
 
   // Per-utterance processing — extracted so we can call it twice when we
   // split a Scribe chunk that spans two speakers.
@@ -1023,6 +1086,19 @@ function Home() {
   // Initial load: settings + people + GPS-based suggestions
   useEffect(() => {
     let cancelled = false;
+    // === Tier 3.1: embed historical memories once per page load, in the
+    // background. Module-guarded so it can't run on every render/mount, and
+    // delayed so it never competes with the cold-start render or the first
+    // suggestion call. Bounded internally (≤128 memories/run) and fully
+    // fire-and-forget — failure just defers to a later session.
+    if (!_memoryBackfillStarted) {
+      _memoryBackfillStarted = true;
+      setTimeout(() => {
+        void backfillMemoryEmbeddings().catch((err) =>
+          console.warn("[tier3.1] backfillMemoryEmbeddings failed", err),
+        );
+      }, 4000);
+    }
     (async () => {
       const s = await getSettings();
       if (cancelled) return;
@@ -1248,22 +1324,28 @@ function Home() {
           });
           if (r.memories?.length) {
             const primary = personIdsRef.current[0];
-            await db.memories.bulkAdd(
-              r.memories.map(
-                (m: {
-                  text: string;
-                  kind: "fact" | "preference" | "event" | "todo";
-                }) => ({
-                  id: newId(),
-                  conversation_id: cid,
-                  place_id: placeIdRef.current,
-                  person_id: primary,
-                  text: m.text,
-                  kind: m.kind,
-                  status: "auto" as const,
-                  created_at: Date.now(),
-                }),
-              ),
+            const memoryRows = r.memories.map(
+              (m: {
+                text: string;
+                kind: "fact" | "preference" | "event" | "todo";
+              }) => ({
+                id: newId(),
+                conversation_id: cid,
+                place_id: placeIdRef.current,
+                person_id: primary,
+                text: m.text,
+                kind: m.kind,
+                status: "auto" as const,
+                created_at: Date.now(),
+              }),
+            );
+            await db.memories.bulkAdd(memoryRows);
+            // === Tier 3.1: embed the new memories so they're semantically
+            // retrievable on the next conversation. Fire-and-forget + guarded
+            // inside embedNewMemories; failure is non-fatal (the mount-time
+            // backfill will cover any that miss).
+            void embedNewMemories(memoryRows.map((row: { id: string }) => row.id)).catch(
+              (err) => console.warn("[tier3.1] embedNewMemories failed", err),
             );
           }
           if (r.followUps?.length) {
@@ -1322,6 +1404,16 @@ function Home() {
       convoSuggestionsRef.current = [];
       currentContextRef.current = "";
       lastSuggestKeyRef.current = "";
+      // === Tier 3: reset per-conversation caches/state. Arc is keyed by turn
+      // count (which resets next session) and the predicted-mood hint + manual
+      // override must not bleed into the next conversation.
+      arcCacheRef.current = null;
+      arcInFlightRef.current = false;
+      arcLastAttemptTurnRef.current = -Infinity;
+      queryEmbedCacheRef.current = null;
+      biasCacheRef.current = null;
+      moodManuallySetRef.current = false;
+      setPredictedMood(null);
       setSuggestions([]);
     }
   }, [active, stopping, scribe, summarizeFn, placeName]);
@@ -1367,10 +1459,41 @@ function Home() {
         peopleById,
         jamesLabelRef.current,
       );
+      // === Tier 3.1: semantic memory — compute the query embedding for the
+      // recent-transcript window, cached per turn (keyed by the last committed
+      // segment id) so we embed at most ONCE per turn, not per render. If the
+      // embedder rate-limits / returns empty, we skip silently and the context
+      // builder falls back to recency-based memory selection (graceful).
+      let queryEmbedding: number[] | undefined;
+      let queryEmbeddingModel: string | undefined;
+      try {
+        const lastSeg = committed[committed.length - 1];
+        if (lastSeg && recent.length > 0) {
+          const cached = queryEmbedCacheRef.current;
+          if (cached && cached.segId === lastSeg.id) {
+            queryEmbedding = cached.vector;
+            queryEmbeddingModel = cached.model;
+          } else {
+            // Embed the last few turns — the live "query" the memories answer.
+            const queryText = recent.slice(-4).map((s) => `${s.speaker}: ${s.text}`).join("\n");
+            const { vector, model } = await embedOneWithModel(queryText);
+            if (vector && vector.length > 0) {
+              queryEmbedding = vector;
+              queryEmbeddingModel = model;
+              queryEmbedCacheRef.current = { segId: lastSeg.id, vector, model };
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[tier3.1] query embedding failed — falling back to recency", err);
+      }
+
       const ctx = await buildConversationContext({
         personIds: personIdsRef.current,
         place: placeRef.current,
         event: selectedEventRef.current ?? undefined,
+        queryEmbedding,
+        queryEmbeddingModel,
       });
       // Detect if a question was just asked so the AI can prioritise answers.
       const jamesLabel = jamesLabelRef.current ?? "__james_self__";
@@ -1416,6 +1539,102 @@ function Home() {
         .map((s) => s.text)
         .join(" ");
       currentContextRef.current = contextSnippet;
+
+      // === Tier 3.4: category-bias — derived from the suggestion log (local,
+      // no network). Cached ~60s and keyed by the present-person set so a
+      // change of participants refreshes it. Only passed when it's crossed
+      // cold-start AND has a non-neutral signal worth steering on.
+      let categoryBias: Record<string, CategoryBiasLabel> | undefined;
+      try {
+        const cachedBias = biasCacheRef.current;
+        if (cachedBias && cachedBias.key === personKey && Date.now() - cachedBias.at < 60_000) {
+          if (hasUsefulBias(cachedBias.bias)) categoryBias = cachedBias.bias;
+        } else {
+          const bias = await loadRecentBias();
+          biasCacheRef.current = { key: personKey, at: Date.now(), bias };
+          if (hasUsefulBias(bias)) categoryBias = bias;
+        }
+      } catch (err) {
+        console.warn("[tier3.4] category bias load failed", err);
+      }
+
+      // === Tier 3.2: conversation arc — pass whatever arc is currently cached
+      // (zero added latency every turn). When a refresh is DUE, kick off the
+      // classifier in the BACKGROUND so the result is ready for the next turn,
+      // rather than stacking a second sequential AI call onto this turn's
+      // suggestion path (latency always). Guarded so only one runs at a time.
+      const committedTurns = committed.length;
+      const arc: ConversationArc | undefined = arcCacheRef.current?.arc;
+      if (
+        isArcDue(committedTurns, arcCacheRef.current) &&
+        !arcInFlightRef.current &&
+        committedTurns - arcLastAttemptTurnRef.current >= ARC_REFRESH_TURNS
+      ) {
+        arcInFlightRef.current = true;
+        arcLastAttemptTurnRef.current = committedTurns;
+        const prevArc = arcCacheRef.current?.arc;
+        void arcFn({
+          data: {
+            recentTranscript: recent,
+            previousArc: prevArc,
+            model: fastModelRef.current,
+          },
+        })
+          .then((res) => {
+            if (res?.arc && (res.confidence ?? 0) >= 0.55) {
+              arcCacheRef.current = { arc: res.arc as ConversationArc, atTurn: committedTurns };
+            } else {
+              // Low confidence — keep the previous arc but bump the turn marker
+              // so we don't re-run the classifier on every single turn.
+              arcCacheRef.current = prevArc
+                ? { arc: prevArc, atTurn: committedTurns }
+                : arcCacheRef.current;
+            }
+          })
+          .catch((err) => console.warn("[tier3.2] arc classify failed", err))
+          .finally(() => {
+            arcInFlightRef.current = false;
+          });
+      }
+
+      // === Tier 3.3: auto-mood (soft hint only) — every few turns, predict
+      // the likely mood for James's reply and SUBTLY highlight the matching
+      // chip. Fire-and-forget so it never adds latency to the suggestion path,
+      // and fully suppressed once James has manually picked a mood — his
+      // explicit choice is never overridden, only gently suggested otherwise.
+      if (
+        !moodManuallySetRef.current &&
+        isMoodDue(committedTurns) &&
+        !predictedMoodInFlightRef.current
+      ) {
+        predictedMoodInFlightRef.current = true;
+        void moodPredictFn({
+          data: {
+            recentTranscript: recent.slice(-12),
+            previousMood: predictedMoodRef.current ?? undefined,
+            model: fastModelRef.current,
+          },
+        })
+          .then((res) => {
+            // Only surface a confident, non-default prediction; never touch the
+            // active `mood`. If James has tapped a chip in the meantime, drop it.
+            if (moodManuallySetRef.current) return;
+            if (
+              res?.mood &&
+              res.mood !== "normal" &&
+              (res.confidence ?? 0) >= MOOD_MIN_CONFIDENCE
+            ) {
+              setPredictedMood(res.mood as MoodId);
+            } else {
+              setPredictedMood(null);
+            }
+          })
+          .catch((err) => console.warn("[tier3.3] mood predict failed", err))
+          .finally(() => {
+            predictedMoodInFlightRef.current = false;
+          });
+      }
+
       // 18s hard timeout so a hung free-tier provider call doesn't strand the
       // UI in "Thinking…" forever — the user can re-tap Refresh after.
       const timeoutCtl = new AbortController();
@@ -1435,6 +1654,13 @@ function Home() {
             jamesVoiceSamples: ctx.jamesVoiceSamples,
             // === Preference learning ===
             choiceMemories: ctx.choiceMemories,
+            // === Tier 3.1: semantically-retrieved memories (populated only
+            // when a query embedding was available; falls back to recency). ===
+            retrievedMemories: ctx.retrievedMemories,
+            // === Tier 3.2: conversation arc (cached; refreshed in background) ===
+            arc,
+            // === Tier 3.4: per-category performance bias ===
+            categoryBias,
             alreadyShown,
             model: fastModelRef.current,
             mood: moodRef.current,
@@ -1506,7 +1732,7 @@ function Home() {
       // + mood signature → call permanently skipped.
       if (!succeeded) lastSuggestKeyRef.current = "";
     }
-  }, [committed, suggestFn, loadingSuggestions, allPeople, active]);
+  }, [committed, suggestFn, arcFn, moodPredictFn, loadingSuggestions, allPeople, active]);
 
   useEffect(() => {
     if (!active) return;
@@ -2534,16 +2760,27 @@ function Home() {
             </span>
             {MOODS.map((m) => {
               const selected = mood === m.id;
+              // Tier 3.3 — soft auto-mood hint: subtly ring the predicted chip
+              // when nothing is selected yet, WITHOUT changing the active mood.
+              const hinted = !selected && predictedMood === m.id;
               return (
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => setMood(m.id)}
+                  onClick={() => {
+                    // Manual selection always wins and disables auto-prediction.
+                    moodManuallySetRef.current = true;
+                    setPredictedMood(null);
+                    setMood(m.id);
+                  }}
                   aria-pressed={selected}
+                  title={hinted ? "Suggested based on the conversation" : undefined}
                   className={`rounded-full border-2 px-5 py-2.5 text-base font-medium transition ${
                     selected
                       ? `${m.color} border-transparent shadow`
-                      : "border-border bg-background text-muted-foreground hover:bg-secondary"
+                      : hinted
+                        ? "border-primary/60 bg-background text-foreground ring-2 ring-primary/30"
+                        : "border-border bg-background text-muted-foreground hover:bg-secondary"
                   }`}
                 >
                   {m.label}

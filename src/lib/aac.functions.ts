@@ -654,9 +654,11 @@ ${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
       : "";
 
     // === Tier 1.1: style evidence block ===
-    // Block order (so other tiers can slot in cleanly):
-    // profile → people → place → event → style_profile → [Tier 3.1 retrieved_memories]
-    //   → style_evidence → [Tier 3.2 arc] → [Tier 3.3 mood] → [Tier 3.4 category_bias]
+    // Final message layout (see the prompt-caching note near the message array):
+    //   SYSTEM (stable prefix): instructions → profile → people → place →
+    //     event → style_profile → voice_samples → choice_memories → style_evidence
+    //   USER (volatile tail): [Tier 3.1 retrieved_memories] → [Tier 3.2 arc]
+    //     → [Tier 3.3 mood] → [Tier 3.4 category_bias] → live transcript → alreadyShown
     const styleEvidenceBlock = (() => {
       const ev = data.styleEvidence;
       if (!ev) return "";
@@ -802,7 +804,28 @@ ${nearMissCats.length ? `Under-performing categories (slow tap or often edited) 
 
     const presentNames = (data.people ?? []).map((p) => p.name);
     const presentList = presentNames.length ? presentNames.join(", ") : "(only James)";
-    const system = `You are an AAC (Augmentative and Alternative Communication) copilot. You generate reply options for ${jp?.name ?? "James"}, a non-speaking user, to TAP and speak aloud in real time. Suggestions must sound like HIM — not generic. Use his personality, humor, signature phrases, and shared history with the people present.
+
+    // === Prompt-caching layout (see note below) ===
+    // The message array is split into a LARGE STABLE PREFIX (system) and a
+    // VOLATILE TAIL (user). The system block carries the persona that does not
+    // change within a conversation — instructions, James's profile (incl. large
+    // reference documents), the present people, place, event, learned style
+    // profile, his real voice samples, revealed preferences, and style
+    // evidence. Built deterministically and placed FIRST so providers that do
+    // implicit prefix caching (OpenAI, Gemini) get a cache hit on every turn.
+    //
+    // PROMPT CACHING NOTE: this app talks to Claude/OpenAI/Gemini through the
+    // OpenAI-COMPATIBLE /v1/chat/completions surface (see resolveChatChain).
+    // Anthropic's `cache_control` / `ephemeral` breakpoints are ONLY honoured
+    // on the NATIVE /v1/messages endpoint — the OpenAI-compat endpoint ignores
+    // (or rejects) cache_control. (Confirmed via Anthropic's OpenAI-compat docs,
+    // May 2026.) So we do NOT attach cache_control here; instead we rely on
+    // deterministic stable-prefix ordering, which yields implicit caching on
+    // every provider and is also the correct shape if we later add a native
+    // Messages-API path. The volatile per-turn parts (live transcript, arc,
+    // mood, category bias, retrieved memories, alreadyShown) all come AFTER the
+    // stable prefix so they never invalidate it.
+    const stablePrefix = `You are an AAC (Augmentative and Alternative Communication) copilot. You generate reply options for ${jp?.name ?? "James"}, a non-speaking user, to TAP and speak aloud in real time. Suggestions must sound like HIM — not generic. Use his personality, humor, signature phrases, and shared history with the people present.
 
 STRICT PRIVACY & SCOPE RULES — these override everything else:
 - The ONLY other people in this conversation are: ${presentList}. Treat anyone else as NOT present.
@@ -811,22 +834,25 @@ STRICT PRIVACY & SCOPE RULES — these override everything else:
 - James's general profile (background, interests, humor, life context) is fair game because it is general knowledge about him. But specific stories or sensitive disclosures (health, family struggles, work problems, opinions about others) must NOT be carried into a conversation with someone different unless that exact topic also appears in the present people's own memories/follow-ups.
 - When in doubt about whether something is private, leave it out and prefer a neutral question or in-context reply instead.
 
-Each suggestion must be under 16 words and feel natural to say out loud. Avoid repeating any text in "alreadyShown". Prefer concrete references over generic small talk ONLY when those references come from the present people's own memories/follow-ups.`;
+Each suggestion must be under 16 words and feel natural to say out loud. Avoid repeating any text in "alreadyShown". Prefer concrete references over generic small talk ONLY when those references come from the present people's own memories/follow-ups.
+
+=== Persona & context (stable for this conversation) ===
+${profileBlock}
+${peopleBlock}
+${placeBlock}
+${eventBlock}
+${styleBlock}
+${voiceSamplesBlock}${choiceMemoriesBlock}${styleEvidenceBlock}`;
 
     const questionGuidance = data.questionAsked
       ? "A question was just asked. Prioritise direct, specific answers — include at least 3 answer suggestions. The other slots can be follow-ups or conversation-movers."
       : "Distribute the 6 suggestions: 2 direct responses to what was just said, 2 conversation-movers (deepen a topic or gently shift it), 1 practical or action suggestion, 1 humorous or light option. Vary tone clearly.";
 
-    // Block order — keep in sync with the comment above `styleEvidenceBlock`:
-    // profile → people → place → event → style_profile → [Tier 3.1 retrieved_memories]
-    //   → style_evidence → [Tier 3.2 arc] → [Tier 3.3 mood] → [Tier 3.4 category_bias]
-    const user = `${profileBlock}
-${peopleBlock}
-${placeBlock}
-${eventBlock}
-${styleBlock}
-${voiceSamplesBlock}${choiceMemoriesBlock}${retrievedMemoriesBlock}${styleEvidenceBlock}${arcBlock}${moodBlock}${categoryBiasBlock}
-# Live conversation so far
+    // Volatile tail — everything that changes turn-to-turn. Kept AFTER the
+    // stable prefix so the cacheable prefix stays byte-identical across turns:
+    // [Tier 3.1 retrieved_memories] → [Tier 3.2 arc] → [Tier 3.3 mood]
+    //   → [Tier 3.4 category_bias] → live transcript → alreadyShown.
+    const user = `${retrievedMemoriesBlock}${arcBlock}${moodBlock}${categoryBiasBlock}# Live conversation so far
 ${transcriptText || "(no transcript yet — conversation just starting)"}
 
 ${data.alreadyShown?.length ? `# Recently ignored or already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
@@ -839,7 +865,9 @@ Return exactly 6 suggestions in James's voice.`;
         // same near-miss text.
         temperature: nearMissCats.length > 0 ? 0.9 : undefined,
         messages: [
-          { role: "system", content: system },
+          // Stable persona prefix first (implicit prompt caching), volatile
+          // per-turn context second — see the prompt-caching note above.
+          { role: "system", content: stablePrefix },
           { role: "user", content: user },
         ],
         tools: [
@@ -1068,17 +1096,24 @@ export const expandUtterance = createServerFn({ method: "POST" })
       ? `How James actually talks (real quotes from past conversations — match this voice, vocabulary, and rhythm):\n${data.jamesVoiceSamples.map((s) => `- "${promptQuote(s)}"`).join("\n")}\n`
       : "";
 
-    const system = `You are an AAC writing assistant for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy whose typing is heavily truncated and full of typos. Your job: take his raw typed input and rewrite it as ONE clear, natural spoken sentence (or two short sentences max) in HIS voice, appropriate as the next reply in the live conversation. Preserve his intent exactly — never add facts, opinions, claims, or details he did not type.
+    // Stable persona prefix (instructions + profile/people/place/voice samples)
+    // placed FIRST so the OpenAI-compatible providers cache it implicitly across
+    // expansions in a conversation. cache_control is NOT used — the compat
+    // endpoint ignores it (see the prompt-caching note in generateSuggestions).
+    // The volatile tail (live transcript + the raw typed text) follows.
+    const stablePrefix = `You are an AAC writing assistant for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy whose typing is heavily truncated and full of typos. Your job: take his raw typed input and rewrite it as ONE clear, natural spoken sentence (or two short sentences max) in HIS voice, appropriate as the next reply in the live conversation. Preserve his intent exactly — never add facts, opinions, claims, or details he did not type.
 
 CRITICAL — minimal expansion rule:
 - If his input is just 1–3 characters (e.g. "N", "Y", "ok", "mm"), produce the smallest possible natural utterance ("No.", "Yes.", "Okay.", "Mm-hmm.") and STOP. Do NOT add a follow-on clause that explains, qualifies, or answers anything he didn't type. "N" must become "No." — NOT "No, they're working." or "No, I don't think so."
 - If his input is a single short word with no spaces (e.g. "tired", "later"), produce just that thought expanded grammatically ("I'm tired.", "Maybe later.") — not a full sentence with extra reasoning.
 - Only when his input is longer than ~6 characters with multiple words may you smooth grammar and add small connector words. Even then, never invent objects, times, names, or topics he didn't include.
 
-Fix spelling, expand abbreviations to common meanings, add small connector words where structurally required. Keep it concise, conversational, and under 25 words. Output ONLY the final sentence to be spoken aloud, with no quotes, no preface, no explanation.`;
+Fix spelling, expand abbreviations to common meanings, add small connector words where structurally required. Keep it concise, conversational, and under 25 words. Output ONLY the final sentence to be spoken aloud, with no quotes, no preface, no explanation.
 
-    const user = `${profileBlock}${peopleBlock}${placeBlock}${voiceSamplesBlock}
-Recent conversation:
+=== Persona & context (stable for this conversation) ===
+${profileBlock}${peopleBlock}${placeBlock}${voiceSamplesBlock}`;
+
+    const user = `Recent conversation:
 ${transcriptText || "(just starting)"}
 
 James typed: "${data.rawText}"
@@ -1087,7 +1122,7 @@ Rewrite as the spoken reply:`;
 
     const res = await chatCompletion(data.model, {
         messages: [
-          { role: "system", content: system },
+          { role: "system", content: stablePrefix },
           { role: "user", content: user },
         ],
     });
