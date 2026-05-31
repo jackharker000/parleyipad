@@ -383,6 +383,31 @@ export type ProfileProposal = {
 };
 
 /**
+ * Pre-synthesised / cached TTS audio, stored on-device so repeated speech
+ * (the five canned quick phrases, and any suggestion James has spoken before)
+ * plays with zero network and zero LLM latency.
+ *
+ * Two kinds share this table, distinguished by `kind`:
+ *  - "phrase":     one of QUICK_PHRASES, warmed in the background on cockpit
+ *                  mount. The load-bearing durable-degradation surface — these
+ *                  MUST play when the network/AI is down.
+ *  - "suggestion": any other spoken text, populated opportunistically after a
+ *                  successful synth so a repeat doesn't re-synthesise.
+ *
+ * `id` is a deterministic `${text}::${voiceId}` key so look-ups are a single
+ * primary-key get and re-warming is idempotent.
+ */
+export type CachedPhraseAudio = {
+  id: string; // `${text}::${voiceId}`
+  kind: "phrase" | "suggestion";
+  text: string;
+  voiceId: string;
+  mimeType: string; // e.g. "audio/mpeg"
+  audioBuffer: ArrayBuffer;
+  cachedAt: number;
+};
+
+/**
  * Per-utterance mean-MFCC vector, captured during the live session and
  * persisted so the post-conversation re-diarize pass can re-cluster
  * speakers using stored voiceprints as seeds.
@@ -428,6 +453,8 @@ class AacDb extends Dexie {
   segment_mfccs!: Table<SegmentMfcc, string>;
   // === Preference learning: which suggestion James chose vs. the rest ===
   suggestion_choices!: Table<SuggestionChoice, string>;
+  // === Cached TTS audio (quick phrases + repeated suggestions) ===
+  cachedPhraseAudio!: Table<CachedPhraseAudio, string>;
 
   constructor() {
     super("aac_copilot");
@@ -490,6 +517,13 @@ class AacDb extends Dexie {
     // context_snippet) are non-indexed properties — no re-declaration needed.
     this.version(10).stores({
       suggestion_choices: "id, conversation_id, person_id, ts",
+    });
+    // === Cached TTS audio ===
+    // Pre-synthesised quick phrases + repeated-suggestion audio, keyed by
+    // `${text}::${voiceId}`. `kind` and `voiceId` are indexed so we can prune
+    // stale voices and cap the suggestion cache without a full scan.
+    this.version(11).stores({
+      cachedPhraseAudio: "id, kind, voiceId, cachedAt",
     });
   }
 }

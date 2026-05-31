@@ -41,6 +41,7 @@ import {
 import { findNearestPlace, getCurrentPosition } from "@/lib/geo";
 import {
   createScribeToken,
+  createTtsStreamUrl,
   generateSuggestions,
   summarizeConversation,
   synthesizeSpeech,
@@ -50,6 +51,8 @@ import {
   classifyConversationArc,
   predictMood,
 } from "@/lib/aac.functions";
+import { speakText } from "@/lib/audio/speak-text";
+import { warmQuickPhraseCache } from "@/lib/audio/quick-phrase-cache";
 import {
   buildConversationContext,
   suggestPeopleAtPlace,
@@ -440,6 +443,7 @@ function Home() {
   // Server fns
   const tokenFn = useServerFn(createScribeToken);
   const ttsFn = useServerFn(synthesizeSpeech);
+  const ttsStreamUrlFn = useServerFn(createTtsStreamUrl);
   const suggestFn = useServerFn(generateSuggestions);
   const summarizeFn = useServerFn(summarizeConversation);
   const expandFn = useServerFn(expandUtterance);
@@ -1141,6 +1145,17 @@ function Home() {
       cancelled = true;
     };
   }, []);
+
+  // Warm the quick-phrase audio cache in the background whenever the voice is
+  // known or changes. Pre-synthesising the five canned phrases means taps play
+  // instantly with zero network — the durable-degradation surface when the AI
+  // or network is down. `pruneOldVoices` drops phrase rows for a previous voice
+  // so the cache doesn't grow unbounded after a voice change. Soft-fails: if
+  // the synth call errors (e.g. missing key), the live/stream path still works.
+  useEffect(() => {
+    if (!voiceId) return;
+    void warmQuickPhraseCache({ voiceId, synth: ttsFn, pruneOldVoices: true });
+  }, [voiceId, ttsFn]);
 
   // Recent (when not active)
   const [recent, setRecent] = useState<Conversation[]>([]);
@@ -1882,9 +1897,12 @@ function Home() {
       if (!text.trim()) return;
       try {
         setSpeaking(true);
-        const r = await ttsFn({ data: { text, voiceId } });
-        const audio = new Audio(`data:${r.mime};base64,${r.audioBase64}`);
-        await audio.play();
+        // Produce the sound. speakText prefers cached audio (quick phrases +
+        // repeated suggestions, zero-network), then streaming Flash v2.5 over
+        // WebSocket (lowest live latency), and falls back to the full-synth
+        // HTTP path (synthesizeSpeech) if the socket fails — so James is never
+        // left silent. It resolves once playback has STARTED.
+        await speakText({ text, voiceId, streamUrlFn: ttsStreamUrlFn, synthFn: ttsFn });
         // Persistence below happens AFTER audio played — wrap separately so a
         // benign IndexedDB write error can't surface as a misleading "Speech
         // failed" toast when James was actually heard.
@@ -1939,7 +1957,7 @@ function Home() {
         setSpeaking(false);
       }
     },
-    [ttsFn, voiceId, recordSelectionChoice],
+    [ttsFn, ttsStreamUrlFn, voiceId, recordSelectionChoice],
   );
 
   const peopleInConvo = useMemo(
