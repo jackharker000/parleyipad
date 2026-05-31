@@ -909,8 +909,7 @@ Return exactly 6 suggestions in James's voice.`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Suggestions failed:", res.status, err);
+      console.error("Suggestions failed:", res.status);
       return { suggestions: [], error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1025,8 +1024,7 @@ Return, via the tool:
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Summary failed:", res.status, err);
+      console.error("Summary failed:", res.status);
       return {
         summary: "",
         highlights: [],
@@ -1134,8 +1132,7 @@ Rewrite as the spoken reply:`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Expand failed:", res.status, err);
+      console.error("Expand failed:", res.status);
       return { expanded: data.rawText, error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1239,8 +1236,7 @@ Predict the 6 most likely complete sentences he is trying to say.`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Predict failed:", res.status, err);
+      console.error("Predict failed:", res.status);
       return { predictions: [], error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1330,8 +1326,7 @@ Produce one polished version (the recommended one) plus 3 alternative variations
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("FB draft failed:", res.status, err);
+      console.error("FB draft failed:", res.status);
       return { recommended: data.rawText, alternatives: [], error: `AI error ${res.status}` };
     }
 
@@ -1438,8 +1433,7 @@ Generate 6-10 key points and 6-10 key questions tailored to this event.`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Event prep failed:", res.status, err);
+      console.error("Event prep failed:", res.status);
       return { keyPoints: [], keyQuestions: [], error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1547,8 +1541,7 @@ Produce one polished version (the recommended one) plus 3 alternative variations
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("draftReply failed:", res.status, err);
+      console.error("draftReply failed:", res.status);
       return { recommended: data.rawText, alternatives: [], error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -1865,8 +1858,7 @@ Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRI
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Distill failed:", res.status, err);
+      console.error("Distill failed:", res.status);
       return { profile: null as any, error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -2360,8 +2352,7 @@ ${transcriptText}`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Arc classification failed:", res.status, err);
+      console.error("Arc classification failed:", res.status);
       return { arc: null, confidence: 0, error: `AI error ${res.status}` };
     }
     const json = (await res.json()) as any;
@@ -2464,8 +2455,7 @@ ${transcriptText}`;
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      console.error("Mood prediction failed:", res.status, err);
+      console.error("Mood prediction failed:", res.status);
       return {
         mood: null,
         confidence: 0,
@@ -2555,12 +2545,15 @@ export const embedTexts = createServerFn({ method: "POST" })
 /**
  * Return an authenticated WebSocket URL for the ElevenLabs Flash v2.5
  * streaming-input endpoint. The browser's WebSocket constructor can't set
- * request headers, so — exactly like `createScribeToken` mints a token rather
- * than handing out the key — we build the URL server-side with the API key in
- * the query string (`xi-api-key=…`). The raw key is read from
- * `process.env.ELEVENLABS_API_KEY` and never returned to the client by any
- * other route; only this signed URL crosses the wire, and it's used
- * immediately to open the socket.
+ * request headers, so authentication has to travel in the URL.
+ *
+ * We prefer a **single-use token** (mirroring `createScribeToken`): mint a
+ * short-lived token server-side and put it in the `token` query param so the
+ * raw `ELEVENLABS_API_KEY` never crosses the wire — even to the device's own
+ * network inspector. If the token mint fails for any reason we fall back to the
+ * api-key-in-URL form so James's voice never silently breaks (and the
+ * `createServerFn` gate in `start.ts` already blocks remote callers from
+ * reaching this route at all).
  *
  * `eleven_flash_v2_5` is pinned for its ~75 ms model latency (James feels every
  * extra second). `output_format` defaults to `mp3_22050_32` to match the
@@ -2585,8 +2578,32 @@ export const createTtsStreamUrl = createServerFn({ method: "POST" })
       output_format: data.outputFormat ?? "mp3_22050_32",
       // Single-shot utterances: let the server flush as soon as it can.
       auto_mode: "true",
-      "xi-api-key": apiKey,
     });
+
+    // Prefer a single-use token so the raw key never travels in the URL.
+    // Best-effort: any failure falls through to the api-key form below.
+    let token: string | null = null;
+    try {
+      const tokRes = await fetch(
+        "https://api.elevenlabs.io/v1/single-use-token/realtime_tts",
+        { method: "POST", headers: { "xi-api-key": apiKey } },
+      );
+      if (tokRes.ok) {
+        const tok = (await tokRes.json()) as { token?: string };
+        if (tok?.token) token = tok.token;
+      } else {
+        console.error("TTS token mint failed:", tokRes.status);
+      }
+    } catch (e) {
+      console.warn("TTS token mint error — using api-key URL", e);
+    }
+
+    if (token) {
+      params.set("token", token);
+    } else {
+      params.set("xi-api-key", apiKey);
+    }
+
     const url = `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(
       data.voiceId,
     )}/stream-input?${params.toString()}`;
