@@ -16,7 +16,6 @@ import { Route as AuthRouteImport } from './routes/_auth'
 import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AdminIndexRouteImport } from './routes/admin/index'
 import { Route as MarketingIndexRouteImport } from './routes/_marketing/index'
-import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as AppSettingsRouteImport } from './routes/app/settings'
 import { Route as AppRecentRouteImport } from './routes/app/recent'
 import { Route as AppPeopleRouteImport } from './routes/app/people'
@@ -75,11 +74,6 @@ const MarketingIndexRoute = MarketingIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => MarketingRoute,
-} as any)
-const AuthCallbackRoute = AuthCallbackRouteImport.update({
-  id: '/auth/callback',
-  path: '/auth/callback',
-  getParentRoute: () => rootRouteImport,
 } as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
@@ -226,7 +220,6 @@ export interface FileRoutesByFullPath {
   '/app/people': typeof AppPeopleRoute
   '/app/recent': typeof AppRecentRoute
   '/app/settings': typeof AppSettingsRoute
-  '/auth/callback': typeof AuthCallbackRoute
   '/admin/': typeof AdminIndexRoute
   '/app/': typeof AppIndexRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
@@ -257,7 +250,6 @@ export interface FileRoutesByTo {
   '/app/people': typeof AppPeopleRoute
   '/app/recent': typeof AppRecentRoute
   '/app/settings': typeof AppSettingsRoute
-  '/auth/callback': typeof AuthCallbackRoute
   '/admin': typeof AdminIndexRoute
   '/app': typeof AppIndexRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
@@ -292,7 +284,6 @@ export interface FileRoutesById {
   '/app/people': typeof AppPeopleRoute
   '/app/recent': typeof AppRecentRoute
   '/app/settings': typeof AppSettingsRoute
-  '/auth/callback': typeof AuthCallbackRoute
   '/_marketing/': typeof MarketingIndexRoute
   '/admin/': typeof AdminIndexRoute
   '/app/': typeof AppIndexRoute
@@ -328,7 +319,6 @@ export interface FileRouteTypes {
     | '/app/people'
     | '/app/recent'
     | '/app/settings'
-    | '/auth/callback'
     | '/admin/'
     | '/app/'
     | '/admin/users/$userId'
@@ -359,7 +349,6 @@ export interface FileRouteTypes {
     | '/app/people'
     | '/app/recent'
     | '/app/settings'
-    | '/auth/callback'
     | '/admin'
     | '/app'
     | '/admin/users/$userId'
@@ -393,7 +382,6 @@ export interface FileRouteTypes {
     | '/app/people'
     | '/app/recent'
     | '/app/settings'
-    | '/auth/callback'
     | '/_marketing/'
     | '/admin/'
     | '/app/'
@@ -415,7 +403,6 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRouteWithChildren
   AppRoute: typeof AppRouteWithChildren
   ApiWaitlistRoute: typeof ApiWaitlistRoute
-  AuthCallbackRoute: typeof AuthCallbackRoute
   ApiEmbedOpenaiRoute: typeof ApiEmbedOpenaiRoute
   ApiLlmAnthropicRoute: typeof ApiLlmAnthropicRoute
   ApiLlmOpenaiRoute: typeof ApiLlmOpenaiRoute
@@ -476,13 +463,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof MarketingIndexRouteImport
       parentRoute: typeof MarketingRoute
-    }
-    '/auth/callback': {
-      id: '/auth/callback'
-      path: '/auth/callback'
-      fullPath: '/auth/callback'
-      preLoaderRoute: typeof AuthCallbackRouteImport
-      parentRoute: typeof rootRouteImport
     }
     '/app/settings': {
       id: '/app/settings'
@@ -750,7 +730,6 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRouteWithChildren,
   AppRoute: AppRouteWithChildren,
   ApiWaitlistRoute: ApiWaitlistRoute,
-  AuthCallbackRoute: AuthCallbackRoute,
   ApiEmbedOpenaiRoute: ApiEmbedOpenaiRoute,
   ApiLlmAnthropicRoute: ApiLlmAnthropicRoute,
   ApiLlmOpenaiRoute: ApiLlmOpenaiRoute,

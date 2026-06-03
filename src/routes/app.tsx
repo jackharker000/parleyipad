@@ -3,26 +3,15 @@ import {
   Link,
   Outlet,
   createFileRoute,
-  redirect,
   useRouter,
 } from "@tanstack/react-router";
 
 import { ParleyLogo } from "@/components/ParleyLogo";
 import { cn } from "@/lib/cn";
 import { drainPendingJobs } from "@/lib/jobs/drain";
-import { getCurrentUser, signOutFn } from "@/lib/auth";
+import { signOut, useLocalSession } from "@/lib/auth-local";
 
 export const Route = createFileRoute("/app")({
-  beforeLoad: async ({ location }) => {
-    const user = await getCurrentUser();
-    if (!user) {
-      throw redirect({
-        to: "/login",
-        search: { redirect: location.href },
-      });
-    }
-    return { user };
-  },
   component: AppLayout,
 });
 
@@ -36,17 +25,33 @@ const NAV: Array<{ to: string; label: string; exact?: boolean }> = [
 ];
 
 function AppLayout() {
-  const { user } = Route.useRouteContext();
   const router = useRouter();
+  const { user, loading } = useLocalSession();
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.navigate({
+        to: "/login",
+        search: { redirect: window.location.pathname },
+      });
+    }
+  }, [loading, user, router]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    void drainPendingJobs();
-  }, []);
+    if (user) void drainPendingJobs();
+  }, [user]);
 
-  async function handleSignOut() {
-    await signOutFn();
-    await router.invalidate();
+  if (loading || !user) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </div>
+    );
+  }
+
+  function handleSignOut() {
+    signOut();
     router.navigate({ to: "/login" });
   }
 
@@ -77,8 +82,16 @@ function AppLayout() {
               </Link>
             ))}
             <div className="ml-2 flex items-center gap-2 border-l border-border pl-2">
+              {user.is_admin ? (
+                <Link
+                  to="/admin"
+                  className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  Admin
+                </Link>
+              ) : null}
               <span className="hidden text-xs text-muted-foreground sm:inline">
-                {user?.email}
+                {user.email}
               </span>
               <button
                 onClick={handleSignOut}

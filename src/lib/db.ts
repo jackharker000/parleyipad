@@ -495,7 +495,31 @@ export const DEFAULT_JAMES_PROFILE: JamesProfile = {
 // Dexie
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Local accounts (on-device auth — no third-party identity provider)
+// --------------------------------------------------------------------------
+
+/**
+ * A login account stored on this device. Passwords are never stored in the
+ * clear — only a PBKDF2 hash + per-account salt (see src/lib/auth-local.ts).
+ * The first account created on a device is made admin automatically.
+ */
+export type Account = {
+  id: string;
+  email: string;
+  /** lower-cased email, unique index for lookup */
+  emailKey: string;
+  /** base64 PBKDF2-SHA256 hash of the password */
+  passwordHash: string;
+  /** base64 random salt */
+  salt: string;
+  is_admin: boolean;
+  createdAt: number;
+  lastSignInAt: number | null;
+};
+
 export class ParleyDB extends Dexie {
+  accounts!: EntityTable<Account, "id">;
   people!: EntityTable<Person, "id">;
   voiceprints!: EntityTable<Voiceprint, "personId">;
   voiceprintContributions!: EntityTable<VoiceprintContribution, "id">;
@@ -587,6 +611,13 @@ export class ParleyDB extends Dexie {
       styleDistillRuns: "id, startedAt, status",
       profileProposals: "id, personId, conversationId, status, createdAt",
       personLexicon: "id, term, personId, source, createdAt",
+    });
+
+    // v4: on-device login accounts. emailKey is the unique lookup key
+    // (lower-cased email). No third-party auth provider — credentials and
+    // session live entirely on the device.
+    this.version(4).stores({
+      accounts: "id, &emailKey, is_admin, createdAt",
     });
   }
 }

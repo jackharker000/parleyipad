@@ -1,16 +1,17 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
+import { useLiveQuery } from "dexie-react-hooks";
 
 import { Button } from "@/components/ui/button";
-import { getUserById } from "@/lib/admin";
-import type { AdminUser } from "@/lib/admin";
+import { getAccountById } from "@/lib/admin";
+import type { AdminAccount } from "@/lib/admin";
 
 export const Route = createFileRoute("/admin/users/$userId")({
-  loader: async ({ params }) => getUserById({ data: { userId: params.userId } }),
   component: AdminUserDetailPage,
 });
 
 function AdminUserDetailPage() {
-  const { user } = Route.useLoaderData();
+  const { userId } = Route.useParams();
+  const account = useLiveQuery(() => getAccountById(userId), [userId]);
 
   return (
     <div className="mx-auto max-w-6xl px-5 py-8">
@@ -20,46 +21,47 @@ function AdminUserDetailPage() {
       >
         ← Back to users
       </Link>
-      <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-        User {user.email ?? user.id}
-      </h1>
 
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <InfoCard user={user} />
-        <MetadataCard user={user} />
-      </div>
-
-      <DangerZone />
+      {account === undefined ? (
+        <p className="mt-6 text-sm text-[var(--ink-soft)]">Loading…</p>
+      ) : account === null ? (
+        <>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Account</h1>
+          <p className="mt-6 text-sm text-[var(--ink-soft)]">Account not found.</p>
+        </>
+      ) : (
+        <>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight">{account.email}</h1>
+          <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <InfoCard account={account} />
+          </div>
+          <DangerZone />
+        </>
+      )}
     </div>
   );
 }
 
-function InfoCard({ user }: { user: AdminUser }) {
+function InfoCard({ account }: { account: AdminAccount }) {
   return (
     <div className="rounded-2xl border border-[var(--line)] bg-white p-6">
       <h2 className="text-base font-semibold">Account</h2>
       <dl className="mt-4 grid grid-cols-[140px_1fr] gap-y-2 text-sm">
         <Dt>ID</Dt>
-        <Dd className="font-mono text-xs">{user.id}</Dd>
+        <Dd className="font-mono text-xs">{account.id}</Dd>
 
         <Dt>Email</Dt>
-        <Dd>{user.email ?? <span className="text-[var(--ink-soft)]">(no email)</span>}</Dd>
+        <Dd>{account.email}</Dd>
 
         <Dt>Created</Dt>
-        <Dd>{fmtDateTime(user.created_at)}</Dd>
+        <Dd>{fmtDateTime(account.createdAt)}</Dd>
 
         <Dt>Last sign in</Dt>
-        <Dd>{fmtDateTime(user.last_sign_in_at)}</Dd>
-
-        <Dt>Email confirmed</Dt>
-        <Dd>{fmtDateTime(user.email_confirmed_at)}</Dd>
-
-        <Dt>Provider</Dt>
-        <Dd>{user.provider ?? <span className="text-[var(--ink-soft)]">—</span>}</Dd>
+        <Dd>{fmtDateTime(account.lastSignInAt)}</Dd>
 
         <Dt>Admin</Dt>
         <Dd>
-          {user.is_admin ? (
+          {account.is_admin ? (
             <span className="inline-flex items-center rounded-full bg-[var(--teal)]/10 px-2 py-0.5 text-xs font-medium text-[var(--teal-dark)]">
               admin
             </span>
@@ -69,47 +71,6 @@ function InfoCard({ user }: { user: AdminUser }) {
         </Dd>
       </dl>
     </div>
-  );
-}
-
-function MetadataCard({ user }: { user: AdminUser }) {
-  return (
-    <div className="rounded-2xl border border-[var(--line)] bg-white p-6">
-      <h2 className="text-base font-semibold">Metadata</h2>
-
-      <h3 className="mt-4 text-xs font-medium uppercase tracking-wider text-[var(--ink-soft)]">
-        app_metadata
-      </h3>
-      <KvTable obj={user.app_metadata} />
-
-      <h3 className="mt-6 text-xs font-medium uppercase tracking-wider text-[var(--ink-soft)]">
-        user_metadata
-      </h3>
-      <KvTable obj={user.user_metadata} />
-    </div>
-  );
-}
-
-function KvTable({ obj }: { obj: Record<string, unknown> }) {
-  const entries = Object.entries(obj ?? {});
-  if (entries.length === 0) {
-    return <p className="mt-2 text-sm text-[var(--ink-soft)]">(empty)</p>;
-  }
-  return (
-    <table className="mt-2 w-full border-separate border-spacing-0 text-sm">
-      <tbody>
-        {entries.map(([k, v]) => (
-          <tr key={k}>
-            <td className="border-b border-[var(--line)] px-3 py-2 align-top font-mono text-xs text-[var(--ink-soft)] w-40">
-              {k}
-            </td>
-            <td className="border-b border-[var(--line)] px-3 py-2 align-top font-mono text-xs break-all">
-              {JSON.stringify(v)}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   );
 }
 
@@ -123,10 +84,10 @@ function DangerZone() {
       </p>
       <div className="mt-4 flex flex-wrap gap-3">
         <Button variant="outline" disabled title="Not implemented">
-          Make admin / Revoke admin
+          Revoke admin
         </Button>
         <Button variant="destructive" disabled title="Not implemented">
-          Delete user
+          Delete account
         </Button>
       </div>
     </div>
@@ -147,9 +108,9 @@ function Dd({
   return <dd className={className ?? ""}>{children}</dd>;
 }
 
-function fmtDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
+function fmtDateTime(ts: number | null | undefined): string {
+  if (ts == null) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString();
 }

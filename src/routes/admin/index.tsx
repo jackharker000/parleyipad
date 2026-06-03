@@ -1,33 +1,51 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
+import { useLiveQuery } from "dexie-react-hooks";
 
-import { getOverview } from "@/lib/admin";
-import type { AdminUser, WaitlistEntry } from "@/lib/admin";
+import { getAccounts } from "@/lib/admin";
+import type { AdminAccount } from "@/lib/admin";
 
 export const Route = createFileRoute("/admin/")({
-  loader: async () => getOverview(),
   component: AdminOverview,
 });
 
 function AdminOverview() {
-  const { userCount, waitlistCount, recentUsers, recentWaitlist } = Route.useLoaderData();
+  const accounts = useLiveQuery(() => getAccounts());
+
+  if (accounts === undefined) {
+    return (
+      <div className="mx-auto max-w-6xl px-5 py-8">
+        <h1 className="text-3xl font-semibold tracking-tight">Overview</h1>
+        <p className="mt-6 text-sm text-[var(--ink-soft)]">Loading…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-6xl px-5 py-8">
       <h1 className="text-3xl font-semibold tracking-tight">Overview</h1>
 
+      <div className="mt-6 rounded-2xl bg-[var(--sand-2)] p-4 text-sm text-[var(--ink-soft)]">
+        Parley accounts are stored on each device. This dashboard shows the accounts on this iPad
+        only — there is no central server, so you can&apos;t see users on other devices from here.
+      </div>
+
       <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
-        <StatCard label="Users" value={fmtCount(userCount)} />
+        <StatCard label="Accounts on this device" value={accounts.length.toLocaleString()} />
         <StatCard
           label="Conversations (last 7 days)"
-          value="Not yet tracked"
-          note="Conversation counts live in each user's on-device storage (Dexie), not Supabase."
+          value="Not tracked"
+          note="Conversation data lives in each account's on-device storage."
         />
-        <StatCard label="Waitlist" value={fmtCount(waitlistCount)} />
+        <StatCard
+          label="Waitlist"
+          value="Not available"
+          note="Waitlist needs a backend; not stored on-device."
+        />
       </div>
 
       <section className="mt-10">
         <div className="flex items-baseline justify-between">
-          <h2 className="text-xl font-semibold tracking-tight">Recent signups</h2>
+          <h2 className="text-xl font-semibold tracking-tight">Accounts on this device</h2>
           <Link
             to="/admin/users"
             className="text-sm font-medium text-[var(--teal-dark)] hover:underline"
@@ -36,38 +54,15 @@ function AdminOverview() {
           </Link>
         </div>
         <div className="mt-3 rounded-2xl border border-[var(--line)] bg-white p-3">
-          {recentUsers.length === 0 ? (
-            <EmptyRow message="No users yet." />
+          {accounts.length === 0 ? (
+            <EmptyRow message="No accounts on this device yet." />
           ) : (
-            <UsersTable users={recentUsers} />
-          )}
-        </div>
-      </section>
-
-      <section className="mt-10">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-xl font-semibold tracking-tight">Recent waitlist</h2>
-          <Link
-            to="/admin/usage"
-            className="text-sm font-medium text-[var(--teal-dark)] hover:underline"
-          >
-            View all
-          </Link>
-        </div>
-        <div className="mt-3 rounded-2xl border border-[var(--line)] bg-white p-3">
-          {recentWaitlist.length === 0 ? (
-            <EmptyRow message="No waitlist signups yet." />
-          ) : (
-            <WaitlistTable rows={recentWaitlist} />
+            <AccountsTable accounts={accounts} />
           )}
         </div>
       </section>
     </div>
   );
-}
-
-function fmtCount(n: number | null | undefined): string {
-  return typeof n === "number" ? n.toLocaleString() : "—";
 }
 
 function StatCard({
@@ -100,53 +95,24 @@ function AdminBadge() {
   );
 }
 
-function UsersTable({ users }: { users: AdminUser[] }) {
+function AccountsTable({ accounts }: { accounts: AdminAccount[] }) {
   return (
     <table className="w-full border-separate border-spacing-0 text-sm">
       <thead>
         <tr>
           <Th>Email</Th>
-          <Th>Signed up</Th>
+          <Th>Created</Th>
           <Th>Last seen</Th>
           <Th>Admin</Th>
         </tr>
       </thead>
       <tbody>
-        {users.map((u) => (
-          <tr key={u.id}>
-            <Td>{u.email ?? <span className="text-[var(--ink-soft)]">(no email)</span>}</Td>
-            <Td>{fmtDate(u.created_at)}</Td>
-            <Td>{fmtDate(u.last_sign_in_at)}</Td>
-            <Td>{u.is_admin ? <AdminBadge /> : null}</Td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function WaitlistTable({ rows }: { rows: WaitlistEntry[] }) {
-  return (
-    <table className="w-full border-separate border-spacing-0 text-sm">
-      <thead>
-        <tr>
-          <Th>Email</Th>
-          <Th>Name</Th>
-          <Th>About</Th>
-          <Th>Joined</Th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={String(r.id)}>
-            <Td>{r.email ?? <span className="text-[var(--ink-soft)]">—</span>}</Td>
-            <Td>{r.name ?? <span className="text-[var(--ink-soft)]">—</span>}</Td>
-            <Td>
-              <span className="line-clamp-2 max-w-md text-[var(--ink-soft)]">
-                {r.about ?? "—"}
-              </span>
-            </Td>
-            <Td>{fmtDate(r.created_at)}</Td>
+        {accounts.map((a) => (
+          <tr key={a.id}>
+            <Td>{a.email}</Td>
+            <Td>{fmtDate(a.createdAt)}</Td>
+            <Td>{fmtDate(a.lastSignInAt)}</Td>
+            <Td>{a.is_admin ? <AdminBadge /> : null}</Td>
           </tr>
         ))}
       </tbody>
@@ -166,9 +132,9 @@ function Td({ children }: { children: React.ReactNode }) {
   return <td className="px-3 py-2 border-b border-[var(--line)] align-top">{children}</td>;
 }
 
-function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
+function fmtDate(ts: number | null | undefined): string {
+  if (ts == null) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }

@@ -9,30 +9,16 @@ bun install
 cp .env.example .env
 ```
 
-Fill in the keys in `.env`. See `.env.example` for which vars are server-only and which are public.
+Fill in the provider keys in `.env`. See `.env.example` for which vars are server-only and which are public. Auth needs no configuration — it runs entirely on-device.
 
-## Supabase setup
+## Accounts
 
-1. Create a Supabase project at https://supabase.com.
-2. In the project's SQL editor, run the migration at `supabase/migrations/0001_init.sql`.
-3. In Authentication → Providers, enable Email and (optionally) disable magic links if you only want password sign-in.
-4. In Authentication → URL Configuration:
-   - Set Site URL to your deploy URL (e.g. `https://parley.example.com`). Use `http://localhost:3000` for local dev.
-   - Add `/auth/callback` to the Redirect URLs allow-list for every URL you want to receive confirmation/recovery links from (Site URL and any preview deploys).
-5. Copy the project URL and anon key from Project Settings → API into the matching `SUPABASE_*` and `VITE_SUPABASE_*` vars in `.env`. Copy the service role key into `SUPABASE_SERVICE_ROLE_KEY` (never expose this to the client).
+Authentication is on-device. There is no identity provider, no auth server, and no email confirmation.
 
-## Creating the first admin
-
-Sign up for an account by visiting `/signup` in your running app. Then, in the Supabase SQL editor:
-
-```sql
-update auth.users
-   set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb)
-                          || jsonb_build_object('is_admin', true)
- where email = 'you@example.com';
-```
-
-Sign out and back in to refresh the JWT. You should now be able to reach `/admin`.
+- Create an account by visiting `/signup` in the running app. Accounts are stored locally in the device's IndexedDB (passwords are PBKDF2-hashed), and the session lives in `localStorage`.
+- The **first account created on a device automatically becomes the admin** — no SQL, no promotion step. It can reach `/admin`.
+- Because accounts are per-device, the admin view only shows accounts on the current device; there is no central user directory.
+- The public waitlist form (`/api/waitlist`) currently validates and logs the submission but does **not** persist it — there is no backend. Wiring it to a real store is future work.
 
 ## Dev
 
@@ -56,4 +42,4 @@ bun run build
 
 ## Deploy
 
-Push to the repo's main branch. Vercel auto-detects the TanStack Start project (Nitro under the hood) and builds it. Set every var from `.env.example` (except the `VITE_*` ones that are mirrored, which Vercel will bundle from the build environment) in the Vercel project's environment settings — Production, Preview, and Development scopes as needed.
+Push to the repo's main branch. Vercel auto-detects the TanStack Start project (Nitro under the hood) and builds it. Set the provider vars from `.env.example` (LLM/STT/TTS keys, model overrides, and the optional `PARLEY_ALLOWED_ORIGIN` / `PARLEY_CLIENT_TOKEN` proxy knobs) in the Vercel project's environment settings — Production, Preview, and Development scopes as needed. There are no auth vars to set.

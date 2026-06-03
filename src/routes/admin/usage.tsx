@@ -40,9 +40,10 @@ function AdminUsagePage() {
       <div className="mt-8 rounded-2xl border border-[var(--line)] bg-[var(--sand-2)] p-6">
         <h2 className="text-base font-semibold">Why this is empty</h2>
         <p className="mt-2 text-sm text-[var(--ink-soft)]">
-          Usage metering is a separate piece of plumbing — every call to our LLM/STT/TTS proxies
-          needs to be logged with the calling user&apos;s id, and aggregated server-side. That work
-          isn&apos;t built yet. The layout is here so it slots in cleanly when it is.
+          Per-account usage metering isn&apos;t built yet — every call to our LLM/STT/TTS proxies
+          would need to be logged with the calling account&apos;s id. It would also need a backend to
+          aggregate across devices, since accounts live on-device. The layout is here so it slots
+          in cleanly when it is.
         </p>
       </div>
     </div>

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
+import { AuthError, signIn } from "@/lib/auth-local";
 
 const LoginSearch = z.object({
   redirect: z.string().optional(),
@@ -29,21 +29,15 @@ function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      const supabase = getSupabaseBrowserClient();
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-      if (signInError) {
-        setError(signInError.message);
-        return;
-      }
-      // Re-read the session on the server so the protected route's beforeLoad sees it.
-      await router.invalidate();
+      await signIn(email, password);
       const target = search.redirect ?? "/app";
       router.navigate({ to: target });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      if (err instanceof AuthError) {
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Something went wrong");
+      }
     } finally {
       setLoading(false);
     }

@@ -1,29 +1,16 @@
+import { useEffect } from "react";
 import {
   Link,
   Outlet,
   createFileRoute,
-  redirect,
   useRouter,
 } from "@tanstack/react-router";
 
 import { ParleyLogo } from "@/components/ParleyLogo";
 import { cn } from "@/lib/cn";
-import { getCurrentUser, signOutFn } from "@/lib/auth";
+import { signOut, useLocalSession } from "@/lib/auth-local";
 
 export const Route = createFileRoute("/admin")({
-  beforeLoad: async ({ location }) => {
-    const user = await getCurrentUser();
-    if (!user) {
-      throw redirect({
-        to: "/login",
-        search: { redirect: location.href },
-      });
-    }
-    if (!user.is_admin) {
-      throw redirect({ to: "/app" });
-    }
-    return { user };
-  },
   component: AdminLayout,
 });
 
@@ -34,12 +21,31 @@ const NAV: Array<{ to: string; label: string; exact?: boolean }> = [
 ];
 
 function AdminLayout() {
-  const { user } = Route.useRouteContext();
   const router = useRouter();
+  const { user, loading } = useLocalSession();
 
-  async function handleSignOut() {
-    await signOutFn();
-    await router.invalidate();
+  useEffect(() => {
+    if (loading) return;
+    if (!user) {
+      router.navigate({
+        to: "/login",
+        search: { redirect: window.location.pathname },
+      });
+    } else if (!user.is_admin) {
+      router.navigate({ to: "/app" });
+    }
+  }, [loading, user, router]);
+
+  if (loading || !user || !user.is_admin) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </div>
+    );
+  }
+
+  function handleSignOut() {
+    signOut();
     router.navigate({ to: "/login" });
   }
 
@@ -79,7 +85,7 @@ function AdminLayout() {
                 Back to app
               </Link>
               <span className="hidden text-xs text-muted-foreground sm:inline">
-                {user?.email}
+                {user.email}
               </span>
               <button
                 onClick={handleSignOut}

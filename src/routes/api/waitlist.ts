@@ -2,13 +2,15 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
 import { corsPreflight, requireClientToken, withCors } from "@/lib/api-cors";
-import { getSupabaseServiceClient } from "@/lib/supabase/server";
 
 /**
- * Waitlist intake endpoint. Anyone (anonymous) can POST a name/email/about
- * triple; the row is written via the service-role client so RLS stays on
- * but no client-side reads are possible. Admin reads happen server-side
- * (later: /admin/waitlist page using the service client too).
+ * Waitlist intake endpoint. Validates a name/email/about triple and ACKs it.
+ *
+ * There is no third-party backend in this build (auth + app data are all
+ * on-device), so there is nowhere server-side to persist a public visitor's
+ * submission. We validate, log a minimal non-PII line, and return success so
+ * the form completes. Wiring this to a real store (email forward, a managed
+ * DB, etc.) is a separate, future piece of work — see docs/setup.md.
  */
 
 const BodySchema = z.object({
@@ -37,25 +39,11 @@ export const Route = createFileRoute("/api/waitlist")({
           return jsonResponse({ ok: false, error: "Invalid body" }, 400);
         }
 
-        try {
-          const supabase = getSupabaseServiceClient();
-          const { error } = await supabase.from("waitlist").insert({
-            name: parsed.data.name,
-            email: parsed.data.email,
-            about: parsed.data.about,
-          });
-          if (error) {
-            // Don't echo the body — could include PII.
-            console.error("[api/waitlist] supabase insert failed:", error.message);
-            return jsonResponse({ ok: false, error: "Couldn't save your request" }, 500);
-          }
-        } catch (err) {
-          console.error(
-            "[api/waitlist] unexpected error:",
-            err instanceof Error ? err.message : err,
-          );
-          return jsonResponse({ ok: false, error: "Couldn't save your request" }, 500);
-        }
+        // No backend store in this build — acknowledge without persisting.
+        // Log only the email domain so the owner can see interest without
+        // capturing PII in server logs.
+        const domain = parsed.data.email.split("@")[1] ?? "unknown";
+        console.info(`[api/waitlist] received signup (domain: ${domain})`);
 
         return jsonResponse({ ok: true }, 200);
       },
