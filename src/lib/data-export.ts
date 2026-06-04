@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { encryptManifestBytes } from "@/lib/crypto-passphrase";
 
 /**
  * Per-account local data export. Walks every Dexie table, serialises each
@@ -11,18 +12,10 @@ import { db } from "@/lib/db";
  * JSON is offered as a secondary affordance for users who explicitly want
  * to inspect their own data.
  *
- * Encrypted file layout (multi-byte fields are big-endian):
- *   [0..5]    magic "PARLEY" (0x50 0x41 0x52 0x4c 0x45 0x59)
- *   [6]       format version (== 1)
- *   [7..22]   PBKDF2 salt (16 bytes, random per export)
- *   [23..34]  AES-GCM IV (12 bytes, random per export)
- *   [35..]    ciphertext = AES-GCM(utf8(JSON.stringify(manifest)))
- *
- * PBKDF2 parameters: SHA-256, 250,000 iterations, 256-bit derived AES key.
- * This is intentionally lower than the cadence backup uses (600k) because
- * the export is a one-shot affordance the user is sitting waiting for,
- * not a repeated decrypt — keeping it snappy on iPad matters more than
- * squeezing the last factor of two out of brute-force resistance.
+ * The encrypted file format (magic + version + salt + iv + ciphertext) is
+ * defined in `src/lib/crypto-passphrase.ts` — both this writer and the
+ * `data-import.ts` reader pull their crypto from there so the two stay
+ * lock-step.
  *
  * Blob fields are detected dynamically (anything that is `instanceof Blob`
  * in a row's JSON tree). On the schema as it stands today that's the
@@ -47,12 +40,6 @@ export type ExportManifest = {
   encrypted: boolean;
   tables: Record<string, Array<Record<string, unknown>>>;
 };
-
-const MAGIC = new Uint8Array([0x50, 0x41, 0x52, 0x4c, 0x45, 0x59]); // "PARLEY"
-const FORMAT_VERSION = 1;
-const SALT_BYTES = 16;
-const IV_BYTES = 12;
-const PBKDF2_ITERATIONS = 250_000;
 
 // --------------------------------------------------------------------------
 // Manifest construction
@@ -166,7 +153,7 @@ export async function prepareExport(opts?: {
   if (password.length > 0) {
     manifest.encrypted = true;
     const plaintext = new TextEncoder().encode(JSON.stringify(manifest));
-    const encrypted = await encryptManifest(plaintext, password);
+    const encrypted = await encryptManifestBytes(plaintext, password);
     return {
       blob: new Blob([toArrayBuffer(encrypted)], { type: "application/octet-stream" }),
       filename: `${prefix}-${stamp}.parley.enc`,
@@ -211,58 +198,6 @@ function triggerDownload(blob: Blob, filename: string): void {
 
 export function triggerExportDownload(prepared: PreparedExport): void {
   triggerDownload(prepared.blob, prepared.filename);
-}
-
-// --------------------------------------------------------------------------
-// Encryption
-// --------------------------------------------------------------------------
-
-async function encryptManifest(plaintext: Uint8Array, password: string): Promise<Uint8Array> {
-  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
-  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
-  const key = await deriveKey(password, salt);
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: toArrayBuffer(iv) },
-      key,
-      toArrayBuffer(plaintext),
-    ),
-  );
-  const out = new Uint8Array(
-    MAGIC.length + 1 + salt.length + iv.length + ciphertext.length,
-  );
-  let cursor = 0;
-  out.set(MAGIC, cursor);
-  cursor += MAGIC.length;
-  out[cursor++] = FORMAT_VERSION;
-  out.set(salt, cursor);
-  cursor += salt.length;
-  out.set(iv, cursor);
-  cursor += iv.length;
-  out.set(ciphertext, cursor);
-  return out;
-}
-
-async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
-  const passKey = await crypto.subtle.importKey(
-    "raw",
-    toArrayBuffer(new TextEncoder().encode(password)),
-    { name: "PBKDF2" },
-    false,
-    ["deriveKey"],
-  );
-  return crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt: toArrayBuffer(salt),
-      iterations: PBKDF2_ITERATIONS,
-      hash: "SHA-256",
-    },
-    passKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt"],
-  );
 }
 
 // --------------------------------------------------------------------------

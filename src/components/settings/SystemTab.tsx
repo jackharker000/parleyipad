@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ExportDataCard } from "@/components/settings/ExportDataCard";
+import { ImportDataCard } from "@/components/settings/ImportDataCard";
 import { Switch } from "@/components/ui/switch";
 import { db, type SettingsRecord } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
@@ -48,6 +49,7 @@ export function SystemTab() {
       <DeadPhraseCard />
       <StyleProfileCard />
       <ExportDataCard />
+      <ImportDataCard />
       <DangerZoneCard />
     </div>
   );
@@ -543,11 +545,7 @@ function DangerZoneCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Button
-          variant="destructive"
-          onClick={() => setConfirmClearOpen(true)}
-          disabled={clearing}
-        >
+        <Button variant="destructive" onClick={() => setConfirmClearOpen(true)} disabled={clearing}>
           {clearing ? "Clearing…" : "Clear all local data"}
         </Button>
 
