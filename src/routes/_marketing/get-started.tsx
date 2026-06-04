@@ -55,10 +55,12 @@ function GetStartedPage() {
     return (
       <div className="mx-auto max-w-3xl px-5 py-16 md:py-24">
         <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
-          Thanks. We&apos;ll be in touch.
+          Thank you. We&apos;ve got it.
         </h1>
         <p className="mt-5 text-lg leading-relaxed text-[var(--ink-soft)]">
-          Your request is on its way. We read every one.
+          Every request comes to a real person — usually Jack — and we&apos;ll write back within a
+          few days. If something about the person Parley would be for is urgent, just reply to the
+          email we send and tell us.
         </p>
         <div className="mt-10">
           <Link
@@ -76,10 +78,13 @@ function GetStartedPage() {
 
   return (
     <div className="mx-auto max-w-3xl px-5 py-16 md:py-24">
-      <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">Get started</h1>
+      <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
+        Tell us who Parley is for.
+      </h1>
       <p className="mt-5 text-lg leading-relaxed text-[var(--ink-soft)]">
-        We&apos;re inviting a small first cohort of users. Tell us a little about who Parley would
-        be for, and we&apos;ll come back to you to talk it through.
+        We&apos;re letting people in carefully, a few at a time, so we can set each user up
+        properly. Tell us about the person who&apos;d use it — their name&apos;s fine, a sentence
+        about them is plenty — and we&apos;ll write back ourselves.
       </p>
 
       <form onSubmit={handleSubmit} className="mt-12 flex flex-col gap-6">
@@ -145,7 +150,7 @@ function GetStartedPage() {
             disabled={submitting}
             className="inline-flex items-center justify-center rounded-full bg-[var(--teal)] px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--teal-dark)] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {submitting ? "Sending…" : "Send waitlist request"}
+            {submitting ? "Sending…" : "Request an invite"}
           </button>
           <p className="text-sm text-[var(--ink-soft)]">
             No spam. We&apos;ll only contact you about Parley.

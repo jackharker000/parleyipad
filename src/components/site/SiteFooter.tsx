@@ -12,8 +12,8 @@ export function SiteFooter() {
             <span className="text-lg font-semibold tracking-tight">Parley</span>
           </Link>
           <p className="mt-3 text-sm text-[var(--ink-soft)]">
-            An AI copilot that helps non-speaking people join live conversations, in their own
-            voice.
+            An iPad copilot for non-speaking people — so the conversation doesn&apos;t move on
+            without you.
           </p>
         </div>
         <nav className="grid grid-cols-2 gap-x-12 gap-y-2 text-sm">
@@ -39,7 +39,7 @@ export function SiteFooter() {
       </div>
       <div className="border-t border-[var(--line)]">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-5 py-5 text-xs text-[var(--ink-soft)] md:flex-row md:items-center md:justify-between">
-          <p>Built with care for James and others like him.</p>
+          <p>Built with James. Made for everyone whose words deserve a way out.</p>
           <a
             href="mailto:hello@parley.help"
             className="hover:text-[var(--ink)]"

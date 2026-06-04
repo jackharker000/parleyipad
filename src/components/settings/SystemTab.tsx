@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Switch } from "@/components/ui/switch";
 import { db, type SettingsRecord } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
@@ -259,11 +260,21 @@ function CloudSyncCard() {
     <Card>
       <CardHeader>
         <CardTitle>Cloud sync</CardTitle>
-        <CardDescription>
-          {configured
-            ? "Write-behind sync of your conversations, people, places, events, and learning data to your Firebase account. Audio for voiceprints and cached phrases uploads to Storage. Runs in the background — the cockpit stays local-first and never blocks on the network. Only data created or updated after sync turns on is synced; no backfill."
-            : "Firebase isn't configured on this build, so sync can't run yet. Add the VITE_FIREBASE_* keys to your env to enable it."}
-        </CardDescription>
+        {configured ? (
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-[var(--ink)]">
+              What syncs: conversations, people, places, events, voice samples, settings.
+            </p>
+            <p className="text-sm text-[var(--ink-soft)]">
+              Where: your Firebase account. The Parley admin can read it.
+            </p>
+          </div>
+        ) : (
+          <CardDescription>
+            Firebase isn't configured on this build, so sync can't run yet. Add the VITE_FIREBASE_*
+            keys to your env to enable it.
+          </CardDescription>
+        )}
       </CardHeader>
       <CardContent className="space-y-5">
         <div className="flex items-center justify-between gap-4">
@@ -455,16 +466,10 @@ function StyleProfileCard() {
 
 function DangerZoneCard() {
   const [clearing, setClearing] = useState(false);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   const clearAll = async () => {
     if (clearing) return;
-    if (
-      !confirm(
-        "Clear ALL local data on this device? This permanently deletes conversations, people, voiceprints, places, events, profile, drafts, and cached audio. Cannot be undone.",
-      )
-    ) {
-      return;
-    }
     setClearing(true);
     try {
       const d = db();
@@ -536,7 +541,11 @@ function DangerZoneCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <Button variant="destructive" onClick={clearAll} disabled={clearing}>
+        <Button
+          variant="destructive"
+          onClick={() => setConfirmClearOpen(true)}
+          disabled={clearing}
+        >
           {clearing ? "Clearing…" : "Clear all local data"}
         </Button>
 
@@ -548,6 +557,15 @@ function DangerZoneCard() {
           <ImportBackupSection />
         </div>
       </CardContent>
+      <ConfirmDialog
+        open={confirmClearOpen}
+        onOpenChange={setConfirmClearOpen}
+        title="Clear all local data on this device?"
+        description="Permanently deletes conversations, people, voiceprints, places, events, profile, drafts, and cached audio. Can't be undone."
+        confirmLabel="Clear everything"
+        destructive
+        onConfirm={clearAll}
+      />
     </Card>
   );
 }

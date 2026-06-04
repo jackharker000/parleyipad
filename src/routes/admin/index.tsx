@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 
-import { AdminApiError, fetchUsers } from "@/lib/admin";
-import type { AdminUserRecord } from "@/lib/admin";
+import { AdminApiError, fetchUsage, fetchUsers, relativeTime } from "@/lib/admin";
+import type { AdminUserRecord, UsageAggregate } from "@/lib/admin";
 
 export const Route = createFileRoute("/admin/")({
   component: AdminOverview,
@@ -10,16 +10,20 @@ export const Route = createFileRoute("/admin/")({
 
 function AdminOverview() {
   const [users, setUsers] = useState<AdminUserRecord[] | null>(null);
+  const [usage7d, setUsage7d] = useState<UsageAggregate | null>(null);
+  const [usage30d, setUsage30d] = useState<UsageAggregate | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<AdminApiError | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchUsers()
-      .then((data) => {
+    Promise.all([fetchUsers(), fetchUsage(7), fetchUsage(30)])
+      .then(([list, u7, u30]) => {
         if (!cancelled) {
-          setUsers(data);
+          setUsers(list);
+          setUsage7d(u7);
+          setUsage30d(u30);
           setError(null);
         }
       })
@@ -28,7 +32,7 @@ function AdminOverview() {
           setError(
             err instanceof AdminApiError
               ? err
-              : new AdminApiError(0, "Couldn't load users."),
+              : new AdminApiError(0, "Couldn't load admin overview."),
           );
         }
       })
@@ -49,17 +53,27 @@ function AdminOverview() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-6xl px-5 py-8">
+      <div className="mx-auto max-w-screen-2xl px-5 py-5">
         <h1 className="text-3xl font-semibold tracking-tight">Overview</h1>
         {banner}
-        <p className="mt-6 text-sm text-[var(--ink-soft)]">Loading…</p>
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <StatSkeleton key={i} />
+          ))}
+        </div>
+        <section className="mt-10">
+          <h2 className="text-xl font-semibold tracking-tight">Recent users</h2>
+          <div className="mt-3 rounded-2xl border border-[var(--line)] bg-white p-3">
+            <RowSkeletons rows={5} />
+          </div>
+        </section>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="mx-auto max-w-6xl px-5 py-8">
+      <div className="mx-auto max-w-screen-2xl px-5 py-5">
         <h1 className="text-3xl font-semibold tracking-tight">Overview</h1>
         {banner}
         <ErrorCard error={error} />
@@ -69,21 +83,29 @@ function AdminOverview() {
 
   const list = users ?? [];
   const admins = list.filter((u) => u.is_admin).length;
+  const activeUsers7d =
+    usage7d?.byUser.filter((b) => b.uid && b.events > 0).length ?? 0;
+  const spend30dDollars = (usage30d?.totals.millicents ?? 0) / 100_000;
 
   return (
-    <div className="mx-auto max-w-6xl px-5 py-8">
+    <div className="mx-auto max-w-screen-2xl px-5 py-5">
       <h1 className="text-3xl font-semibold tracking-tight">Overview</h1>
 
       {banner}
 
-      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Total users" value={list.length.toLocaleString()} />
-        <StatCard
-          label="Conversations (7d)"
-          value="Not tracked"
-          note="Conversation data is per-device (and syncing is being wired separately)."
-        />
+        <StatCard label="Active users (7d)" value={activeUsers7d.toLocaleString()} />
         <StatCard label="Admins" value={admins.toLocaleString()} />
+        <StatCard
+          label="30d spend ($)"
+          value={spend30dDollars.toLocaleString(undefined, {
+            style: "currency",
+            currency: "USD",
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}
+        />
       </div>
 
       <section className="mt-10">
@@ -130,6 +152,25 @@ function StatCard({ label, value, note }: { label: string; value: string; note?:
   );
 }
 
+function StatSkeleton() {
+  return (
+    <div className="h-24 rounded-2xl bg-[var(--sand-2)]/60 animate-pulse" />
+  );
+}
+
+function RowSkeletons({ rows }: { rows: number }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div
+          key={i}
+          className="h-12 bg-[var(--sand-2)]/60 rounded-md animate-pulse"
+        />
+      ))}
+    </div>
+  );
+}
+
 function EmptyRow({ message }: { message: string }) {
   return <p className="px-3 py-6 text-center text-sm text-[var(--ink-soft)]">{message}</p>;
 }
@@ -158,7 +199,7 @@ function RecentUsersTable({ users }: { users: AdminUserRecord[] }) {
           <tr key={u.uid}>
             <Td>{u.email ?? "—"}</Td>
             <Td>{fmtDate(u.createdAt)}</Td>
-            <Td>{fmtDate(u.lastSignInAt)}</Td>
+            <Td>{relativeTime(u.lastSignInAt)}</Td>
             <Td>{u.is_admin ? <AdminBadge /> : null}</Td>
           </tr>
         ))}

@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { db, type Person, type Place } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/cn";
@@ -110,6 +111,7 @@ function PlaceRow({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<PlaceDraft>(() => draftFromPlace(place));
   const [saving, setSaving] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   // Keep draft in sync if the place was edited elsewhere (e.g. created
   // moments ago with the "Add place" button) but only while collapsed —
@@ -163,10 +165,13 @@ function PlaceRow({
     }
   };
 
-  const remove = async () => {
-    if (!confirm(`Delete location "${place.name}"?`)) return;
-    await db().places.delete(place.id);
-    toast.success("Location removed");
+  const confirmDelete = async () => {
+    try {
+      await db().places.delete(place.id);
+      toast.success("Location removed");
+    } catch (err) {
+      toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const summary = useMemo(() => {
@@ -278,13 +283,22 @@ function PlaceRow({
             <Button onClick={save} disabled={saving}>
               {saving ? "Saving…" : "Save"}
             </Button>
-            <Button variant="ghost" onClick={remove}>
+            <Button variant="ghost" onClick={() => setConfirmDeleteOpen(true)}>
               <Trash2 />
               Delete
             </Button>
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        onOpenChange={setConfirmDeleteOpen}
+        title={`Delete location "${place.name}"?`}
+        description="Removes the place and its speaker-ID prior contribution. This can't be undone."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

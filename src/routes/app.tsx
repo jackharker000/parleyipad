@@ -11,6 +11,7 @@ import { cn } from "@/lib/cn";
 import { drainPendingJobs } from "@/lib/jobs/drain";
 import { signOut, useSession } from "@/lib/auth";
 import { useCloudSync } from "@/lib/sync/use-cloud-sync";
+import { useSettings } from "@/lib/settings";
 
 export const Route = createFileRoute("/app")({
   component: AppLayout,
@@ -28,6 +29,11 @@ const NAV: Array<{ to: string; label: string; exact?: boolean }> = [
 function AppLayout() {
   const router = useRouter();
   const { user, loading } = useSession();
+  const settings = useSettings();
+  // `cloudSyncEnabled` defaults to true (undefined === on, matching the
+  // CloudSyncCard reader). Only show the "Sync paused" pill when the user
+  // has explicitly turned it off.
+  const syncPaused = settings.cloudSyncEnabled === false;
 
   // Mount the write-behind cloud-sync engine. Starts when the user is
   // signed in and `cloudSyncEnabled` is on (default ON for new
@@ -100,6 +106,15 @@ function AppLayout() {
               <span className="hidden text-xs text-muted-foreground sm:inline">
                 {user.email}
               </span>
+              {syncPaused && (
+                <Link
+                  to="/app/settings"
+                  className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--sand-2)] px-2.5 py-1 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--sand-2)]/80"
+                  title="Cloud sync is off for this account. Tap to manage in Settings."
+                >
+                  Sync paused
+                </Link>
+              )}
               <button
                 onClick={handleSignOut}
                 className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"

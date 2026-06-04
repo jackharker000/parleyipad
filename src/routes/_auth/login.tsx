@@ -46,8 +46,10 @@ function LoginPage() {
 
   return (
     <div className="rounded-2xl border border-[var(--line)] bg-white p-8 shadow-sm">
-      <h1 className="text-2xl font-semibold tracking-tight">Log in</h1>
-      <p className="mt-2 text-sm text-[var(--ink-soft)]">Welcome back.</p>
+      <h1 className="text-2xl font-semibold tracking-tight">Welcome back to Parley.</h1>
+      <p className="mt-2 text-sm text-[var(--ink-soft)]">
+        Sign in to pick up where the last conversation left off.
+      </p>
 
       <div className="mt-6 space-y-4">
         <GoogleSignInButton redirect={search.redirect} />

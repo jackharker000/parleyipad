@@ -67,11 +67,21 @@ async function parseError(res: Response): Promise<never> {
   throw new AdminApiError(res.status, message);
 }
 
+// Module-level caches so callers on different pages don't re-fetch within a
+// short stale window. Pass `{ force: true }` to bypass.
+const CACHE_TTL_MS = 30_000;
+let usersCache: { value: AdminUserRecord[]; at: number } | null = null;
+const usageCache = new Map<number, { value: UsageAggregate; at: number }>();
+
 /** Fetch every Parley account (newest first). Throws AdminApiError on failure. */
-export async function fetchUsers(): Promise<AdminUserRecord[]> {
+export async function fetchUsers(opts?: { force?: boolean }): Promise<AdminUserRecord[]> {
+  if (!opts?.force && usersCache && Date.now() - usersCache.at < CACHE_TTL_MS) {
+    return usersCache.value;
+  }
   const res = await authedFetch("/api/admin/users");
   if (!res.ok) return parseError(res);
   const body = (await res.json()) as { users: AdminUserRecord[] };
+  usersCache = { value: body.users, at: Date.now() };
   return body.users;
 }
 
@@ -119,10 +129,18 @@ export type UsageAggregate = {
 };
 
 /** Fetch aggregated usage_events for the last `days` days. */
-export async function fetchUsage(days = 30): Promise<UsageAggregate> {
+export async function fetchUsage(
+  days = 30,
+  opts?: { force?: boolean },
+): Promise<UsageAggregate> {
+  const cached = usageCache.get(days);
+  if (!opts?.force && cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    return cached.value;
+  }
   const res = await authedFetch("/api/admin/usage", { days });
   if (!res.ok) return parseError(res);
   const body = (await res.json()) as { aggregate: UsageAggregate };
+  usageCache.set(days, { value: body.aggregate, at: Date.now() });
   return body.aggregate;
 }
 
@@ -190,3 +208,53 @@ export function stopAdminAudio(): void {
     currentAudio = null;
   }
 }
+
+// --------------------------------------------------------------------------
+// Display helpers shared by the admin pages.
+// --------------------------------------------------------------------------
+
+/**
+ * Compact relative-time string (e.g. "3h ago", "yesterday", "2 weeks ago").
+ * Returns "—" when the input can't be parsed. Falls back to a few sensible
+ * thresholds without bringing in a date library.
+ */
+export function relativeTime(input: string | number | Date | null | undefined): string {
+  if (input == null) return "—";
+  const d =
+    input instanceof Date
+      ? input
+      : typeof input === "number"
+        ? new Date(input)
+        : new Date(input);
+  if (Number.isNaN(d.getTime())) return "—";
+
+  const diffMs = Date.now() - d.getTime();
+  // Negative diff (timestamp in the future) — flip and prefix.
+  const future = diffMs < 0;
+  const ms = Math.abs(diffMs);
+  const sec = Math.round(ms / 1000);
+  const min = Math.round(sec / 60);
+  const hr = Math.round(min / 60);
+  const day = Math.round(hr / 24);
+  const week = Math.round(day / 7);
+  const month = Math.round(day / 30);
+  const year = Math.round(day / 365);
+
+  let core: string;
+  if (sec < 45) core = "just now";
+  else if (min < 2) core = "1m";
+  else if (min < 60) core = `${min}m`;
+  else if (hr < 2) core = "1h";
+  else if (hr < 24) core = `${hr}h`;
+  else if (day === 1) core = future ? "tomorrow" : "yesterday";
+  else if (day < 14) core = `${day}d`;
+  else if (week < 8) core = `${week}w`;
+  else if (month < 12) core = `${month}mo`;
+  else core = `${year}y`;
+
+  if (core === "just now" || core === "yesterday" || core === "tomorrow") {
+    return core;
+  }
+  return future ? `in ${core}` : `${core} ago`;
+}
+

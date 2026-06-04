@@ -15,7 +15,7 @@ type Feature = {
 const LEAD: Feature = {
   title: "Speaker recognition that learns voices",
   description:
-    "Most AAC apps treat every voice the same. Parley learns who's who using on-device speaker recognition — so the conversation context is right, and suggestions match the moment. Add people, record a few short samples in the room you actually talk in, and the system improves with use.",
+    "Most AAC apps don't know if Mum is talking or a stranger is. Parley does. Record a few short samples of each person — in the kitchen, the living room, wherever you actually talk — and Parley starts labelling each line as it happens. Recognition runs on the iPad itself. The more you use it, the sharper it gets.",
   asset: "features-speaker-recognition.png",
 };
 
@@ -56,7 +56,8 @@ const FEATURES: Feature[] = [
   },
   {
     title: "Conversation history",
-    description: "Every conversation summarised, transcript searchable, all on-device.",
+    description:
+      "Every conversation summarised. Transcript searchable. Syncs across your iPads by default, off in one tap if you'd rather it stayed local.",
     asset: "features-recent.png",
   },
   {

@@ -7,6 +7,7 @@ import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { db, type Person, type Voiceprint } from "@/lib/db";
 import { makeEmbedder, type EmbedderKind, type SpeakerEmbedder } from "@/lib/audio/embedder";
 import { deleteAllContributionsForPerson } from "@/lib/audio/enrollment";
@@ -43,12 +44,15 @@ function PeoplePage() {
 }
 
 function LoadingCard() {
+  // Layout-preserving skeleton — four rows mirroring the people roster the
+  // user is about to see, so the page doesn't reflow when the embedder /
+  // Dexie modules finish loading on the client.
   return (
-    <Card>
-      <CardContent className="py-6 text-sm text-muted-foreground">
-        Loading client-only audio + IndexedDB modules…
-      </CardContent>
-    </Card>
+    <div className="space-y-3" role="status" aria-label="Loading people roster">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="h-16 animate-pulse rounded-xl bg-[var(--sand-2)]/60" />
+      ))}
+    </div>
   );
 }
 
@@ -139,9 +143,18 @@ function PeopleApp() {
 function EmbedderStatus({ ready, error }: { ready: boolean; error: string | null }) {
   if (error) {
     return (
-      <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-        Voice model failed to load: {error}. Recording is disabled until this clears — try
-        reloading.
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+        <span>
+          Voice model failed to load: {error}. Recording is disabled until this clears.
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => window.location.reload()}
+        >
+          Reload
+        </Button>
       </div>
     );
   }
@@ -312,20 +325,14 @@ function PersonRow({
   embedderReady: boolean;
 }) {
   const sampleCount = voiceprint?.sampleCount ?? 0;
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const deletePerson = async (e: React.MouseEvent) => {
+  const requestDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (
-      !confirm(
-        `Delete ${person.name} and ${
-          sampleCount > 0
-            ? `their ${sampleCount} voice sample${sampleCount === 1 ? "" : "s"}`
-            : "their (empty) voiceprint"
-        }?`,
-      )
-    ) {
-      return;
-    }
+    setConfirmOpen(true);
+  };
+
+  const confirmDelete = async () => {
     try {
       await deleteAllContributionsForPerson(person.id);
       await db().people.delete(person.id);
@@ -334,6 +341,11 @@ function PersonRow({
       toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
+
+  const sampleClause =
+    sampleCount > 0
+      ? `their ${sampleCount} voice sample${sampleCount === 1 ? "" : "s"}`
+      : "their (empty) voiceprint";
 
   return (
     <li>
@@ -358,7 +370,7 @@ function PersonRow({
         <SampleBadge count={sampleCount} />
         <button
           type="button"
-          onClick={deletePerson}
+          onClick={requestDelete}
           className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
           aria-label={`Delete ${person.name}`}
           title={`Delete ${person.name}`}
@@ -376,6 +388,15 @@ function PersonRow({
           <ProfileProposalsSection person={person} />
         </div>
       )}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Delete ${person.name}?`}
+        description={`This also removes ${sampleClause}. This can't be undone.`}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={confirmDelete}
+      />
     </li>
   );
 }

@@ -80,13 +80,31 @@ function ClientCockpit() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   if (!mounted) {
-    return (
-      <div className="mx-auto w-full max-w-6xl px-4 py-10">
-        <p className="text-sm text-muted-foreground">Loading cockpit…</p>
-      </div>
-    );
+    return <CockpitSkeleton />;
   }
   return <Cockpit />;
+}
+
+/**
+ * Layout-preserving skeleton for the cockpit's first paint. Mirrors the
+ * three-column grid so the viewport doesn't reflow when the real cockpit
+ * mounts. Plain pulsing blocks — no shimmer, no spinner.
+ */
+function CockpitSkeleton() {
+  return (
+    <div
+      className="mx-auto w-full max-w-6xl space-y-5 px-4 py-6"
+      role="status"
+      aria-label="Loading cockpit"
+    >
+      <div className="h-8 w-40 animate-pulse rounded-lg bg-[var(--sand-2)]/60" />
+      <div className="grid gap-5 lg:grid-cols-[1fr_2fr_1fr]">
+        <div className="h-32 animate-pulse rounded-2xl bg-[var(--sand-2)]/60" />
+        <div className="h-48 animate-pulse rounded-2xl bg-[var(--sand-2)]/60" />
+        <div className="h-32 animate-pulse rounded-2xl bg-[var(--sand-2)]/60" />
+      </div>
+    </div>
+  );
 }
 
 // --------------------------------------------------------------------------
@@ -542,23 +560,37 @@ function StateBadge({
   state: ConversationState;
   embedderReady: boolean;
 }) {
-  const label =
-    !embedderReady && state === "idle"
-      ? "Warming up embedder…"
-      : state === "idle"
-        ? "Idle"
-        : state === "starting"
-          ? "Starting…"
-          : state === "listening"
-            ? "Listening"
-            : state === "speech"
-              ? "Speech detected"
-              : "Stopping…";
-  const pulse = state === "speech";
+  // Warming-up is a distinct visual state (blue pulse) so users can tell
+  // "engine cold" apart from "engine idle, waiting on you".
+  const isWarming = !embedderReady && state === "idle";
+  const label = isWarming
+    ? "Warming up embedder…"
+    : state === "idle"
+      ? "Idle"
+      : state === "starting"
+        ? "Starting…"
+        : state === "listening"
+          ? "Listening"
+          : state === "speech"
+            ? "Speech detected"
+            : "Stopping…";
+
+  const dotClass = isWarming
+    ? "bg-blue-500 animate-pulse"
+    : state === "idle"
+      ? "bg-[var(--ink-soft)]/40"
+      : state === "listening"
+        ? "bg-emerald-500"
+        : state === "speech"
+          ? "bg-amber-500 animate-pulse"
+          : state === "starting"
+            ? "bg-blue-500 animate-pulse"
+            : "bg-[var(--ink-soft)]"; // stopping
+
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium",
+        "inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-semibold",
         state === "idle" || state === "stopping"
           ? "bg-muted text-muted-foreground"
           : state === "speech"
@@ -566,12 +598,7 @@ function StateBadge({
             : "bg-muted text-foreground",
       )}
     >
-      <span
-        className={cn(
-          "h-2 w-2 rounded-full",
-          pulse ? "animate-pulse bg-accent-foreground" : "bg-foreground/60",
-        )}
-      />
+      <span className={cn("inline-block size-3 rounded-full", dotClass)} aria-hidden="true" />
       {label}
     </span>
   );
@@ -592,7 +619,11 @@ function SuggestionGrid({
 }) {
   if (suggestions.length === 0 && !loading) {
     return (
-      <div className="flex min-h-[260px] flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/40 p-6 text-center text-sm text-muted-foreground">
+      <div
+        className="flex min-h-[260px] flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/40 p-6 text-center text-sm text-muted-foreground"
+        aria-live="polite"
+        aria-busy={loading}
+      >
         Suggestions appear here after each turn.
         <span className="mt-1 text-xs">Tap Record and let someone speak.</span>
       </div>
@@ -604,7 +635,7 @@ function SuggestionGrid({
   while (cards.length < 6) cards.push(null);
 
   return (
-    <div className="relative">
+    <div className="relative" aria-live="polite" aria-busy={loading}>
       {loading && (
         <div className="absolute right-3 top-3 z-10 inline-flex items-center gap-2 rounded-full bg-background/90 px-3 py-1 text-xs text-muted-foreground">
           <Loader2 className="h-3 w-3 animate-spin" />
@@ -618,6 +649,7 @@ function SuggestionGrid({
             suggestion={s}
             speaking={!!s && speakingText === s.text}
             onSpeak={onSpeak}
+            index={i}
           />
         ))}
       </div>
@@ -649,22 +681,31 @@ function SuggestionCard({
   suggestion,
   speaking,
   onSpeak,
+  index,
 }: {
   suggestion: SuggestionDraft | null;
   speaking: boolean;
   onSpeak: (s: { text: string; category?: SuggestionCategory; why?: string }) => void;
+  index: number;
 }) {
   if (!suggestion) {
     return (
       <div className="min-h-[180px] rounded-2xl border border-dashed border-border bg-muted/30" />
     );
   }
+  // Glide-in: tiny fade + translate, staggered 40ms per card. CSS animation
+  // (not a transition on mount) so it replays whenever React remounts the
+  // card with a new suggestion text.
+  const animationDelay = `${index * 40}ms`;
   return (
     <button
       type="button"
       onClick={() => onSpeak(suggestion)}
+      style={{ animationDelay }}
       className={cn(
         "group flex min-h-[180px] flex-col justify-between rounded-2xl border border-border bg-card p-5 text-left shadow-sm transition active:scale-[0.99]",
+        "animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out fill-mode-both",
+        "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2",
         speaking && "ring-2 ring-accent",
       )}
     >
@@ -829,29 +870,29 @@ function SpeakerColumn({
             <button
               type="button"
               onClick={onAskWhoIsThis}
-              className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-xs hover:bg-muted"
+              className="inline-flex min-h-[40px] items-center gap-1 rounded-md border border-input bg-background px-3 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
               title="Speak 'Sorry, who am I speaking with?' and hold the next utterance for manual attribution"
             >
-              <HelpCircle className="h-3 w-3" />
+              <HelpCircle className="h-4 w-4" />
               Ask
             </button>
             <button
               type="button"
               onClick={onForceNew}
-              className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-xs hover:bg-muted"
+              className="inline-flex min-h-[40px] items-center gap-1 rounded-md border border-input bg-background px-3 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
               title="Treat the next utterance as a new speaker"
             >
-              <UserPlus className="h-3 w-3" />
+              <UserPlus className="h-4 w-4" />
               New
             </button>
             {top?.personId && rosterPeople.length > 1 && (
               <button
                 type="button"
                 onClick={() => setShowMergePicker((v) => !v)}
-                className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-xs hover:bg-muted"
+                className="inline-flex min-h-[40px] items-center gap-1 rounded-md border border-input bg-background px-3 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
                 title="Merge this cluster into another person"
               >
-                <Merge className="h-3 w-3" />
+                <Merge className="h-4 w-4" />
                 Merge
               </button>
             )}
@@ -859,7 +900,7 @@ function SpeakerColumn({
               <button
                 type="button"
                 onClick={() => setShowAddPicker((v) => !v)}
-                className="rounded-md border border-input bg-background px-2 py-1 text-xs hover:bg-muted"
+                className="inline-flex min-h-[40px] items-center rounded-md border border-input bg-background px-3 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
                 title="Add a person who walked in late"
               >
                 + Add
@@ -1108,7 +1149,7 @@ function QuickPhrasesRow({
           size="lg"
           onClick={() => onSpeak({ text: p.text })}
           className={cn(
-            "min-h-[48px] flex-1 sm:flex-none",
+            "min-h-[48px] flex-1 focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 sm:flex-none",
             speakingText === p.text && "ring-2 ring-accent",
           )}
         >
@@ -1119,7 +1160,7 @@ function QuickPhrasesRow({
         variant="outline"
         size="lg"
         onClick={onReplay}
-        className="min-h-[48px] flex-1 sm:flex-none"
+        className="min-h-[48px] flex-1 focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 sm:flex-none"
         title="Replay the last thing said in the room"
       >
         <Rewind className="h-4 w-4" />
@@ -1194,21 +1235,27 @@ function MoodSelector({ mood, onChange }: { mood: Mood; onChange: (m: Mood) => v
       <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         Mood
       </span>
-      {MOODS.map((m) => (
-        <button
-          key={m}
-          type="button"
-          onClick={() => onChange(m)}
-          className={cn(
-            "rounded-full border px-3 py-1.5 text-xs font-medium capitalize transition-colors",
-            m === mood
-              ? "border-accent bg-accent text-accent-foreground"
-              : "border-input bg-background text-muted-foreground hover:bg-muted",
-          )}
-        >
-          {m}
-        </button>
-      ))}
+      {MOODS.map((m) => {
+        const active = m === mood;
+        return (
+          <button
+            key={m}
+            type="button"
+            onClick={() => onChange(m)}
+            data-active={active ? "true" : undefined}
+            aria-pressed={active}
+            className={cn(
+              "inline-flex min-h-[44px] items-center justify-center rounded-full border px-4 text-sm font-semibold capitalize transition-colors",
+              "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2",
+              active
+                ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--ink)]"
+                : "border-input bg-background text-muted-foreground hover:bg-muted",
+            )}
+          >
+            {m}
+          </button>
+        );
+      })}
     </div>
   );
 }

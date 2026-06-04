@@ -63,7 +63,8 @@ function HowItWorksPage() {
     <div className="mx-auto max-w-3xl px-5 py-16 md:py-24">
       <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">How Parley works</h1>
       <p className="mt-5 text-lg leading-relaxed text-[var(--ink-soft)]">
-        One conversation, end to end — what Parley does and what stays on your iPad.
+        One conversation, end to end — what Parley does, what runs on the iPad, and what syncs to
+        the cloud.
       </p>
 
       <ol className="mt-16 flex flex-col gap-16">

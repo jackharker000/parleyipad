@@ -45,9 +45,9 @@ function SignupPage() {
 
   return (
     <div className="rounded-2xl border border-[var(--line)] bg-white p-8 shadow-sm">
-      <h1 className="text-2xl font-semibold tracking-tight">Create an account</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">Set up Parley.</h1>
       <p className="mt-2 text-sm text-[var(--ink-soft)]">
-        Set up your Parley account to get started.
+        One account per person. Five minutes from here to your first conversation.
       </p>
 
       <div className="mt-6 space-y-4">

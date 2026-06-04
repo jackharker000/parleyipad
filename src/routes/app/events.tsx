@@ -7,6 +7,7 @@ import { ChevronDown, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { db, type EventRecord, type Person, type Place } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
 import { makeAI } from "@/lib/ai";
@@ -230,14 +231,14 @@ function EventCard({
   ai: ReturnType<typeof makeAI>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const placeName = event.placeId ? placeById.get(event.placeId)?.name : undefined;
   const attendees = (event.personIds ?? [])
     .map((id) => peopleById.get(id))
     .filter((p): p is Person => !!p);
 
-  const remove = async () => {
-    if (!confirm(`Delete event "${event.name}"?`)) return;
+  const confirmDelete = async () => {
     try {
       await db().events.delete(event.id);
       toast.success("Event removed");
@@ -295,7 +296,7 @@ function EventCard({
           </button>
           <button
             type="button"
-            onClick={remove}
+            onClick={() => setConfirmDeleteOpen(true)}
             className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
             aria-label="Delete event"
             title="Delete"
@@ -304,6 +305,15 @@ function EventCard({
           </button>
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        onOpenChange={setConfirmDeleteOpen}
+        title={`Delete event "${event.name}"?`}
+        description="Removes the event from the cockpit's prep + speaker prior. This can't be undone."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={confirmDelete}
+      />
 
       {attendees.length > 0 && (
         <div className="flex flex-wrap gap-1.5">

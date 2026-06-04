@@ -4,12 +4,13 @@ import { Link, createFileRoute } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import {
   AdminApiError,
+  fetchUsage,
   fetchUser,
   fetchUserData,
   playAudioFromAdminUrl,
   stopAdminAudio,
 } from "@/lib/admin";
-import type { AdminUserRecord } from "@/lib/admin";
+import type { AdminUserRecord, UsageUserBucket } from "@/lib/admin";
 
 export const Route = createFileRoute("/admin/users/$userId")({
   component: AdminUserDetailPage,
@@ -56,7 +57,7 @@ function AdminUserDetailPage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-6xl px-5 py-8">
+    <div className="mx-auto max-w-screen-2xl px-5 py-5">
       <Link
         to="/admin/users"
         className="text-sm font-medium text-[var(--teal-dark)] hover:underline"
@@ -65,7 +66,10 @@ function AdminUserDetailPage() {
       </Link>
 
       {loading ? (
-        <p className="mt-6 text-sm text-[var(--ink-soft)]">Loading…</p>
+        <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="h-48 rounded-2xl bg-[var(--sand-2)]/60 animate-pulse" />
+          <div className="h-48 rounded-2xl bg-[var(--sand-2)]/60 animate-pulse" />
+        </div>
       ) : error ? (
         <ErrorCard error={error} />
       ) : user === null ? (
@@ -80,6 +84,7 @@ function AdminUserDetailPage() {
           </h1>
           <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
             <InfoCard user={user} />
+            <UsageCard uid={user.uid} />
           </div>
           <SyncedDataSection uid={user.uid} />
           <DangerZone />
@@ -99,6 +104,90 @@ function ErrorCard({ error }: { error: AdminApiError }) {
       <p className="mt-2 text-sm text-[var(--ink-soft)]">{error.message}</p>
     </div>
   );
+}
+
+function UsageCard({ uid }: { uid: string }) {
+  type State =
+    | { kind: "loading" }
+    | { kind: "error"; error: AdminApiError }
+    | { kind: "none" }
+    | { kind: "ready"; bucket: UsageUserBucket };
+  const [state, setState] = useState<State>({ kind: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ kind: "loading" });
+    fetchUsage(30)
+      .then((agg) => {
+        if (cancelled) return;
+        const found = agg.byUser.find((b) => b.uid === uid);
+        setState(found ? { kind: "ready", bucket: found } : { kind: "none" });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const error =
+          err instanceof AdminApiError
+            ? err
+            : new AdminApiError(0, "Couldn't load usage.");
+        setState({ kind: "error", error });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [uid]);
+
+  return (
+    <div className="rounded-2xl border border-[var(--line)] bg-white p-6">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-base font-semibold">Usage (30d)</h2>
+        <Link
+          to="/admin/usage"
+          search={{ days: 30, uid }}
+          className="text-xs font-medium text-[var(--teal-dark)] hover:underline"
+        >
+          See 30-day usage details →
+        </Link>
+      </div>
+      {state.kind === "loading" ? (
+        <div className="mt-4 h-24 rounded-md bg-[var(--sand-2)]/60 animate-pulse" />
+      ) : state.kind === "error" ? (
+        <p className="mt-4 text-sm text-[var(--coral)]">{state.error.message}</p>
+      ) : state.kind === "none" ? (
+        <p className="mt-4 text-sm text-[var(--ink-soft)]">
+          No usage events for this user in the last 30 days. New accounts won't show usage
+          until they make their first AI call.
+        </p>
+      ) : (
+        <dl className="mt-4 grid grid-cols-[140px_1fr] gap-y-2 text-sm">
+          <Dt>30d events</Dt>
+          <Dd>{state.bucket.events.toLocaleString()}</Dd>
+
+          <Dt>30d spend</Dt>
+          <Dd>{fmtUsd(state.bucket.millicents)}</Dd>
+
+          <Dt>Tokens (in / out)</Dt>
+          <Dd>
+            {state.bucket.tokensIn.toLocaleString()} / {state.bucket.tokensOut.toLocaleString()}
+          </Dd>
+
+          <Dt>TTS characters</Dt>
+          <Dd>{state.bucket.characters.toLocaleString()}</Dd>
+
+          <Dt>Audio</Dt>
+          <Dd>{state.bucket.audioBytes > 0 ? fmtBytes(state.bucket.audioBytes) : "—"}</Dd>
+        </dl>
+      )}
+    </div>
+  );
+}
+
+function fmtUsd(millicents: number): string {
+  return (millicents / 100_000).toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 function InfoCard({ user }: { user: AdminUserRecord }) {
@@ -288,7 +377,16 @@ function SyncedTableView({
   }, [uid, table, limit]);
 
   if (loading) {
-    return <p className="px-3 py-6 text-center text-sm text-[var(--ink-soft)]">Loading…</p>;
+    return (
+      <div className="flex flex-col gap-2 p-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div
+            key={i}
+            className="h-12 bg-[var(--sand-2)]/60 rounded-md animate-pulse"
+          />
+        ))}
+      </div>
+    );
   }
   if (error) {
     return (
@@ -300,7 +398,8 @@ function SyncedTableView({
   if (!rows || rows.length === 0) {
     return (
       <p className="px-3 py-6 text-center text-sm text-[var(--ink-soft)]">
-        Nothing here yet.
+        Nothing in this table yet. New accounts have empty data until they start using
+        Parley, or until cloud sync has run once.
       </p>
     );
   }

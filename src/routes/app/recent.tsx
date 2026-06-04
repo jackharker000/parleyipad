@@ -50,12 +50,14 @@ function RecentPage() {
 }
 
 function LoadingCard() {
+  // Layout-preserving skeleton — five rows so the page doesn't reflow when
+  // the real list mounts. No spinner; just pulsing blocks.
   return (
-    <Card>
-      <CardContent className="py-6 text-sm text-muted-foreground">
-        Loading conversations…
-      </CardContent>
-    </Card>
+    <div className="space-y-3" role="status" aria-label="Loading conversations">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="h-16 animate-pulse rounded-xl bg-[var(--sand-2)]/60" />
+      ))}
+    </div>
   );
 }
 

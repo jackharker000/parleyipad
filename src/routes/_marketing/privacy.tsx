@@ -9,21 +9,9 @@ function PrivacyPage() {
     <div className="mx-auto max-w-3xl px-5 py-16 md:py-24">
       <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">Privacy &amp; safety</h1>
       <p className="mt-5 text-lg leading-relaxed text-[var(--ink-soft)]">
-        Plain English first. A formal policy comes later. Here&apos;s what&apos;s actually true
-        today.
+        Plain English, in this order: what we hold, where we hold it, who can see it, and how to
+        take it back. A formal policy comes later.
       </p>
-
-      <section className="mt-12 flex flex-col gap-5">
-        <h2 className="text-xl font-semibold tracking-tight md:text-2xl">
-          What stays on your iPad
-        </h2>
-        <p className="text-base leading-relaxed text-[var(--ink-soft)]">
-          The speech recognition that picks out who&apos;s talking runs on the iPad itself. The
-          model never moves to the cloud, and neither does the live microphone audio Parley listens
-          to in the moment of a conversation — the audio stream and the matching computation stay
-          on the device.
-        </p>
-      </section>
 
       <section className="mt-12 flex flex-col gap-5">
         <h2 className="text-xl font-semibold tracking-tight md:text-2xl">
@@ -44,6 +32,18 @@ function PrivacyPage() {
         <p className="text-base leading-relaxed text-[var(--ink-soft)]">
           You can turn cloud sync off per account in Settings. With it off, the account still
           works — your data just stays on that iPad.
+        </p>
+      </section>
+
+      <section className="mt-12 flex flex-col gap-5">
+        <h2 className="text-xl font-semibold tracking-tight md:text-2xl">
+          What stays on your iPad
+        </h2>
+        <p className="text-base leading-relaxed text-[var(--ink-soft)]">
+          The speech recognition that picks out who&apos;s talking runs on the iPad itself. The
+          model never moves to the cloud, and neither does the live microphone audio Parley listens
+          to in the moment of a conversation — the audio stream and the matching computation stay
+          on the device.
         </p>
       </section>
 

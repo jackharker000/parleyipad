@@ -52,7 +52,7 @@ function AdminLayout() {
   return (
     <div className="flex min-h-full flex-col bg-background text-foreground">
       <header className="sticky top-0 z-20 border-b border-border bg-background/95 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 py-3">
+        <div className="mx-auto flex w-full max-w-screen-2xl items-center gap-3 px-4 py-3">
           <Link to="/admin" className="flex items-center gap-2">
             <ParleyLogo className="h-8 w-8" />
             <span className="text-lg font-semibold tracking-tight">

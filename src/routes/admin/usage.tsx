@@ -20,6 +20,9 @@ const UsageSearch = z.object({
     .union([z.literal(7), z.literal(30), z.literal(90)])
     .optional()
     .catch(30),
+  // Deep-link target for the per-user usage detail view. Parsed but not yet
+  // used to filter the breakdown (the user-detail page builds this URL today).
+  uid: z.string().optional().catch(undefined),
 });
 
 export const Route = createFileRoute("/admin/usage")({
@@ -73,27 +76,42 @@ function AdminUsagePage() {
   const header = (
     <div className="flex flex-wrap items-baseline justify-between gap-3">
       <h1 className="text-3xl font-semibold tracking-tight">Usage</h1>
-      <DayChips current={days} onPick={(d) => navigate({ search: { days: d } })} />
+      <div className="flex items-center gap-2">
+        <DayChips current={days} onPick={(d) => navigate({ search: { days: d } })} />
+        <button
+          type="button"
+          onClick={() => {
+            if (!aggregate) return;
+            downloadUsageCsv(aggregate, emailByUid, days);
+          }}
+          disabled={!aggregate || aggregate.byUser.length === 0}
+          className="rounded-md border border-[var(--line)] bg-white px-3 py-1.5 text-sm font-medium hover:bg-[var(--sand-2)] disabled:opacity-50"
+        >
+          Export CSV
+        </button>
+      </div>
     </div>
   );
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-6xl px-5 py-8">
+      <div className="mx-auto max-w-screen-2xl px-5 py-5">
         {header}
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <StatCard key={i} label="Loading…" value="—" />
+            <StatSkeleton key={i} />
           ))}
         </div>
-        <p className="mt-6 text-sm text-[var(--ink-soft)]">Loading…</p>
+        <div className="mt-10 rounded-2xl border border-[var(--line)] bg-white p-3">
+          <RowSkeletons rows={5} />
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="mx-auto max-w-6xl px-5 py-8">
+      <div className="mx-auto max-w-screen-2xl px-5 py-5">
         {header}
         <ErrorCard error={error} />
       </div>
@@ -103,7 +121,7 @@ function AdminUsagePage() {
   const agg = aggregate;
   if (!agg) {
     return (
-      <div className="mx-auto max-w-6xl px-5 py-8">
+      <div className="mx-auto max-w-screen-2xl px-5 py-5">
         {header}
         <p className="mt-6 text-sm text-[var(--ink-soft)]">No data.</p>
       </div>
@@ -111,7 +129,7 @@ function AdminUsagePage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-5 py-8">
+    <div className="mx-auto max-w-screen-2xl px-5 py-5">
       {header}
       <p className="mt-2 text-sm text-[var(--ink-soft)]">
         Last {agg.days} days · {fmtRange(agg.rangeFrom, agg.rangeTo)}
@@ -133,7 +151,7 @@ function AdminUsagePage() {
 
       <Section title="By user">
         {agg.byUser.length === 0 ? (
-          <EmptyRow message="No usage in this window." />
+          <EmptyRow message="No usage events in this window. New accounts won't show usage until they make their first AI call." />
         ) : (
           <ByUserTable rows={agg.byUser} emailByUid={emailByUid} />
         )}
@@ -343,6 +361,23 @@ function EmptyRow({ message }: { message: string }) {
   return <p className="px-3 py-6 text-center text-sm text-[var(--ink-soft)]">{message}</p>;
 }
 
+function StatSkeleton() {
+  return <div className="h-24 rounded-2xl bg-[var(--sand-2)]/60 animate-pulse" />;
+}
+
+function RowSkeletons({ rows }: { rows: number }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div
+          key={i}
+          className="h-12 bg-[var(--sand-2)]/60 rounded-md animate-pulse"
+        />
+      ))}
+    </div>
+  );
+}
+
 function Th({ children }: { children: React.ReactNode }) {
   return (
     <th className="bg-muted/40 text-left font-medium px-3 py-2 border-b border-[var(--line)]">
@@ -387,4 +422,63 @@ function fmtRange(fromIso: string, toIso: string): string {
     day: "numeric",
   };
   return `${from.toLocaleDateString(undefined, opts)} → ${to.toLocaleDateString(undefined, opts)}`;
+}
+
+// --------------------------------------------------------------------------
+// CSV export — quick, no-dependency builder for the byUser breakdown.
+// --------------------------------------------------------------------------
+
+function escapeCsv(value: string): string {
+  // Double-quote fields that contain a quote, comma, or newline; double-up
+  // embedded quotes per RFC 4180.
+  if (/[",\n\r]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function downloadUsageCsv(
+  agg: UsageAggregate,
+  emailByUid: Map<string, string | null>,
+  days: number,
+): void {
+  const header = [
+    "uid",
+    "email",
+    "events",
+    "tokensIn",
+    "tokensOut",
+    "characters",
+    "audioBytes",
+    "spend_usd",
+  ];
+  const lines = [header.join(",")];
+  for (const r of agg.byUser) {
+    const uid = r.uid ?? "__anon__";
+    const email = (r.uid ? emailByUid.get(r.uid) : null) ?? "";
+    const spend = (r.millicents / 100_000).toFixed(2);
+    lines.push(
+      [
+        escapeCsv(uid),
+        escapeCsv(email),
+        String(r.events),
+        String(r.tokensIn),
+        String(r.tokensOut),
+        String(r.characters),
+        String(r.audioBytes),
+        spend,
+      ].join(","),
+    );
+  }
+  const csv = lines.join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `parley-usage-${days}d.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Give the browser a moment to start the download before revoking.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
