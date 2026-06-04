@@ -84,6 +84,10 @@ function PeopleApp() {
   const [embedderReady, setEmbedderReady] = useState(false);
   const [embedderError, setEmbedderError] = useState<string | null>(null);
 
+  // Ref to the AddPersonCard's name input so the empty-state CTA can focus
+  // it (and scroll the card into view) when there are no people yet.
+  const addNameRef = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     setEmbedderReady(false);
     setEmbedderError(null);
@@ -117,6 +121,13 @@ function PeopleApp() {
 
   const people = useLiveQuery(() => db().people.orderBy("name").toArray(), [], EMPTY_PEOPLE);
   const voiceprints = useLiveQuery(() => db().voiceprints.toArray(), [], EMPTY_VOICEPRINTS);
+  // Gate the empty card on "we have a real result", not just length===0, so
+  // we don't flash the empty card before Dexie's first read resolves. The
+  // default `EMPTY_PEOPLE` array is reference-stable; once the query
+  // resolves we get a fresh array (even if empty), so a `!==` check
+  // distinguishes "still loading" from "loaded, no rows".
+  const peopleLoaded = people !== EMPTY_PEOPLE;
+  const showEmpty = peopleLoaded && people.length === 0;
 
   const voiceprintByPersonId = useMemo(() => {
     const m = new Map<string, Voiceprint>();
@@ -124,16 +135,29 @@ function PeopleApp() {
     return m;
   }, [voiceprints]);
 
+  const focusAddPersonForm = () => {
+    const input = addNameRef.current;
+    if (!input) return;
+    input.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Give the scroll a tick before stealing focus so the page doesn't
+    // jump-cut on iPad Safari.
+    setTimeout(() => input.focus(), 250);
+  };
+
   return (
     <div className="space-y-6">
       <EmbedderStatus ready={embedderReady} error={embedderError} />
-      <AddPersonCard />
-      <PeopleList
-        people={people}
-        voiceprintByPersonId={voiceprintByPersonId}
-        embedder={embedder}
-        embedderReady={embedderReady}
-      />
+      <AddPersonCard nameInputRef={addNameRef} />
+      {showEmpty ? (
+        <EmptyPeopleCard onAddPerson={focusAddPersonForm} />
+      ) : (
+        <PeopleList
+          people={people}
+          voiceprintByPersonId={voiceprintByPersonId}
+          embedder={embedder}
+          embedderReady={embedderReady}
+        />
+      )}
     </div>
   );
 }
@@ -168,7 +192,11 @@ function EmbedderStatus({ ready, error }: { ready: boolean; error: string | null
 
 // --------------------------------------------------------------------------
 
-function AddPersonCard() {
+function AddPersonCard({
+  nameInputRef,
+}: {
+  nameInputRef?: React.Ref<HTMLInputElement>;
+}) {
   const [name, setName] = useState("");
   const [relationship, setRelationship] = useState("");
   const [busy, setBusy] = useState(false);
@@ -219,6 +247,7 @@ function AddPersonCard() {
               Name
             </label>
             <input
+              ref={nameInputRef}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Sarah"
@@ -252,6 +281,32 @@ function AddPersonCard() {
 
 // --------------------------------------------------------------------------
 
+function EmptyPeopleCard({ onAddPerson }: { onAddPerson: () => void }) {
+  return (
+    <div className="rounded-2xl border border-[var(--line)] bg-white p-8">
+      <div className="mx-auto max-w-xl space-y-3 text-center">
+        <h3 className="text-xl font-semibold tracking-tight text-[var(--ink)]">
+          Add the people you talk to.
+        </h3>
+        <p className="text-sm leading-relaxed text-[var(--ink-soft)]">
+          Parley learns each person&apos;s voice from a few short samples. Start with someone you
+          talk to often — partner, parent, sibling, support worker — and record 3–5 short samples
+          in the room where you usually chat.
+        </p>
+        <div className="pt-2">
+          <button
+            type="button"
+            onClick={onAddPerson}
+            className="inline-flex items-center justify-center rounded-full bg-[var(--teal)] px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--teal-dark)]"
+          >
+            Add a person
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PeopleList({
   people,
   voiceprintByPersonId,
@@ -264,16 +319,6 @@ function PeopleList({
   embedderReady: boolean;
 }) {
   const [expandedPersonId, setExpandedPersonId] = useState<string | null>(null);
-
-  if (people.length === 0) {
-    return (
-      <Card>
-        <CardContent className="py-6 text-sm text-muted-foreground">
-          No people yet. Add someone above to start building the roster.
-        </CardContent>
-      </Card>
-    );
-  }
 
   return (
     <Card>

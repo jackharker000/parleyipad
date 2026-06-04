@@ -74,7 +74,7 @@ function PrivacyPage() {
       <section className="mt-12 flex flex-col gap-5">
         <h2 className="text-xl font-semibold tracking-tight md:text-2xl">You&apos;re in control</h2>
         <p className="text-base leading-relaxed text-[var(--ink-soft)]">
-          Cloud sync can be switched off per account in <strong className="font-semibold text-[var(--ink)]">Settings → System → Cloud sync</strong> — the account still works, your data just stays on the iPad. You can export your on-device data, and you can wipe everything with one button under <strong className="font-semibold text-[var(--ink)]">Settings → System → Danger zone</strong>.
+          Cloud sync can be switched off per account in <strong className="font-semibold text-[var(--ink)]">Settings → System → Cloud sync</strong> — the account still works, your data just stays on the iPad. You can export your on-device data — encrypted with a password if you want — from <strong className="font-semibold text-[var(--ink)]">Settings → System → Export</strong>, and you can wipe everything with one button under <strong className="font-semibold text-[var(--ink)]">Settings → System → Danger zone</strong>.
         </p>
       </section>
 

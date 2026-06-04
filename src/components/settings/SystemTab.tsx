@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ExportDataCard } from "@/components/settings/ExportDataCard";
 import { Switch } from "@/components/ui/switch";
 import { db, type SettingsRecord } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
@@ -46,6 +47,7 @@ export function SystemTab() {
       <GpsCard />
       <DeadPhraseCard />
       <StyleProfileCard />
+      <ExportDataCard />
       <DangerZoneCard />
     </div>
   );
