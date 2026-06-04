@@ -6,6 +6,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import {
   AdminApiError,
+  fetchActivity,
   fetchUsage,
   fetchUser,
   fetchUserData,
@@ -16,10 +17,13 @@ import {
   stopAdminAudio,
 } from "@/lib/admin";
 import type {
+  AdminAction,
   AdminUserAction,
   AdminUserRecord,
+  AuditEntry,
   UsageUserBucket,
 } from "@/lib/admin";
+import { cn } from "@/lib/cn";
 
 export const Route = createFileRoute("/admin/users/$userId")({
   component: AdminUserDetailPage,
@@ -101,6 +105,7 @@ function AdminUserDetailPage() {
             <UsageCard uid={user.uid} />
           </div>
           <SyncedDataSection uid={user.uid} />
+          <ActionHistorySection uid={user.uid} refreshKey={refreshKey} />
           <DangerZone user={user} onChanged={refreshUser} />
         </>
       )}
@@ -240,8 +245,90 @@ function InfoCard({ user }: { user: AdminUserRecord }) {
 
         <Dt>Disabled</Dt>
         <Dd>{user.disabled ? "Yes" : "No"}</Dd>
+
+        <Dt>Last synced</Dt>
+        <Dd>
+          <SyncHealthRow uid={user.uid} />
+        </Dd>
       </dl>
     </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+// Sync health — peeks at the most-recent row across a few key synced tables
+// and shows the max updatedAt. Cheap "is this user's cloud sync alive?" tell.
+// --------------------------------------------------------------------------
+
+const SYNC_HEALTH_TABLES = [
+  "conversations",
+  "transcriptSegments",
+  "jamesProfile",
+  "settings",
+] as const;
+
+function SyncHealthRow({ uid }: { uid: string }) {
+  type State =
+    | { kind: "loading" }
+    | { kind: "ready"; latestIso: string | null }
+    | { kind: "error" };
+  const [state, setState] = useState<State>({ kind: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ kind: "loading" });
+    // Fetch the most-recent row from each table in parallel; the first row of
+    // an ordered-by-createdAt-desc listing is the latest. settled-style
+    // handling so a 404/empty table doesn't tank the whole row.
+    Promise.allSettled(
+      SYNC_HEALTH_TABLES.map((t) => fetchUserData(uid, t, 1)),
+    )
+      .then((results) => {
+        if (cancelled) return;
+        let latest: number | null = null;
+        for (const r of results) {
+          if (r.status !== "fulfilled") continue;
+          const row = r.value[0];
+          if (!row) continue;
+          const candidates = [row.updatedAt, row.endedAt, row.startedAt, row.createdAt];
+          for (const c of candidates) {
+            if (typeof c !== "string") continue;
+            const t = new Date(c).getTime();
+            if (Number.isFinite(t) && (latest === null || t > latest)) {
+              latest = t;
+            }
+          }
+        }
+        setState({
+          kind: "ready",
+          latestIso: latest !== null ? new Date(latest).toISOString() : null,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setState({ kind: "error" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [uid]);
+
+  if (state.kind === "loading") {
+    return (
+      <span className="inline-block h-4 w-32 rounded bg-[var(--sand-2)]/60 animate-pulse" />
+    );
+  }
+  if (state.kind === "error") {
+    return <span className="text-[var(--ink-soft)]">—</span>;
+  }
+  if (state.latestIso === null) {
+    return (
+      <span className="text-[var(--ink-soft)]">No synced data yet.</span>
+    );
+  }
+  return (
+    <span title={fmtDateTime(state.latestIso)}>
+      {relativeTime(state.latestIso)}
+    </span>
   );
 }
 
@@ -1053,6 +1140,182 @@ function readAudioRef(row: Record<string, unknown>): {
     return { storagePath: topPath, sizeBytes: readNumber(row.sizeBytes) };
   }
   return null;
+}
+
+// --------------------------------------------------------------------------
+// Action history — last 10 audit entries for this user, with a "See all"
+// link out to the filtered /admin/activity feed.
+// --------------------------------------------------------------------------
+
+function ActionHistorySection({
+  uid,
+  refreshKey,
+}: {
+  uid: string;
+  refreshKey: number;
+}) {
+  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<AdminApiError | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setEntries(null);
+    fetchActivity({ targetUid: uid, limit: 10, force: refreshKey > 0 })
+      .then((data) => {
+        if (!cancelled) setEntries(data);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(
+            err instanceof AdminApiError
+              ? err
+              : new AdminApiError(0, "Couldn't load action history."),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, refreshKey]);
+
+  const list = entries ?? [];
+  const trimmed = list.slice(0, 10);
+
+  return (
+    <section className="mt-10">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-xl font-semibold tracking-tight">Action history</h2>
+        <Link
+          to="/admin/activity"
+          search={{ targetUid: uid }}
+          className="text-sm font-medium text-[var(--teal-dark)] hover:underline"
+        >
+          See all →
+        </Link>
+      </div>
+      <div className="mt-3 rounded-2xl border border-[var(--line)] bg-white p-3">
+        {loading ? (
+          <div className="flex flex-col gap-2 p-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={i}
+                className="h-10 bg-[var(--sand-2)]/60 rounded-md animate-pulse"
+              />
+            ))}
+          </div>
+        ) : error ? (
+          <p className="px-3 py-6 text-center text-sm text-[var(--coral)]">
+            {error.message}
+          </p>
+        ) : trimmed.length === 0 ? (
+          <p className="px-3 py-6 text-center text-sm text-[var(--ink-soft)]">
+            No admin actions logged for this user yet.
+          </p>
+        ) : (
+          <table className="w-full border-separate border-spacing-0 text-sm">
+            <thead>
+              <tr>
+                <Th>When</Th>
+                <Th>Actor</Th>
+                <Th>Action</Th>
+                <Th>Status</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {trimmed.map((e) => (
+                <tr key={e.id}>
+                  <Td>
+                    <span title={fmtDateTime(e.createdAt)} className="cursor-help">
+                      {relativeTime(e.createdAt)}
+                    </span>
+                  </Td>
+                  <Td>
+                    {e.actorEmail ?? (
+                      <span className="font-mono text-xs text-[var(--ink-soft)]">
+                        {e.actorUid.slice(0, 8) || "—"}
+                        {e.actorUid ? "…" : ""}
+                      </span>
+                    )}
+                  </Td>
+                  <Td>
+                    <ActionBadge action={e.action} />
+                  </Td>
+                  <Td>
+                    <StatusBadge entry={e} />
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const ACTION_CATEGORY: Record<AdminAction, "destructive" | "promote" | "neutral"> = {
+  "user.revoke-admin": "destructive",
+  "user.disable": "destructive",
+  "user.delete": "destructive",
+  "waitlist.delete": "destructive",
+  "role.promote-admin": "promote",
+  "waitlist.onboarded": "promote",
+  "user.enable": "neutral",
+  "waitlist.archive": "neutral",
+};
+
+function ActionBadge({ action }: { action: AdminAction }) {
+  const category = ACTION_CATEGORY[action] ?? "neutral";
+  const cls =
+    category === "destructive"
+      ? "bg-[var(--coral)]/10 text-[var(--coral)]"
+      : category === "promote"
+        ? "bg-[var(--teal)]/10 text-[var(--teal-dark)]"
+        : "bg-[var(--sand-2)] text-[var(--ink-soft)]";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
+        cls,
+      )}
+    >
+      {action}
+    </span>
+  );
+}
+
+function StatusBadge({ entry }: { entry: AuditEntry }) {
+  if (entry.status === "ok") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-[var(--teal)]/10 px-2 py-0.5 text-xs font-medium text-[var(--teal-dark)]">
+        ok
+      </span>
+    );
+  }
+  if (entry.status === "partial") {
+    return (
+      <span
+        className="inline-flex items-center rounded-full bg-[var(--sun)]/30 px-2 py-0.5 text-xs font-medium text-[var(--ink)]"
+        title="The action partially succeeded — see /admin/activity for the full row."
+      >
+        partial
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex items-center rounded-full bg-[var(--coral)]/10 px-2 py-0.5 text-xs font-medium text-[var(--coral)]"
+      title={entry.errorMessage ?? undefined}
+    >
+      error
+    </span>
+  );
 }
 
 type DialogState =

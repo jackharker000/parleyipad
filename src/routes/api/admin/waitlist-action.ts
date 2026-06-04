@@ -1,7 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { corsPreflight, withCors } from "@/lib/api-cors";
-import { getAccessToken, getProjectId, isAdminConfigured } from "@/lib/firebase/admin";
+import { logAdminAction } from "@/lib/audit";
+import type { AdminAction } from "@/lib/audit-types";
+import {
+  getAccessToken,
+  getProjectId,
+  isAdminConfigured,
+  verifyIdToken,
+} from "@/lib/firebase/admin";
 import { requireAdmin } from "@/lib/firebase/admin-guard";
 
 /**
@@ -25,8 +32,16 @@ export const Route = createFileRoute("/api/admin/waitlist-action")({
         if (!isAdminConfigured()) {
           return json({ error: "Admin features not configured on the server" }, 503);
         }
+
+        // Decode the actor's ID token before the guard so we can log who did
+        // what even when the action itself throws. requireAdmin re-verifies
+        // — the duplicated parse is cheap.
+        const actorClaims = await readActorClaims(request);
+
         const guard = await requireAdmin(request);
         if (guard instanceof Response) return withCorsResponse(guard);
+        const actorUid = actorClaims?.uid ?? guard.uid;
+        const actorEmail = actorClaims?.email ?? null;
 
         let id: string | undefined;
         let action: Action | undefined;
@@ -53,18 +68,74 @@ export const Route = createFileRoute("/api/admin/waitlist-action")({
 
         try {
           await applyAction(id, action);
+          await logAdminAction({
+            action: mapAction(action),
+            actorUid,
+            actorEmail,
+            targetUid: null,
+            detail: { waitlistId: id, action },
+            status: "ok",
+          });
           return json({ ok: true }, 200);
         } catch (err) {
-          console.error(
-            "[api/admin/waitlist-action] failed:",
-            err instanceof Error ? err.message : "unknown",
-          );
+          const errorMessage = err instanceof Error ? err.message : "unknown";
+          console.error("[api/admin/waitlist-action] failed:", errorMessage);
+          await logAdminAction({
+            action: mapAction(action),
+            actorUid,
+            actorEmail,
+            targetUid: null,
+            detail: { waitlistId: id, action },
+            status: "error",
+            errorMessage: errorMessage.slice(0, 500),
+          });
           return json({ error: "Couldn't update waitlist entry" }, 500);
         }
       },
     },
   },
 });
+
+// --------------------------------------------------------------------------
+// Audit helpers — same pattern as user-action.ts so the actor's email shows
+// up in /admin/activity for every waitlist mutation.
+// --------------------------------------------------------------------------
+
+async function readActorClaims(
+  request: Request,
+): Promise<{ uid: string; email: string | null } | null> {
+  let idToken: string | undefined;
+  try {
+    const body = (await request.clone().json()) as { idToken?: string };
+    idToken = body.idToken;
+  } catch {
+    idToken = undefined;
+  }
+  if (!idToken) {
+    const authz = request.headers.get("authorization");
+    if (authz?.startsWith("Bearer ")) idToken = authz.slice(7);
+  }
+  if (!idToken) return null;
+  try {
+    const decoded = await verifyIdToken(idToken);
+    const email =
+      typeof decoded.claims.email === "string" ? decoded.claims.email : null;
+    return { uid: decoded.uid, email };
+  } catch {
+    return null;
+  }
+}
+
+function mapAction(action: Action): AdminAction {
+  switch (action) {
+    case "onboarded":
+      return "waitlist.onboarded";
+    case "archive":
+      return "waitlist.archive";
+    case "delete":
+      return "waitlist.delete";
+  }
+}
 
 async function applyAction(id: string, action: Action): Promise<void> {
   const token = await getAccessToken();

@@ -18,8 +18,9 @@ export const Route = createFileRoute("/admin")({
 const NAV: Array<{ to: string; label: string; exact?: boolean }> = [
   { to: "/admin", label: "Overview", exact: true },
   { to: "/admin/users", label: "Users" },
-  { to: "/admin/waitlist", label: "Waitlist" },
   { to: "/admin/usage", label: "Usage" },
+  { to: "/admin/activity", label: "Activity" },
+  { to: "/admin/waitlist", label: "Waitlist" },
 ];
 
 function AdminLayout() {

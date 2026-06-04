@@ -1,3 +1,4 @@
+import type { AuditEvent } from "@/lib/audit-types";
 import { getIdToken } from "@/lib/auth";
 
 /**
@@ -74,6 +75,7 @@ let usersCache: { value: AdminUserRecord[]; at: number } | null = null;
 const usageCache = new Map<number, { value: UsageAggregate; at: number }>();
 const userCache = new Map<string, { value: AdminUserRecord | null; at: number }>();
 const userDataCountsCache = new Map<string, { value: Record<string, number>; at: number }>();
+const activityCache = new Map<string, { value: AuditEntry[]; at: number }>();
 
 /** Fetch every Parley account (newest first). Throws AdminApiError on failure. */
 export async function fetchUsers(opts?: { force?: boolean }): Promise<AdminUserRecord[]> {
@@ -222,10 +224,12 @@ export async function performUserAction(
   const res = await authedFetch("/api/admin/user-action", { uid, action });
   if (!res.ok) return parseError(res);
   const body = (await res.json()) as { ok: true; partial?: boolean };
-  // Invalidate the caches that could surface the now-stale user/aggregates.
+  // Invalidate the caches that could surface the now-stale user/aggregates,
+  // plus the activity feed (it just gained a new row).
   userCache.delete(uid);
   usersCache = null;
   userDataCountsCache.delete(uid);
+  activityCache.clear();
   return { partial: Boolean(body.partial) };
 }
 
@@ -309,6 +313,43 @@ export async function markWaitlistEntry(id: string, action: WaitlistAction): Pro
   const res = await authedFetch("/api/admin/waitlist-action", { id, action });
   if (!res.ok) return parseError(res);
   waitlistCache = null;
+  // The activity log just gained a new row — invalidate so the next page
+  // load shows it immediately rather than after the 30s TTL.
+  activityCache.clear();
+}
+
+// --------------------------------------------------------------------------
+// Audit trail (from /api/admin/activity)
+// --------------------------------------------------------------------------
+
+/** Re-export the shared audit types so consumers can import from one place. */
+export type { AdminAction, AuditEvent } from "@/lib/audit-types";
+
+/** One row in the `admin_actions` Firestore collection. */
+export type AuditEntry = AuditEvent & { id: string; createdAt: string };
+
+/**
+ * Fetch recent admin-audit events. Cached 30s per `targetUid` (or "all" when
+ * not filtering). Pass `{ force: true }` to skip the cache (e.g. polling).
+ */
+export async function fetchActivity(opts?: {
+  targetUid?: string;
+  limit?: number;
+  force?: boolean;
+}): Promise<AuditEntry[]> {
+  const key = opts?.targetUid ?? "all";
+  const cached = activityCache.get(key);
+  if (!opts?.force && cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    return cached.value;
+  }
+  const body: Record<string, unknown> = {};
+  if (opts?.targetUid) body.targetUid = opts.targetUid;
+  if (opts?.limit) body.limit = opts.limit;
+  const res = await authedFetch("/api/admin/activity", body);
+  if (!res.ok) return parseError(res);
+  const data = (await res.json()) as { entries: AuditEntry[] };
+  activityCache.set(key, { value: data.entries, at: Date.now() });
+  return data.entries;
 }
 
 // --------------------------------------------------------------------------

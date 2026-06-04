@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { corsPreflight, withCors } from "@/lib/api-cors";
+import { logAdminAction } from "@/lib/audit";
 import {
   countUsersAtMost,
   isAdminConfigured,
@@ -68,6 +69,18 @@ export const Route = createFileRoute("/api/auth/ensure-role")({
         if (email && allowed.has(email.toLowerCase())) {
           try {
             await setAdminClaim(uid);
+            // Self-promotion via allow-list: the actor and the target are the
+            // same uid. Logged so the activity feed shows when somebody first
+            // gains admin powers.
+            await logAdminAction({
+              action: "role.promote-admin",
+              actorUid: uid,
+              actorEmail: email,
+              targetUid: uid,
+              targetEmail: email,
+              detail: { reason: "allowlist" },
+              status: "ok",
+            });
             return json({ is_admin: true }, 200);
           } catch (err) {
             console.error(
@@ -83,6 +96,15 @@ export const Route = createFileRoute("/api/auth/ensure-role")({
           const count = await countUsersAtMost(1);
           if (count <= 1) {
             await setAdminClaim(uid);
+            await logAdminAction({
+              action: "role.promote-admin",
+              actorUid: uid,
+              actorEmail: email,
+              targetUid: uid,
+              targetEmail: email,
+              detail: { reason: "first-account" },
+              status: "ok",
+            });
             return json({ is_admin: true }, 200);
           }
         } catch (err) {

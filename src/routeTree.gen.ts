@@ -25,6 +25,7 @@ import { Route as ApiWaitlistRouteImport } from './routes/api/waitlist'
 import { Route as AdminWaitlistRouteImport } from './routes/admin/waitlist'
 import { Route as AdminUsersRouteImport } from './routes/admin/users'
 import { Route as AdminUsageRouteImport } from './routes/admin/usage'
+import { Route as AdminActivityRouteImport } from './routes/admin/activity'
 import { Route as MarketingStoryRouteImport } from './routes/_marketing/story'
 import { Route as MarketingPrivacyRouteImport } from './routes/_marketing/privacy'
 import { Route as MarketingHowItWorksRouteImport } from './routes/_marketing/how-it-works'
@@ -51,6 +52,7 @@ import { Route as ApiAdminUserActionRouteImport } from './routes/api/admin/user-
 import { Route as ApiAdminUserRouteImport } from './routes/api/admin/user'
 import { Route as ApiAdminUsageRouteImport } from './routes/api/admin/usage'
 import { Route as ApiAdminAudioUrlRouteImport } from './routes/api/admin/audio-url'
+import { Route as ApiAdminActivityRouteImport } from './routes/api/admin/activity'
 import { Route as AdminUsersUserIdRouteImport } from './routes/admin/users.$userId'
 
 const AppRoute = AppRouteImport.update({
@@ -129,6 +131,11 @@ const AdminUsersRoute = AdminUsersRouteImport.update({
 const AdminUsageRoute = AdminUsageRouteImport.update({
   id: '/usage',
   path: '/usage',
+  getParentRoute: () => AdminRoute,
+} as any)
+const AdminActivityRoute = AdminActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
   getParentRoute: () => AdminRoute,
 } as any)
 const MarketingStoryRoute = MarketingStoryRouteImport.update({
@@ -261,6 +268,11 @@ const ApiAdminAudioUrlRoute = ApiAdminAudioUrlRouteImport.update({
   path: '/api/admin/audio-url',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminActivityRoute = ApiAdminActivityRouteImport.update({
+  id: '/api/admin/activity',
+  path: '/api/admin/activity',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminUsersUserIdRoute = AdminUsersUserIdRouteImport.update({
   id: '/$userId',
   path: '/$userId',
@@ -278,6 +290,7 @@ export interface FileRoutesByFullPath {
   '/how-it-works': typeof MarketingHowItWorksRoute
   '/privacy': typeof MarketingPrivacyRoute
   '/story': typeof MarketingStoryRoute
+  '/admin/activity': typeof AdminActivityRoute
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/admin/waitlist': typeof AdminWaitlistRoute
@@ -290,6 +303,7 @@ export interface FileRoutesByFullPath {
   '/admin/': typeof AdminIndexRoute
   '/app/': typeof AppIndexRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
+  '/api/admin/activity': typeof ApiAdminActivityRoute
   '/api/admin/audio-url': typeof ApiAdminAudioUrlRoute
   '/api/admin/usage': typeof ApiAdminUsageRoute
   '/api/admin/user': typeof ApiAdminUserRoute
@@ -319,6 +333,7 @@ export interface FileRoutesByTo {
   '/how-it-works': typeof MarketingHowItWorksRoute
   '/privacy': typeof MarketingPrivacyRoute
   '/story': typeof MarketingStoryRoute
+  '/admin/activity': typeof AdminActivityRoute
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/admin/waitlist': typeof AdminWaitlistRoute
@@ -331,6 +346,7 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminIndexRoute
   '/app': typeof AppIndexRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
+  '/api/admin/activity': typeof ApiAdminActivityRoute
   '/api/admin/audio-url': typeof ApiAdminAudioUrlRoute
   '/api/admin/usage': typeof ApiAdminUsageRoute
   '/api/admin/user': typeof ApiAdminUserRoute
@@ -364,6 +380,7 @@ export interface FileRoutesById {
   '/_marketing/how-it-works': typeof MarketingHowItWorksRoute
   '/_marketing/privacy': typeof MarketingPrivacyRoute
   '/_marketing/story': typeof MarketingStoryRoute
+  '/admin/activity': typeof AdminActivityRoute
   '/admin/usage': typeof AdminUsageRoute
   '/admin/users': typeof AdminUsersRouteWithChildren
   '/admin/waitlist': typeof AdminWaitlistRoute
@@ -377,6 +394,7 @@ export interface FileRoutesById {
   '/admin/': typeof AdminIndexRoute
   '/app/': typeof AppIndexRoute
   '/admin/users/$userId': typeof AdminUsersUserIdRoute
+  '/api/admin/activity': typeof ApiAdminActivityRoute
   '/api/admin/audio-url': typeof ApiAdminAudioUrlRoute
   '/api/admin/usage': typeof ApiAdminUsageRoute
   '/api/admin/user': typeof ApiAdminUserRoute
@@ -410,6 +428,7 @@ export interface FileRouteTypes {
     | '/how-it-works'
     | '/privacy'
     | '/story'
+    | '/admin/activity'
     | '/admin/usage'
     | '/admin/users'
     | '/admin/waitlist'
@@ -422,6 +441,7 @@ export interface FileRouteTypes {
     | '/admin/'
     | '/app/'
     | '/admin/users/$userId'
+    | '/api/admin/activity'
     | '/api/admin/audio-url'
     | '/api/admin/usage'
     | '/api/admin/user'
@@ -451,6 +471,7 @@ export interface FileRouteTypes {
     | '/how-it-works'
     | '/privacy'
     | '/story'
+    | '/admin/activity'
     | '/admin/usage'
     | '/admin/users'
     | '/admin/waitlist'
@@ -463,6 +484,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/app'
     | '/admin/users/$userId'
+    | '/api/admin/activity'
     | '/api/admin/audio-url'
     | '/api/admin/usage'
     | '/api/admin/user'
@@ -495,6 +517,7 @@ export interface FileRouteTypes {
     | '/_marketing/how-it-works'
     | '/_marketing/privacy'
     | '/_marketing/story'
+    | '/admin/activity'
     | '/admin/usage'
     | '/admin/users'
     | '/admin/waitlist'
@@ -508,6 +531,7 @@ export interface FileRouteTypes {
     | '/admin/'
     | '/app/'
     | '/admin/users/$userId'
+    | '/api/admin/activity'
     | '/api/admin/audio-url'
     | '/api/admin/usage'
     | '/api/admin/user'
@@ -535,6 +559,7 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRouteWithChildren
   AppRoute: typeof AppRouteWithChildren
   ApiWaitlistRoute: typeof ApiWaitlistRoute
+  ApiAdminActivityRoute: typeof ApiAdminActivityRoute
   ApiAdminAudioUrlRoute: typeof ApiAdminAudioUrlRoute
   ApiAdminUsageRoute: typeof ApiAdminUsageRoute
   ApiAdminUserRoute: typeof ApiAdminUserRoute
@@ -667,6 +692,13 @@ declare module '@tanstack/react-router' {
       path: '/usage'
       fullPath: '/admin/usage'
       preLoaderRoute: typeof AdminUsageRouteImport
+      parentRoute: typeof AdminRoute
+    }
+    '/admin/activity': {
+      id: '/admin/activity'
+      path: '/activity'
+      fullPath: '/admin/activity'
+      preLoaderRoute: typeof AdminActivityRouteImport
       parentRoute: typeof AdminRoute
     }
     '/_marketing/story': {
@@ -851,6 +883,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminAudioUrlRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/admin/activity': {
+      id: '/api/admin/activity'
+      path: '/api/admin/activity'
+      fullPath: '/api/admin/activity'
+      preLoaderRoute: typeof ApiAdminActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin/users/$userId': {
       id: '/admin/users/$userId'
       path: '/$userId'
@@ -908,6 +947,7 @@ const AdminUsersRouteWithChildren = AdminUsersRoute._addFileChildren(
 )
 
 interface AdminRouteChildren {
+  AdminActivityRoute: typeof AdminActivityRoute
   AdminUsageRoute: typeof AdminUsageRoute
   AdminUsersRoute: typeof AdminUsersRouteWithChildren
   AdminWaitlistRoute: typeof AdminWaitlistRoute
@@ -915,6 +955,7 @@ interface AdminRouteChildren {
 }
 
 const AdminRouteChildren: AdminRouteChildren = {
+  AdminActivityRoute: AdminActivityRoute,
   AdminUsageRoute: AdminUsageRoute,
   AdminUsersRoute: AdminUsersRouteWithChildren,
   AdminWaitlistRoute: AdminWaitlistRoute,
@@ -951,6 +992,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRouteWithChildren,
   AppRoute: AppRouteWithChildren,
   ApiWaitlistRoute: ApiWaitlistRoute,
+  ApiAdminActivityRoute: ApiAdminActivityRoute,
   ApiAdminAudioUrlRoute: ApiAdminAudioUrlRoute,
   ApiAdminUsageRoute: ApiAdminUsageRoute,
   ApiAdminUserRoute: ApiAdminUserRoute,

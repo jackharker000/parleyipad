@@ -65,6 +65,12 @@ service cloud.firestore {
     match /usage_events/{doc} {
       allow read, write: if false;
     }
+    // Admin audit trail — written by /api/admin/* via the service account
+    // (logAdminAction), read only by /api/admin/activity. Locked off the
+    // client entirely; users must never see or alter their own audit log.
+    match /admin_actions/{doc} {
+      allow read, write: if false;
+    }
   }
 }
 ```

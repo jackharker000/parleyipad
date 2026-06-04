@@ -1,11 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { corsPreflight, withCors } from "@/lib/api-cors";
+import { logAdminAction } from "@/lib/audit";
+import type { AdminAction } from "@/lib/audit-types";
 import {
   getAccessToken,
   getProjectId,
   getStorageBucket,
   isAdminConfigured,
+  verifyIdToken,
 } from "@/lib/firebase/admin";
 import { requireAdmin } from "@/lib/firebase/admin-guard";
 
@@ -63,9 +66,18 @@ export const Route = createFileRoute("/api/admin/user-action")({
         if (!isAdminConfigured()) {
           return json({ error: "Admin features not configured on the server" }, 503);
         }
+
+        // Pull the caller's email from their verified ID token BEFORE
+        // requireAdmin so we can log it on success and on failure. requireAdmin
+        // re-verifies independently — the duplicated parse is cheap and keeps
+        // the guard contract unchanged.
+        const actorClaims = await readActorClaims(request);
+
         const guard = await requireAdmin(request);
         if (guard instanceof Response) return withCorsResponse(guard);
         const callerUid = guard.uid;
+        const actorUid = actorClaims?.uid ?? callerUid;
+        const actorEmail = actorClaims?.email ?? null;
 
         let uid: string | undefined;
         let action: Action | undefined;
@@ -88,34 +100,148 @@ export const Route = createFileRoute("/api/admin/user-action")({
           return json({ error: "Refusing to delete your own account" }, 400);
         }
 
+        // Look up the target's email upfront so we can log it even after a
+        // delete (which removes the account). Best-effort — a missing email
+        // is fine, the log still carries the uid.
+        const targetEmail = await lookupEmail(uid);
+
         try {
           if (action === "revoke-admin") {
             await accountsUpdate({ localId: uid, customAttributes: "{}" });
+            await logAdminAction({
+              action: "user.revoke-admin",
+              actorUid,
+              actorEmail,
+              targetUid: uid,
+              targetEmail,
+              status: "ok",
+            });
             return json({ ok: true }, 200);
           }
           if (action === "disable") {
             await accountsUpdate({ localId: uid, disableUser: true });
+            await logAdminAction({
+              action: "user.disable",
+              actorUid,
+              actorEmail,
+              targetUid: uid,
+              targetEmail,
+              status: "ok",
+            });
             return json({ ok: true }, 200);
           }
           if (action === "enable") {
             await accountsUpdate({ localId: uid, disableUser: false });
+            await logAdminAction({
+              action: "user.enable",
+              actorUid,
+              actorEmail,
+              targetUid: uid,
+              targetEmail,
+              status: "ok",
+            });
             return json({ ok: true }, 200);
           }
           // delete: auth first, then best-effort data wipe.
           await accountsDelete(uid);
           const dataOk = await bestEffortWipeUserData(uid);
+          await logAdminAction({
+            action: "user.delete",
+            actorUid,
+            actorEmail,
+            targetUid: uid,
+            targetEmail,
+            status: dataOk ? "ok" : "partial",
+            detail: dataOk ? undefined : { partial: true },
+          });
           return json({ ok: true, partial: !dataOk }, 200);
         } catch (err) {
-          console.error(
-            "[api/admin/user-action] failed:",
-            err instanceof Error ? err.message : "unknown",
-          );
+          const errorMessage = err instanceof Error ? err.message : "unknown";
+          console.error("[api/admin/user-action] failed:", errorMessage);
+          await logAdminAction({
+            action: mapAction(action),
+            actorUid,
+            actorEmail,
+            targetUid: uid,
+            targetEmail,
+            status: "error",
+            errorMessage: errorMessage.slice(0, 500),
+          });
           return json({ error: "Action failed" }, 500);
         }
       },
     },
   },
 });
+
+// --------------------------------------------------------------------------
+// Audit-trail helpers — read the actor's ID-token claims so we can log who
+// did what, and translate the route's internal action union to the audit
+// AdminAction shape.
+// --------------------------------------------------------------------------
+
+/**
+ * Decode the caller's ID token a second time so we can capture their email
+ * for the audit log. requireAdmin doesn't expose the decoded claims and we
+ * don't want to change its contract. Returns null on any failure so the
+ * audit log just records the uid (which requireAdmin already gives us).
+ */
+async function readActorClaims(
+  request: Request,
+): Promise<{ uid: string; email: string | null } | null> {
+  let idToken: string | undefined;
+  try {
+    const body = (await request.clone().json()) as { idToken?: string };
+    idToken = body.idToken;
+  } catch {
+    idToken = undefined;
+  }
+  if (!idToken) {
+    const authz = request.headers.get("authorization");
+    if (authz?.startsWith("Bearer ")) idToken = authz.slice(7);
+  }
+  if (!idToken) return null;
+  try {
+    const decoded = await verifyIdToken(idToken);
+    const email =
+      typeof decoded.claims.email === "string" ? decoded.claims.email : null;
+    return { uid: decoded.uid, email };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort email lookup for the target uid. Returns null on any failure
+ * so the audit log just carries the uid (the uid is the primary key — the
+ * email is decoration).
+ */
+async function lookupEmail(uid: string): Promise<string | null> {
+  try {
+    const res = await authed(`${idToolkitBase()}/accounts:lookup`, {
+      localId: [uid],
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { users?: Array<{ email?: string }> };
+    const email = data.users?.[0]?.email;
+    return typeof email === "string" && email.length > 0 ? email : null;
+  } catch {
+    return null;
+  }
+}
+
+function mapAction(action: Action): AdminAction {
+  switch (action) {
+    case "revoke-admin":
+      return "user.revoke-admin";
+    case "disable":
+      return "user.disable";
+    case "enable":
+      return "user.enable";
+    case "delete":
+      return "user.delete";
+  }
+}
 
 // --------------------------------------------------------------------------
 // Identity Toolkit (account ops)
