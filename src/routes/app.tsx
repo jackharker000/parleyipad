@@ -29,10 +29,12 @@ export const Route = createFileRoute("/app")({
   }),
 });
 
+// People and Events used to live up here, but the pre-login design pattern
+// (rich detail in Settings, no top-level nav for either) is what James and
+// his family find legible. The route files still exist as
+// redirects-to-Settings so old bookmarks keep working.
 const NAV: Array<{ to: string; label: string; exact?: boolean }> = [
   { to: "/app", label: "Live", exact: true },
-  { to: "/app/people", label: "People" },
-  { to: "/app/events", label: "Events" },
   { to: "/app/recent", label: "Recent" },
   { to: "/app/helpers", label: "Helpers" },
   { to: "/app/settings", label: "Settings" },
