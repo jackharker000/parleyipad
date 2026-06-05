@@ -91,8 +91,13 @@ export function SetupChecklist(): JSX.Element | null {
   const jamesProfile = useLiveQuery(() => db().jamesProfile.get("singleton"), []);
   const settings = useLiveQuery(() => db().settings.get("singleton"), []);
   const peopleCount = useLiveQuery(() => db().people.count(), [], 0);
+  // `source` isn't indexed on voiceprintContributions (schema is
+  // "id, personId, conversationId, createdAt"), so .where("source")
+  // throws "KeyPath source ... is not indexed" at runtime. Voice
+  // samples per device are bounded to a couple of dozen, so a filter
+  // scan is fine and avoids a schema migration.
   const enrollmentSampleCount = useLiveQuery(
-    () => db().voiceprintContributions.where("source").equals("enrollment").count(),
+    () => db().voiceprintContributions.filter((c) => c.source === "enrollment").count(),
     [],
     0,
   );
@@ -152,6 +157,20 @@ export function SetupChecklist(): JSX.Element | null {
 
   const doneCount = steps.filter((s) => s.done).length;
   const allDone = doneCount === steps.length;
+
+  // Persist dismissal the moment the user reaches all-done so the card
+  // auto-hides on the next mount. We deliberately keep showing the
+  // "All set!" celebration in the current render (the user gets one
+  // closure moment) before it disappears for good.
+  useEffect(() => {
+    if (allDone) {
+      try {
+        localStorage.setItem(DISMISS_KEY, "1");
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [allDone]);
 
   if (dismissed) return null;
   if (allDone && doneCount === 0) {

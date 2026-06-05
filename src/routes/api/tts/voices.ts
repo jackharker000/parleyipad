@@ -53,7 +53,7 @@ export const Route = createFileRoute("/api/tts/voices")({
         if (denied) return denied;
 
         const apiKey = process.env.ELEVENLABS_API_KEY;
-        if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
+        if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server", request);
 
         const voices: SimpleVoice[] = [];
         let nextPageToken: string | undefined = undefined;
@@ -75,7 +75,15 @@ export const Route = createFileRoute("/api/tts/voices")({
 
             if (!upstream.ok) {
               const text = await upstream.text();
-              return errorResponse(upstream.status, `ElevenLabs ${upstream.status}: ${text}`);
+              // Log upstream body server-side for debuggability, but never echo it
+              // to the caller — it can include request ids, billing-org ids, and
+              // (on auth errors) substrings of the API key.
+              console.warn("[elevenlabs-voices] upstream", upstream.status, ":", text);
+              return errorResponse(
+                upstream.status,
+                `ElevenLabs returned ${upstream.status}`,
+                request,
+              );
             }
 
             const data = (await upstream.json()) as UpstreamResponse;
@@ -96,10 +104,14 @@ export const Route = createFileRoute("/api/tts/voices")({
           } while (nextPageToken && voices.length < PAGE_SIZE * 5);
         } catch (err) {
           if (err instanceof DOMException && err.name === "TimeoutError") {
-            return errorResponse(504, `ElevenLabs voices timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+            return errorResponse(
+              504,
+              `ElevenLabs voices timed out after ${UPSTREAM_TIMEOUT_MS}ms`,
+              request,
+            );
           }
           const message = err instanceof Error ? err.message : String(err);
-          return errorResponse(502, `Voices fetch failed: ${message}`);
+          return errorResponse(502, `Voices fetch failed: ${message}`, request);
         }
 
         // Stable-sort: cloned first (the user's own clones), then premade,
@@ -112,10 +124,13 @@ export const Route = createFileRoute("/api/tts/voices")({
         return Response.json(
           { voices },
           {
-            headers: withCors({
-              "content-type": "application/json",
-              "cache-control": "public, max-age=300",
-            }),
+            headers: withCors(
+              {
+                "content-type": "application/json",
+                "cache-control": "public, max-age=300",
+              },
+              request,
+            ),
           },
         );
       },
@@ -123,9 +138,9 @@ export const Route = createFileRoute("/api/tts/voices")({
   },
 });
 
-function errorResponse(status: number, error: string): Response {
+function errorResponse(status: number, error: string, request?: Request): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }

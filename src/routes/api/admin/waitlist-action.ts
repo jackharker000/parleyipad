@@ -30,7 +30,7 @@ export const Route = createFileRoute("/api/admin/waitlist-action")({
       OPTIONS: ({ request }) => corsPreflight(request),
       POST: async ({ request }) => {
         if (!isAdminConfigured()) {
-          return json({ error: "Admin features not configured on the server" }, 503);
+          return json({ error: "Admin features not configured on the server" }, 503, request);
         }
 
         // Decode the actor's ID token before the guard so we can log who did
@@ -39,7 +39,7 @@ export const Route = createFileRoute("/api/admin/waitlist-action")({
         const actorClaims = await readActorClaims(request);
 
         const guard = await requireAdmin(request);
-        if (guard instanceof Response) return withCorsResponse(guard);
+        if (guard instanceof Response) return withCorsResponse(guard, request);
         const actorUid = actorClaims?.uid ?? guard.uid;
         const actorEmail = actorClaims?.email ?? null;
 
@@ -56,14 +56,14 @@ export const Route = createFileRoute("/api/admin/waitlist-action")({
             action = body.action;
           }
         } catch {
-          return json({ error: "Invalid body" }, 400);
+          return json({ error: "Invalid body" }, 400, request);
         }
 
         if (typeof id !== "string" || id.length === 0) {
-          return json({ error: "Missing id" }, 400);
+          return json({ error: "Missing id" }, 400, request);
         }
         if (!action) {
-          return json({ error: "Unknown action" }, 400);
+          return json({ error: "Unknown action" }, 400, request);
         }
 
         try {
@@ -76,7 +76,7 @@ export const Route = createFileRoute("/api/admin/waitlist-action")({
             detail: { waitlistId: id, action },
             status: "ok",
           });
-          return json({ ok: true }, 200);
+          return json({ ok: true }, 200, request);
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : "unknown";
           console.error("[api/admin/waitlist-action] failed:", errorMessage);
@@ -89,7 +89,7 @@ export const Route = createFileRoute("/api/admin/waitlist-action")({
             status: "error",
             errorMessage: errorMessage.slice(0, 500),
           });
-          return json({ error: "Couldn't update waitlist entry" }, 500);
+          return json({ error: "Couldn't update waitlist entry" }, 500, request);
         }
       },
     },
@@ -184,15 +184,15 @@ async function applyAction(id: string, action: Action): Promise<void> {
 // Response helpers — mirror the sibling admin routes verbatim.
 // --------------------------------------------------------------------------
 
-function json(body: unknown, status: number): Response {
+function json(body: unknown, status: number, request?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }
 
-function withCorsResponse(res: Response): Response {
-  const headers = withCors({ "content-type": "application/json" });
+function withCorsResponse(res: Response, request?: Request): Response {
+  const headers = withCors({ "content-type": "application/json" }, request);
   for (const [k, v] of Object.entries(headers)) res.headers.set(k, v);
   return res;
 }

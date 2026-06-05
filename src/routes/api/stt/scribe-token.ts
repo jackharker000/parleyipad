@@ -26,7 +26,7 @@ export const Route = createFileRoute("/api/stt/scribe-token")({
 
         const apiKey = process.env.ELEVENLABS_API_KEY;
         if (!apiKey) {
-          return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
+          return errorResponse(500, "ELEVENLABS_API_KEY not set on the server", request);
         }
 
         const upstream = await fetch(TOKEN_URL, {
@@ -42,23 +42,31 @@ export const Route = createFileRoute("/api/stt/scribe-token")({
 
         if (!upstream.ok) {
           const text = await upstream.text();
-          return errorResponse(upstream.status, `Scribe token ${upstream.status}: ${text}`);
+          // Log upstream body server-side for debuggability, but never echo it
+          // to the caller — it can include request ids, billing-org ids, and
+          // (on auth errors) substrings of the API key.
+          console.warn("[scribe-token] upstream", upstream.status, ":", text);
+          return errorResponse(
+            upstream.status,
+            `Scribe token returned ${upstream.status}`,
+            request,
+          );
         }
 
         const data = (await upstream.json()) as { token?: string };
         if (!data.token) {
-          return errorResponse(502, "Scribe token endpoint returned no token");
+          return errorResponse(502, "Scribe token endpoint returned no token", request);
         }
 
-        return Response.json({ token: data.token }, { headers: withCors() });
+        return Response.json({ token: data.token }, { headers: withCors({}, request) });
       },
     },
   },
 });
 
-function errorResponse(status: number, error: string): Response {
+function errorResponse(status: number, error: string, request?: Request): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }

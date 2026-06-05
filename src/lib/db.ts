@@ -504,6 +504,35 @@ export type SyncOutboxRow = {
   startedAt?: number;
 };
 
+/**
+ * Persistent record of a sync flush that kept failing past N retries.
+ * Written by the sync engine after `MAX_RETRIES_BEFORE_LOG` attempts on a
+ * given outbox row, so the user (via Settings) and the admin (via
+ * `/admin/users/$userId`) can see when a row is stuck rather than the
+ * failure being a silent log line on the device.
+ *
+ * Itself synced to Firestore via the same engine — see SYNCED_TABLES in
+ * `src/lib/sync/engine.ts`. The admin overview aggregates unrecovered
+ * errors across users via a collectionGroup query on this table.
+ */
+export type SyncError = {
+  id: string; // nanoid
+  /** Source row that kept failing. */
+  table: string;
+  rowId: string;
+  op: "upsert";
+  /** Trimmed to ~500 chars; never include secrets. */
+  message: string;
+  /** Number of retries before we gave up on this attempt. */
+  retries: number;
+  /** Whether the cause is suspected blob-related (audio upload), text-only, or unknown. */
+  kind: "text" | "blob" | "unknown";
+  /** Whether the row was eventually successfully synced after this error. */
+  recovered: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export const DEFAULT_SETTINGS: SettingsRecord = {
   id: "singleton",
   llmProvider: "anthropic",
@@ -589,6 +618,7 @@ export class ParleyDB extends Dexie {
   personLexicon!: EntityTable<PersonLexiconEntry, "id">;
 
   syncOutbox!: EntityTable<SyncOutboxRow, "id">;
+  syncErrors!: EntityTable<SyncError, "id">;
 
   constructor() {
     super("parley");
@@ -663,6 +693,16 @@ export class ParleyDB extends Dexie {
     // anything older than that is never synced (new-only by design).
     this.version(5).stores({
       syncOutbox: "id, table, rowId, queuedAt",
+    });
+
+    // v6: persistent sync-error log. The sync engine writes here after a
+    // given outbox row keeps failing past MAX_RETRIES_BEFORE_LOG so the
+    // user (Settings) and admin (`/admin/users/$userId`) can see what's
+    // stuck. The table is itself synced to Firestore (text-only — no
+    // audio blobs), and the admin overview aggregates unrecovered errors
+    // across users via a Firestore collectionGroup query.
+    this.version(6).stores({
+      syncErrors: "id, table, rowId, recovered, createdAt, updatedAt",
     });
   }
 }

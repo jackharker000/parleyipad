@@ -56,6 +56,7 @@ const DATA_TABLES = [
   "suggestionsLog",
   "helperDrafts",
   "manualReplies",
+  "syncErrors",
 ] as const;
 
 export const Route = createFileRoute("/api/admin/user-action")({
@@ -64,7 +65,7 @@ export const Route = createFileRoute("/api/admin/user-action")({
       OPTIONS: ({ request }) => corsPreflight(request),
       POST: async ({ request }) => {
         if (!isAdminConfigured()) {
-          return json({ error: "Admin features not configured on the server" }, 503);
+          return json({ error: "Admin features not configured on the server" }, 503, request);
         }
 
         // Pull the caller's email from their verified ID token BEFORE
@@ -74,7 +75,7 @@ export const Route = createFileRoute("/api/admin/user-action")({
         const actorClaims = await readActorClaims(request);
 
         const guard = await requireAdmin(request);
-        if (guard instanceof Response) return withCorsResponse(guard);
+        if (guard instanceof Response) return withCorsResponse(guard, request);
         const callerUid = guard.uid;
         const actorUid = actorClaims?.uid ?? callerUid;
         const actorEmail = actorClaims?.email ?? null;
@@ -88,16 +89,26 @@ export const Route = createFileRoute("/api/admin/user-action")({
             action = body.action as Action;
           }
         } catch {
-          return json({ error: "Invalid body" }, 400);
+          return json({ error: "Invalid body" }, 400, request);
         }
         if (typeof uid !== "string" || uid.length === 0) {
-          return json({ error: "Missing uid" }, 400);
+          return json({ error: "Missing uid" }, 400, request);
         }
         if (!action) {
-          return json({ error: "Unknown action" }, 400);
+          return json({ error: "Unknown action" }, 400, request);
         }
         if (action === "delete" && uid === callerUid) {
-          return json({ error: "Refusing to delete your own account" }, 400);
+          return json({ error: "Refusing to delete your own account" }, 400, request);
+        }
+        // Self-protection for the other destructive actions too — same
+        // shape as delete. Revoke-admin would lock the operator out of
+        // /admin/* until a re-promotion via PARLEY_ADMIN_EMAILS;
+        // disable would lock them out of sign-in entirely.
+        if (action === "revoke-admin" && uid === callerUid) {
+          return json({ error: "Refusing to revoke your own admin claim" }, 400, request);
+        }
+        if (action === "disable" && uid === callerUid) {
+          return json({ error: "Refusing to disable your own account" }, 400, request);
         }
 
         // Look up the target's email upfront so we can log it even after a
@@ -116,7 +127,7 @@ export const Route = createFileRoute("/api/admin/user-action")({
               targetEmail,
               status: "ok",
             });
-            return json({ ok: true }, 200);
+            return json({ ok: true }, 200, request);
           }
           if (action === "disable") {
             await accountsUpdate({ localId: uid, disableUser: true });
@@ -128,7 +139,7 @@ export const Route = createFileRoute("/api/admin/user-action")({
               targetEmail,
               status: "ok",
             });
-            return json({ ok: true }, 200);
+            return json({ ok: true }, 200, request);
           }
           if (action === "enable") {
             await accountsUpdate({ localId: uid, disableUser: false });
@@ -140,7 +151,7 @@ export const Route = createFileRoute("/api/admin/user-action")({
               targetEmail,
               status: "ok",
             });
-            return json({ ok: true }, 200);
+            return json({ ok: true }, 200, request);
           }
           // delete: auth first, then best-effort data wipe.
           await accountsDelete(uid);
@@ -154,7 +165,7 @@ export const Route = createFileRoute("/api/admin/user-action")({
             status: dataOk ? "ok" : "partial",
             detail: dataOk ? undefined : { partial: true },
           });
-          return json({ ok: true, partial: !dataOk }, 200);
+          return json({ ok: true, partial: !dataOk }, 200, request);
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : "unknown";
           console.error("[api/admin/user-action] failed:", errorMessage);
@@ -167,7 +178,7 @@ export const Route = createFileRoute("/api/admin/user-action")({
             status: "error",
             errorMessage: errorMessage.slice(0, 500),
           });
-          return json({ error: "Action failed" }, 500);
+          return json({ error: "Action failed" }, 500, request);
         }
       },
     },
@@ -433,15 +444,15 @@ async function deleteStoragePrefix(uid: string): Promise<boolean> {
 // Response helpers — mirror the sibling admin routes verbatim.
 // --------------------------------------------------------------------------
 
-function json(body: unknown, status: number): Response {
+function json(body: unknown, status: number, request?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }
 
-function withCorsResponse(res: Response): Response {
-  const headers = withCors({ "content-type": "application/json" });
+function withCorsResponse(res: Response, request?: Request): Response {
+  const headers = withCors({ "content-type": "application/json" }, request);
   for (const [k, v] of Object.entries(headers)) res.headers.set(k, v);
   return res;
 }

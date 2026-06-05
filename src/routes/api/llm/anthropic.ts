@@ -89,24 +89,28 @@ export const Route = createFileRoute("/api/llm/anthropic")({
         const start = Date.now();
 
         const apiKey = process.env.ANTHROPIC_API_KEY;
-        if (!apiKey) return errorResponse(500, "ANTHROPIC_API_KEY not set on the server");
+        if (!apiKey) return errorResponse(500, "ANTHROPIC_API_KEY not set on the server", request);
 
         let body: RequestBody;
         try {
           body = (await request.json()) as RequestBody;
         } catch {
-          return errorResponse(400, "Body must be JSON");
+          return errorResponse(400, "Body must be JSON", request);
         }
 
         if (!body || !Array.isArray(body.messages)) {
-          return errorResponse(400, "Body must be { messages: ChatMessage[] }");
+          return errorResponse(400, "Body must be { messages: ChatMessage[] }", request);
         }
         const totalChars = body.messages.reduce(
           (sum, m) => sum + (typeof m?.content === "string" ? m.content.length : 0),
           0,
         );
         if (totalChars > MAX_TOTAL_CONTENT_CHARS) {
-          return errorResponse(400, `messages content must be ≤ ${MAX_TOTAL_CONTENT_CHARS} chars`);
+          return errorResponse(
+            400,
+            `messages content must be ≤ ${MAX_TOTAL_CONTENT_CHARS} chars`,
+            request,
+          );
         }
 
         const stream = !!body.stream;
@@ -142,13 +146,25 @@ export const Route = createFileRoute("/api/llm/anthropic")({
             status,
           });
           if (isTimeout) {
-            return errorResponse(504, `Anthropic timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+            return errorResponse(
+              504,
+              `Anthropic timed out after ${UPSTREAM_TIMEOUT_MS}ms`,
+              request,
+            );
           }
-          return errorResponse(502, `Anthropic request failed: ${(err as Error).message}`);
+          return errorResponse(
+            502,
+            `Anthropic request failed: ${(err as Error).message}`,
+            request,
+          );
         }
 
         if (!upstream.ok) {
           const text = await upstream.text();
+          // Log upstream body server-side for debuggability, but never echo it
+          // to the caller — it can include request ids, billing-org ids, model
+          // aliases, and (on auth errors) substrings of the API key.
+          console.warn("[anthropic] upstream", upstream.status, ":", text);
           await meter(request, {
             kind: "llm",
             provider: "anthropic",
@@ -158,7 +174,7 @@ export const Route = createFileRoute("/api/llm/anthropic")({
             durationMs: Date.now() - start,
             status: upstream.status,
           });
-          return errorResponse(upstream.status, `Anthropic ${upstream.status}: ${text}`);
+          return errorResponse(upstream.status, `Anthropic returned ${upstream.status}`, request);
         }
 
         if (!stream) {
@@ -194,7 +210,7 @@ export const Route = createFileRoute("/api/llm/anthropic")({
                   }
                 : undefined,
             },
-            { headers: withCors() },
+            { headers: withCors({}, request) },
           );
         }
 
@@ -266,11 +282,14 @@ export const Route = createFileRoute("/api/llm/anthropic")({
 
         return new Response(out, {
           status: 200,
-          headers: withCors({
-            "content-type": "application/x-ndjson",
-            "cache-control": "no-cache",
-            "x-accel-buffering": "no",
-          }),
+          headers: withCors(
+            {
+              "content-type": "application/x-ndjson",
+              "cache-control": "no-cache",
+              "x-accel-buffering": "no",
+            },
+            request,
+          ),
         });
       },
     },
@@ -327,9 +346,9 @@ function emitSseEvents(
   }
 }
 
-function errorResponse(status: number, error: string): Response {
+function errorResponse(status: number, error: string, request?: Request): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }

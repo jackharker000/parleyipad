@@ -4,6 +4,16 @@ import { MediaPlaceholder } from "@/components/site/MediaPlaceholder";
 
 export const Route = createFileRoute("/_marketing/story")({
   component: StoryPage,
+  head: () => ({
+    meta: [
+      { title: "Our story — Parley" },
+      {
+        name: "description",
+        content:
+          "Parley was built with James, a non-speaking man with cerebral palsy. We're now opening it to a small first cohort of users and the people who support them.",
+      },
+    ],
+  }),
 });
 
 function StoryPage() {
@@ -66,7 +76,7 @@ function StoryPage() {
             to="/get-started"
             className="inline-flex items-center justify-center rounded-full bg-[var(--teal)] px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--teal-dark)]"
           >
-            Join the waitlist
+            Request an invite
           </Link>
         </div>
       </div>

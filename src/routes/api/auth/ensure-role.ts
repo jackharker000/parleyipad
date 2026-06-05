@@ -24,7 +24,10 @@ import {
  */
 
 function adminEmailAllowList(): Set<string> {
-  const raw = process.env.PARLEY_ADMIN_EMAILS ?? "jackharker000@gmail.com";
+  // No hardcoded fallback — the bootstrap-first-account path below covers
+  // a fresh project, and the allow-list is opt-in via env. Defaulting to a
+  // specific email is a foot-gun for anyone who forks the repo.
+  const raw = process.env.PARLEY_ADMIN_EMAILS ?? "";
   return new Set(
     raw
       .split(",")
@@ -39,7 +42,7 @@ export const Route = createFileRoute("/api/auth/ensure-role")({
       OPTIONS: ({ request }) => corsPreflight(request),
       POST: async ({ request }) => {
         if (!isAdminConfigured()) {
-          return json({ is_admin: false, note: "admin-sdk-not-configured" }, 200);
+          return json({ is_admin: false, note: "admin-sdk-not-configured" }, 200, request);
         }
 
         let idToken: string | undefined;
@@ -47,9 +50,9 @@ export const Route = createFileRoute("/api/auth/ensure-role")({
           const body = (await request.json()) as { idToken?: string };
           idToken = body.idToken;
         } catch {
-          return json({ error: "Invalid body" }, 400);
+          return json({ error: "Invalid body" }, 400, request);
         }
-        if (!idToken) return json({ error: "Missing idToken" }, 400);
+        if (!idToken) return json({ error: "Missing idToken" }, 400, request);
 
         let uid: string;
         let email: string | null = null;
@@ -58,10 +61,10 @@ export const Route = createFileRoute("/api/auth/ensure-role")({
           uid = decoded.uid;
           email = typeof decoded.claims.email === "string" ? decoded.claims.email : null;
           if (decoded.claims.admin === true) {
-            return json({ is_admin: true }, 200);
+            return json({ is_admin: true }, 200, request);
           }
         } catch {
-          return json({ error: "Invalid token" }, 401);
+          return json({ error: "Invalid token" }, 401, request);
         }
 
         // Allow-list path: an admin email always becomes admin.
@@ -81,13 +84,13 @@ export const Route = createFileRoute("/api/auth/ensure-role")({
               detail: { reason: "allowlist" },
               status: "ok",
             });
-            return json({ is_admin: true }, 200);
+            return json({ is_admin: true }, 200, request);
           } catch (err) {
             console.error(
               "[api/auth/ensure-role] allow-list promotion failed:",
               err instanceof Error ? err.message : "unknown",
             );
-            return json({ is_admin: false }, 200);
+            return json({ is_admin: false }, 200, request);
           }
         }
 
@@ -105,25 +108,25 @@ export const Route = createFileRoute("/api/auth/ensure-role")({
               detail: { reason: "first-account" },
               status: "ok",
             });
-            return json({ is_admin: true }, 200);
+            return json({ is_admin: true }, 200, request);
           }
         } catch (err) {
           console.error(
             "[api/auth/ensure-role] role bootstrap failed:",
             err instanceof Error ? err.message : "unknown",
           );
-          return json({ is_admin: false }, 200);
+          return json({ is_admin: false }, 200, request);
         }
 
-        return json({ is_admin: false }, 200);
+        return json({ is_admin: false }, 200, request);
       },
     },
   },
 });
 
-function json(body: unknown, status: number): Response {
+function json(body: unknown, status: number, request?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }

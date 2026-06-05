@@ -4,6 +4,16 @@ import { MediaPlaceholder } from "@/components/site/MediaPlaceholder";
 
 export const Route = createFileRoute("/_marketing/features")({
   component: FeaturesPage,
+  head: () => ({
+    meta: [
+      { title: "Features — Parley" },
+      {
+        name: "description",
+        content:
+          "Speaker recognition that learns who's talking, suggestions that fit the moment, replies in a voice cloned from yours, quick phrases that fire instantly.",
+      },
+    ],
+  }),
 });
 
 type Feature = {
@@ -108,7 +118,7 @@ function FeaturesPage() {
             to="/get-started"
             className="inline-flex items-center justify-center rounded-full bg-[var(--teal)] px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--teal-dark)]"
           >
-            Join the waitlist
+            Request an invite
           </Link>
         </div>
       </div>

@@ -43,29 +43,29 @@ export const Route = createFileRoute("/api/embed/openai")({
         const start = Date.now();
 
         const apiKey = process.env.OPENAI_API_KEY;
-        if (!apiKey) return errorResponse(500, "OPENAI_API_KEY not set on the server");
+        if (!apiKey) return errorResponse(500, "OPENAI_API_KEY not set on the server", request);
 
         let body: RequestBody;
         try {
           body = (await request.json()) as RequestBody;
         } catch {
-          return errorResponse(400, "Body must be JSON");
+          return errorResponse(400, "Body must be JSON", request);
         }
 
         if (!body || !Array.isArray(body.texts)) {
-          return errorResponse(400, "Body must be { texts: string[] }");
+          return errorResponse(400, "Body must be { texts: string[] }", request);
         }
         if (body.texts.length === 0) {
           return Response.json(
             { embeddings: [] },
-            { headers: withCors({ "cache-control": "no-store" }) },
+            { headers: withCors({ "cache-control": "no-store" }, request) },
           );
         }
         if (body.texts.length > MAX_BATCH) {
-          return errorResponse(400, `texts.length must be ≤ ${MAX_BATCH}`);
+          return errorResponse(400, `texts.length must be ≤ ${MAX_BATCH}`, request);
         }
         if (body.texts.some((t) => typeof t !== "string")) {
-          return errorResponse(400, "Every texts[i] must be a string");
+          return errorResponse(400, "Every texts[i] must be a string", request);
         }
 
         let upstream: Response;
@@ -91,13 +91,25 @@ export const Route = createFileRoute("/api/embed/openai")({
             status,
           });
           if (isTimeout) {
-            return errorResponse(504, `OpenAI embeddings timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+            return errorResponse(
+              504,
+              `OpenAI embeddings timed out after ${UPSTREAM_TIMEOUT_MS}ms`,
+              request,
+            );
           }
-          return errorResponse(502, `OpenAI embeddings request failed: ${(err as Error).message}`);
+          return errorResponse(
+            502,
+            `OpenAI embeddings request failed: ${(err as Error).message}`,
+            request,
+          );
         }
 
         if (!upstream.ok) {
           const text = await upstream.text();
+          // Log upstream body server-side for debuggability, but never echo it
+          // to the caller — it can include request ids, billing-org ids, model
+          // aliases, and (on auth errors) substrings of the API key.
+          console.warn("[openai-embed] upstream", upstream.status, ":", text);
           await meter(request, {
             kind: "embed",
             provider: "openai",
@@ -106,7 +118,7 @@ export const Route = createFileRoute("/api/embed/openai")({
             durationMs: Date.now() - start,
             status: upstream.status,
           });
-          return errorResponse(upstream.status, `OpenAI ${upstream.status}: ${text}`);
+          return errorResponse(upstream.status, `OpenAI returned ${upstream.status}`, request);
         }
 
         const data = (await upstream.json()) as {
@@ -137,7 +149,7 @@ export const Route = createFileRoute("/api/embed/openai")({
               durationMs: Date.now() - start,
               status: 502,
             });
-            return errorResponse(502, `OpenAI returned no embedding for input ${i}`);
+            return errorResponse(502, `OpenAI returned no embedding for input ${i}`, request);
           }
         }
 
@@ -152,16 +164,19 @@ export const Route = createFileRoute("/api/embed/openai")({
 
         return Response.json(
           { embeddings },
-          { headers: withCors({ "cache-control": "no-store" }) },
+          { headers: withCors({ "cache-control": "no-store" }, request) },
         );
       },
     },
   },
 });
 
-function errorResponse(status: number, error: string): Response {
+function errorResponse(status: number, error: string, request?: Request): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: withCors({ "content-type": "application/json", "cache-control": "no-store" }),
+    headers: withCors(
+      { "content-type": "application/json", "cache-control": "no-store" },
+      request,
+    ),
   });
 }

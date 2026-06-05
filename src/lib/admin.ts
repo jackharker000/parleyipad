@@ -243,6 +243,39 @@ export async function fetchUserDataCounts(
 }
 
 // --------------------------------------------------------------------------
+// Sync-error summary (from /api/admin/sync-errors-summary)
+// --------------------------------------------------------------------------
+
+/**
+ * Map of uid → unrecovered sync-error count in the last 24 hours. Powers
+ * the "Users with sync errors" stat on /admin and the "Sync issues"
+ * filter + column on /admin/users. Cached 30s like the other admin
+ * fetchers; pass `{ force: true }` to bypass (e.g. after a destructive
+ * action that could clear errors).
+ */
+let syncErrorsSummaryCache: {
+  value: Record<string, number>;
+  at: number;
+} | null = null;
+
+export async function fetchSyncErrorsSummary(opts?: {
+  force?: boolean;
+}): Promise<Record<string, number>> {
+  if (
+    !opts?.force &&
+    syncErrorsSummaryCache &&
+    Date.now() - syncErrorsSummaryCache.at < CACHE_TTL_MS
+  ) {
+    return syncErrorsSummaryCache.value;
+  }
+  const res = await authedFetch("/api/admin/sync-errors-summary");
+  if (!res.ok) return parseError(res);
+  const body = (await res.json()) as { counts: Record<string, number> };
+  syncErrorsSummaryCache = { value: body.counts, at: Date.now() };
+  return body.counts;
+}
+
+// --------------------------------------------------------------------------
 // Destructive account actions (from /api/admin/user-action)
 // --------------------------------------------------------------------------
 

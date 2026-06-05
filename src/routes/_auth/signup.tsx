@@ -9,6 +9,16 @@ import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 
 export const Route = createFileRoute("/_auth/signup")({
   component: SignupPage,
+  head: () => ({
+    meta: [
+      { title: "Set up Parley" },
+      {
+        name: "description",
+        content:
+          "One account per person. Five minutes from here to your first conversation.",
+      },
+    ],
+  }),
 });
 
 function SignupPage() {

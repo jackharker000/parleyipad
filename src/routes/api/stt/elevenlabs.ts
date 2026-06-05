@@ -38,12 +38,12 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
         const audioBytesHeader = Number(request.headers.get("content-length")) || 0;
 
         const apiKey = process.env.ELEVENLABS_API_KEY;
-        if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
+        if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server", request);
 
         const form = await request.formData();
         const audio = form.get("audio");
         if (!(audio instanceof Blob)) {
-          return errorResponse(400, "Multipart field `audio` (Blob) is required");
+          return errorResponse(400, "Multipart field `audio` (Blob) is required", request);
         }
         // Audio blob size is the most accurate proxy for billable input — fall
         // back to the request's Content-Length if the blob doesn't expose a size.
@@ -105,13 +105,21 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
             status,
           });
           if (isTimeout) {
-            return errorResponse(504, `Scribe timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+            return errorResponse(504, `Scribe timed out after ${UPSTREAM_TIMEOUT_MS}ms`, request);
           }
-          return errorResponse(502, `Scribe request failed: ${(err as Error).message}`);
+          return errorResponse(
+            502,
+            `Scribe request failed: ${(err as Error).message}`,
+            request,
+          );
         }
 
         if (!upstream.ok) {
           const text = await upstream.text();
+          // Log upstream body server-side for debuggability, but never echo it
+          // to the caller — it can include request ids, billing-org ids, model
+          // aliases, and (on auth errors) substrings of the API key.
+          console.warn("[elevenlabs-stt] upstream", upstream.status, ":", text);
           await meter(request, {
             kind: "stt",
             provider: "elevenlabs",
@@ -120,7 +128,7 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
             durationMs: Date.now() - t0,
             status: upstream.status,
           });
-          return errorResponse(upstream.status, `Scribe ${upstream.status}: ${text}`);
+          return errorResponse(upstream.status, `Scribe returned ${upstream.status}`, request);
         }
 
         type ScribeWord = {
@@ -161,15 +169,15 @@ export const Route = createFileRoute("/api/stt/elevenlabs")({
           durationMs: Date.now() - t0,
           status: upstream.status,
         });
-        return Response.json({ segments }, { headers: withCors() });
+        return Response.json({ segments }, { headers: withCors({}, request) });
       },
     },
   },
 });
 
-function errorResponse(status: number, error: string): Response {
+function errorResponse(status: number, error: string, request?: Request): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }

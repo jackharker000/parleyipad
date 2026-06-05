@@ -17,7 +17,7 @@ Authentication, the waitlist, and the per-user cloud sync of cockpit data all ru
 
 1. Create a Firebase project at https://console.firebase.google.com.
 2. **Authentication → Sign-in method**: enable **Email/Password**.
-3. **Authentication → Settings → Authorized domains**: add your local dev origin (`localhost`) and your Vercel domains (e.g. `parley.vercel.app` and any custom domain). Firebase Auth refuses sign-ins from origins not listed here.
+3. **Authentication → Settings → Authorized domains**: add your local dev origin (`localhost`) and every domain that will serve the app — including each Vercel **preview** URL you want Google sign-in working on (e.g. `ipad-aac-buddy-git-<branch>-...vercel.app`), your production Vercel domain (e.g. `parley.vercel.app`), and any custom domain. Firebase Auth wildcards aren't supported here, so each preview host needs a line. Symptom when an origin is missing: "Continue with Google" opens a popup that closes almost immediately and the form shows "Something went wrong" — the underlying code is `auth/unauthorized-domain` (visible in browser devtools).
 4. **Firestore Database**: create a database in **production mode** (the waitlist and the per-user data subtrees are written here).
 5. **Storage**: open **Build → Storage → Get started** and accept the defaults. This auto-provisions the project's default Storage bucket — needed for voice-sample audio and cached quick-phrase TTS audio to sync.
 6. **Project Settings → General → Your apps**: register a Web app and copy its config into the `VITE_FIREBASE_*` vars in `.env`. These are public by design — they only identify the project; access is governed by your Firebase security rules (see below).
@@ -89,6 +89,12 @@ service firebase.storage {
 ```
 
 Publish both. Admin reads (the `/admin/*` dashboard) go through the server using the service account, which bypasses these rules — that's how the admin can still see every user's data without weakening them.
+
+The `syncErrors` table is part of the per-user subtree (`users/{uid}/syncErrors/{id}`) and is already covered by the per-user Firestore rule above — users write their own sync-error log when the engine logs after several failed retries; admins read across users via the service account.
+
+## Sync error visibility (collection-group index)
+
+Sync error visibility uses a Firestore collection-group query on `syncErrors`. You'll need to create a collection-group index in the Firebase console (Firestore → Indexes → Composite → Collection group: `syncErrors`, fields: `recovered` ASC, `createdAt` DESC). Without the index, the admin overview "Users with sync errors" widget will show 0 instead of erroring — see the `/api/admin/sync-errors-summary` endpoint, which detects the FAILED_PRECONDITION response and returns an empty count map so the dashboard never reads as broken.
 
 ## Dev
 

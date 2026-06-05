@@ -38,10 +38,10 @@ export const Route = createFileRoute("/api/admin/activity")({
       OPTIONS: ({ request }) => corsPreflight(request),
       POST: async ({ request }) => {
         if (!isAdminConfigured()) {
-          return json({ error: "Admin features not configured on the server" }, 503);
+          return json({ error: "Admin features not configured on the server" }, 503, request);
         }
         const guard = await requireAdmin(request);
-        if (guard instanceof Response) return withCorsResponse(guard);
+        if (guard instanceof Response) return withCorsResponse(guard, request);
 
         let targetUid: string | undefined;
         let limit = DEFAULT_LIMIT;
@@ -62,13 +62,13 @@ export const Route = createFileRoute("/api/admin/activity")({
 
         try {
           const entries = await queryActivity(targetUid, limit);
-          return json({ entries }, 200);
+          return json({ entries }, 200, request);
         } catch (err) {
           console.error(
             "[api/admin/activity] load failed:",
             err instanceof Error ? err.message : "unknown",
           );
-          return json({ error: "Couldn't load activity" }, 500);
+          return json({ error: "Couldn't load activity" }, 500, request);
         }
       },
     },
@@ -124,6 +124,17 @@ async function queryActivity(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    // FAILED_PRECONDITION = Firestore wants a composite index for
+    // (targetUid ASC, createdAt DESC). Until the operator provisions it
+    // (see docs/setup.md), return [] instead of erroring — the per-user
+    // activity tab shows an empty list with a known-no-index footnote
+    // instead of an angry red toast on every load.
+    if (text.includes("FAILED_PRECONDITION") || res.status === 400) {
+      console.warn(
+        `[admin/activity] runQuery returned ${res.status}; possible missing composite index — returning empty list`,
+      );
+      return [];
+    }
     throw new Error(`runQuery failed: ${res.status} ${text.slice(0, 200)}`);
   }
 
@@ -225,15 +236,15 @@ function decode(fields: Record<string, FirestoreValue>): Record<string, unknown>
 // Response helpers — mirror the sibling admin routes verbatim.
 // --------------------------------------------------------------------------
 
-function json(body: unknown, status: number): Response {
+function json(body: unknown, status: number, request?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }
 
-function withCorsResponse(res: Response): Response {
-  const headers = withCors({ "content-type": "application/json" });
+function withCorsResponse(res: Response, request?: Request): Response {
+  const headers = withCors({ "content-type": "application/json" }, request);
   for (const [k, v] of Object.entries(headers)) res.headers.set(k, v);
   return res;
 }

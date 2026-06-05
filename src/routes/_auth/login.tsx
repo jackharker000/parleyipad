@@ -15,6 +15,15 @@ const LoginSearch = z.object({
 export const Route = createFileRoute("/_auth/login")({
   validateSearch: LoginSearch,
   component: LoginPage,
+  head: () => ({
+    meta: [
+      { title: "Log in — Parley" },
+      {
+        name: "description",
+        content: "Sign in to pick up where the last conversation left off.",
+      },
+    ],
+  }),
 });
 
 function LoginPage() {

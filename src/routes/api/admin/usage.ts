@@ -23,10 +23,10 @@ export const Route = createFileRoute("/api/admin/usage")({
       OPTIONS: ({ request }) => corsPreflight(request),
       POST: async ({ request }) => {
         if (!isAdminConfigured()) {
-          return json({ error: "Admin features not configured on the server" }, 503);
+          return json({ error: "Admin features not configured on the server" }, 503, request);
         }
         const guard = await requireAdmin(request);
-        if (guard instanceof Response) return withCorsResponse(guard);
+        if (guard instanceof Response) return withCorsResponse(guard, request);
 
         let days = 30;
         try {
@@ -40,13 +40,13 @@ export const Route = createFileRoute("/api/admin/usage")({
 
         try {
           const aggregate = await loadUsage(days);
-          return json({ aggregate }, 200);
+          return json({ aggregate }, 200, request);
         } catch (err) {
           console.error(
             "[api/admin/usage] load failed:",
             err instanceof Error ? err.message : "unknown",
           );
-          return json({ error: "Couldn't load usage" }, 500);
+          return json({ error: "Couldn't load usage" }, 500, request);
         }
       },
     },
@@ -425,15 +425,15 @@ async function getAccessToken(): Promise<string | null> {
 // Response helpers — mirror the sibling admin routes verbatim.
 // --------------------------------------------------------------------------
 
-function json(body: unknown, status: number): Response {
+function json(body: unknown, status: number, request?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }
 
-function withCorsResponse(res: Response): Response {
-  const headers = withCors({ "content-type": "application/json" });
+function withCorsResponse(res: Response, request?: Request): Response {
+  const headers = withCors({ "content-type": "application/json" }, request);
   for (const [k, v] of Object.entries(headers)) res.headers.set(k, v);
   return res;
 }

@@ -15,6 +15,18 @@ import { useSettings } from "@/lib/settings";
 
 export const Route = createFileRoute("/app")({
   component: AppLayout,
+  // Cockpit UX is intentionally locked — re-add `maximum-scale=1` so the
+  // tap targets, mood selector, and speaker panel can't be pinch-zoomed
+  // out of alignment. Marketing/auth pages stay zoomable for accessibility.
+  head: () => ({
+    meta: [
+      {
+        name: "viewport",
+        content:
+          "width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1",
+      },
+    ],
+  }),
 });
 
 const NAV: Array<{ to: string; label: string; exact?: boolean }> = [

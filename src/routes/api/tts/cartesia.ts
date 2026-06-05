@@ -37,19 +37,23 @@ export const Route = createFileRoute("/api/tts/cartesia")({
         const start = Date.now();
 
         const apiKey = process.env.CARTESIA_API_KEY;
-        if (!apiKey) return errorResponse(500, "CARTESIA_API_KEY not set on the server");
+        if (!apiKey) return errorResponse(500, "CARTESIA_API_KEY not set on the server", request);
 
         let body: RequestBody;
         try {
           body = (await request.json()) as RequestBody;
         } catch {
-          return errorResponse(400, "Body must be JSON");
+          return errorResponse(400, "Body must be JSON", request);
         }
-        if (!body.text) return errorResponse(400, "`text` is required");
+        if (!body.text) return errorResponse(400, "`text` is required", request);
 
         const voiceId = body.voiceId?.trim() || process.env.PARLEY_JAMES_VOICE_ID?.trim();
         if (!voiceId) {
-          return errorResponse(400, "No voiceId in body and PARLEY_JAMES_VOICE_ID not set");
+          return errorResponse(
+            400,
+            "No voiceId in body and PARLEY_JAMES_VOICE_ID not set",
+            request,
+          );
         }
 
         let upstream: Response;
@@ -82,13 +86,21 @@ export const Route = createFileRoute("/api/tts/cartesia")({
             status,
           });
           if (isTimeout) {
-            return errorResponse(504, `Cartesia timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+            return errorResponse(504, `Cartesia timed out after ${UPSTREAM_TIMEOUT_MS}ms`, request);
           }
-          return errorResponse(502, `Cartesia request failed: ${(err as Error).message}`);
+          return errorResponse(
+            502,
+            `Cartesia request failed: ${(err as Error).message}`,
+            request,
+          );
         }
 
         if (!upstream.ok || !upstream.body) {
           const text = await upstream.text();
+          // Log upstream body server-side for debuggability, but never echo it
+          // to the caller — it can include request ids, billing-org ids, and
+          // (on auth errors) substrings of the API key.
+          console.warn("[cartesia] upstream", upstream.status, ":", text);
           await meter(request, {
             kind: "tts",
             provider: "cartesia",
@@ -97,7 +109,7 @@ export const Route = createFileRoute("/api/tts/cartesia")({
             durationMs: Date.now() - start,
             status: upstream.status,
           });
-          return errorResponse(upstream.status, `Cartesia ${upstream.status}: ${text}`);
+          return errorResponse(upstream.status, `Cartesia returned ${upstream.status}`, request);
         }
 
         // Tee the upstream audio so we can log usage once the response
@@ -138,20 +150,23 @@ export const Route = createFileRoute("/api/tts/cartesia")({
 
         return new Response(out, {
           status: 200,
-          headers: withCors({
-            "content-type": "audio/mpeg",
-            "cache-control": "no-cache",
-            "x-accel-buffering": "no",
-          }),
+          headers: withCors(
+            {
+              "content-type": "audio/mpeg",
+              "cache-control": "no-cache",
+              "x-accel-buffering": "no",
+            },
+            request,
+          ),
         });
       },
     },
   },
 });
 
-function errorResponse(status: number, error: string): Response {
+function errorResponse(status: number, error: string, request?: Request): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }

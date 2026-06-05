@@ -3,6 +3,16 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_marketing/get-started")({
   component: GetStartedPage,
+  head: () => ({
+    meta: [
+      { title: "Request an invite — Parley" },
+      {
+        name: "description",
+        content:
+          "We're letting a handful of families and AAC users in first. Tell us about the person Parley would be for — we'll come back personally.",
+      },
+    ],
+  }),
 });
 
 type Status = "idle" | "submitting" | "success" | "error";

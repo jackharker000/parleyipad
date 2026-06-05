@@ -32,12 +32,12 @@ export const Route = createFileRoute("/api/waitlist")({
         try {
           raw = await request.json();
         } catch {
-          return jsonResponse({ ok: false, error: "Invalid body" }, 400);
+          return jsonResponse({ ok: false, error: "Invalid body" }, 400, request);
         }
 
         const parsed = BodySchema.safeParse(raw);
         if (!parsed.success) {
-          return jsonResponse({ ok: false, error: "Invalid body" }, 400);
+          return jsonResponse({ ok: false, error: "Invalid body" }, 400, request);
         }
 
         const { name, email, about } = parsed.data;
@@ -51,7 +51,7 @@ export const Route = createFileRoute("/api/waitlist")({
           console.info(
             "[api/waitlist] FIREBASE_SERVICE_ACCOUNT_B64 not set — submission was not persisted",
           );
-          return jsonResponse({ ok: true }, 200);
+          return jsonResponse({ ok: true }, 200, request);
         }
 
         // Persist to Firestore via the REST API (service-account token).
@@ -62,18 +62,18 @@ export const Route = createFileRoute("/api/waitlist")({
           console.error(
             `[api/waitlist] failed to persist signup: ${(err as Error).message}`,
           );
-          return jsonResponse({ ok: false, error: "Couldn't save your request" }, 500);
+          return jsonResponse({ ok: false, error: "Couldn't save your request" }, 500, request);
         }
 
-        return jsonResponse({ ok: true }, 200);
+        return jsonResponse({ ok: true }, 200, request);
       },
     },
   },
 });
 
-function jsonResponse(body: unknown, status: number): Response {
+function jsonResponse(body: unknown, status: number, request?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }

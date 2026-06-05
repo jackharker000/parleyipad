@@ -45,6 +45,12 @@ function friendlyError(code: unknown): string {
       return "Too many attempts. Please wait a moment and try again.";
     case "auth/network-request-failed":
       return "Network problem — check your connection and try again.";
+    case "auth/unauthorized-domain":
+      return "This domain isn't on the Firebase Auth allow-list. Add it under Firebase Console → Authentication → Settings → Authorized domains.";
+    case "auth/operation-not-supported-in-this-environment":
+      return "Google sign-in isn't available in this environment. Try the email + password form instead.";
+    case "auth/internal-error":
+      return "Firebase returned an internal error. Try again, or use email + password.";
     default:
       return "Something went wrong. Please try again.";
   }
@@ -123,6 +129,9 @@ export async function signInWithGoogle(): Promise<SessionUser> {
     return await resolve(cred.user, true);
   } catch (err) {
     const code = (err as { code?: string })?.code;
+    // Log the raw code so future unrecognised failures are diagnosable
+    // from devtools without digging through the Firebase source.
+    console.warn("[auth] signInWithGoogle failed:", code, err);
     if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
       throw new AuthError("Sign-in cancelled.");
     }

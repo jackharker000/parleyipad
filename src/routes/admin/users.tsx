@@ -1,25 +1,50 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
+import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import {
   AdminApiError,
+  fetchSyncErrorsSummary,
   fetchUsage,
   fetchUsers,
   relativeTime,
 } from "@/lib/admin";
 import type { AdminUserRecord, UsageAggregate } from "@/lib/admin";
 
+/**
+ * `syncIssues=1` lands the admin on this page with the "Sync issues"
+ * filter pre-enabled — used by the click-through on the overview's
+ * "Users with sync errors" stat card. We validate it via zod so a
+ * malformed search string falls back cleanly to the default view.
+ */
+const usersSearchSchema = z.object({
+  syncIssues: z
+    .union([z.literal(1), z.literal("1"), z.boolean()])
+    .optional(),
+});
+
 export const Route = createFileRoute("/admin/users")({
   component: AdminUsersPage,
+  validateSearch: usersSearchSchema,
 });
 
 type SortKey = "lastSignInDesc" | "emailAsc" | "createdDesc";
 
 function AdminUsersPage() {
+  const search = Route.useSearch();
+  const initialSyncIssuesOnly = useMemo(() => {
+    const v = search.syncIssues;
+    if (v === true || v === 1 || v === "1") return true;
+    return false;
+  }, [search.syncIssues]);
+
   const [users, setUsers] = useState<AdminUserRecord[] | null>(null);
   const [usage7d, setUsage7d] = useState<UsageAggregate | null>(null);
   const [usage30d, setUsage30d] = useState<UsageAggregate | null>(null);
+  const [syncErrorCounts, setSyncErrorCounts] = useState<Record<string, number>>(
+    {},
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<AdminApiError | null>(null);
 
@@ -28,17 +53,27 @@ function AdminUsersPage() {
   const [emailQuery, setEmailQuery] = useState("");
   const [adminsOnly, setAdminsOnly] = useState(false);
   const [activeOnly, setActiveOnly] = useState(false);
+  const [syncIssuesOnly, setSyncIssuesOnly] = useState(initialSyncIssuesOnly);
   const [sortKey, setSortKey] = useState<SortKey>("lastSignInDesc");
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([fetchUsers(), fetchUsage(7), fetchUsage(30)])
-      .then(([usersList, u7, u30]) => {
+    // fetchSyncErrorsSummary is allowed to fail (missing Firestore index,
+    // service-account hiccup) without taking down the page — we settle
+    // it independently and treat a failure as "no users have errors".
+    Promise.all([
+      fetchUsers(),
+      fetchUsage(7),
+      fetchUsage(30),
+      fetchSyncErrorsSummary().catch(() => ({}) as Record<string, number>),
+    ])
+      .then(([usersList, u7, u30, counts]) => {
         if (!cancelled) {
           setUsers(usersList);
           setUsage7d(u7);
           setUsage30d(u30);
+          setSyncErrorCounts(counts);
           setError(null);
         }
       })
@@ -89,6 +124,9 @@ function AdminUsersPage() {
     }
     if (adminsOnly) list = list.filter((u) => u.is_admin);
     if (activeOnly) list = list.filter((u) => activeUidSet7d.has(u.uid));
+    if (syncIssuesOnly) {
+      list = list.filter((u) => (syncErrorCounts[u.uid] ?? 0) > 0);
+    }
 
     const sorted = [...list];
     sorted.sort((a, b) => {
@@ -102,7 +140,16 @@ function AdminUsersPage() {
       return dateMs(b.lastSignInAt) - dateMs(a.lastSignInAt);
     });
     return sorted;
-  }, [users, emailQuery, adminsOnly, activeOnly, sortKey, activeUidSet7d]);
+  }, [
+    users,
+    emailQuery,
+    adminsOnly,
+    activeOnly,
+    syncIssuesOnly,
+    sortKey,
+    activeUidSet7d,
+    syncErrorCounts,
+  ]);
 
   if (loading) {
     return (
@@ -167,6 +214,17 @@ function AdminUsersPage() {
             />
             Active in last 7d
           </label>
+          <label
+            className="inline-flex cursor-pointer items-center gap-2 text-sm text-[var(--ink-soft)]"
+            title="Show only users with unrecovered sync errors in the last 24h"
+          >
+            <input
+              type="checkbox"
+              checked={syncIssuesOnly}
+              onChange={(e) => setSyncIssuesOnly(e.target.checked)}
+            />
+            Sync issues
+          </label>
           <div className="ml-auto inline-flex items-center gap-2 text-sm text-[var(--ink-soft)]">
             <label htmlFor="users-sort">Sort</label>
             <select
@@ -193,6 +251,7 @@ function AdminUsersPage() {
             users={visibleUsers}
             activeUidSet7d={activeUidSet7d}
             spendByUid30d={spendByUid30d}
+            syncErrorCounts={syncErrorCounts}
           />
         )}
       </div>
@@ -258,10 +317,12 @@ function UsersTable({
   users,
   activeUidSet7d,
   spendByUid30d,
+  syncErrorCounts,
 }: {
   users: AdminUserRecord[];
   activeUidSet7d: Set<string>;
   spendByUid30d: Map<string, number>;
+  syncErrorCounts: Record<string, number>;
 }) {
   return (
     <table className="w-full border-separate border-spacing-0 text-sm">
@@ -273,6 +334,7 @@ function UsersTable({
           <Th>Last sign-in</Th>
           <Th>Last active</Th>
           <Th>30d spend</Th>
+          <Th>Sync issues</Th>
           <Th>Admin</Th>
           <Th>Disabled</Th>
           <Th>Actions</Th>
@@ -282,6 +344,7 @@ function UsersTable({
         {users.map((u) => {
           const active = activeUidSet7d.has(u.uid);
           const spend = spendByUid30d.get(u.uid) ?? 0;
+          const errCount = syncErrorCounts[u.uid] ?? 0;
           return (
             <tr key={u.uid}>
               <Td>
@@ -295,6 +358,18 @@ function UsersTable({
               <Td>{fmtDate(u.lastSignInAt)}</Td>
               <Td>{relativeTime(u.lastSignInAt)}</Td>
               <Td>{spend > 0 ? fmtSpend(spend) : <Muted>—</Muted>}</Td>
+              <Td>
+                {errCount > 0 ? (
+                  <span
+                    title="Unrecovered sync errors in the last 24h"
+                    className="inline-flex items-center rounded-full bg-[var(--coral)]/10 px-2 py-0.5 text-xs font-medium text-[var(--coral)] tabular-nums"
+                  >
+                    {errCount.toLocaleString()}
+                  </span>
+                ) : (
+                  <Muted>—</Muted>
+                )}
+              </Td>
               <Td>{u.is_admin ? <AdminBadge /> : null}</Td>
               <Td>{u.disabled ? "Yes" : "No"}</Td>
               <Td>

@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 
-import { AdminApiError, fetchUsage, fetchUsers, relativeTime } from "@/lib/admin";
+import {
+  AdminApiError,
+  fetchSyncErrorsSummary,
+  fetchUsage,
+  fetchUsers,
+  relativeTime,
+} from "@/lib/admin";
 import type { AdminUserRecord, UsageAggregate } from "@/lib/admin";
 
 export const Route = createFileRoute("/admin/")({
@@ -13,19 +19,32 @@ function AdminOverview() {
   const [usage1d, setUsage1d] = useState<UsageAggregate | null>(null);
   const [usage7d, setUsage7d] = useState<UsageAggregate | null>(null);
   const [usage30d, setUsage30d] = useState<UsageAggregate | null>(null);
+  const [syncErrorCounts, setSyncErrorCounts] = useState<Record<string, number>>(
+    {},
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<AdminApiError | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([fetchUsers(), fetchUsage(1), fetchUsage(7), fetchUsage(30)])
-      .then(([list, u1, u7, u30]) => {
+    // The sync-errors summary is allowed to fail (e.g. missing collection-
+    // group index) without taking down the page; we fall back to zero and
+    // the stat card shows "0 users".
+    Promise.all([
+      fetchUsers(),
+      fetchUsage(1),
+      fetchUsage(7),
+      fetchUsage(30),
+      fetchSyncErrorsSummary().catch(() => ({}) as Record<string, number>),
+    ])
+      .then(([list, u1, u7, u30, syncErrors]) => {
         if (!cancelled) {
           setUsers(list);
           setUsage1d(u1);
           setUsage7d(u7);
           setUsage30d(u30);
+          setSyncErrorCounts(syncErrors);
           setError(null);
         }
       })
@@ -73,8 +92,8 @@ function AdminOverview() {
       <div className="mx-auto max-w-screen-2xl px-5 py-5">
         <h1 className="text-3xl font-semibold tracking-tight">Overview</h1>
         {banner}
-        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
+        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, i) => (
             <StatSkeleton key={i} />
           ))}
         </div>
@@ -111,6 +130,9 @@ function AdminOverview() {
   const activeNowEmails = activeNowUids
     .map((uid) => emailByUid.get(uid) ?? null)
     .filter((email): email is string => Boolean(email));
+  const usersWithSyncErrors = Object.values(syncErrorCounts).filter(
+    (n) => n > 0,
+  ).length;
 
   return (
     <div className="mx-auto max-w-screen-2xl px-5 py-5">
@@ -118,7 +140,7 @@ function AdminOverview() {
 
       {banner}
 
-      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
+      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-6">
         <StatCard label="Total users" value={list.length.toLocaleString()} />
         <StatCard label="Active users (7d)" value={activeUsers7d.toLocaleString()} />
         <StatCard label="Admins" value={admins.toLocaleString()} />
@@ -136,6 +158,7 @@ function AdminOverview() {
           emails={activeNowEmails}
           windowMinutes={activeNowWindow}
         />
+        <SyncErrorsCard count={usersWithSyncErrors} />
       </div>
 
       <section className="mt-10">
@@ -224,6 +247,48 @@ function ActiveNowCard({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * Sync error stat — count of distinct users with at least one unrecovered
+ * sync error in the last 24h. Click-through deep-links to the Users page
+ * with the "Sync issues" filter pre-applied. When the underlying Firestore
+ * collection-group index is missing the API returns an empty map, so this
+ * card shows "0" rather than erroring — by design, the dashboard never
+ * reads as broken just because the index hasn't been provisioned.
+ */
+function SyncErrorsCard({ count }: { count: number }) {
+  return (
+    <Link
+      to="/admin/users"
+      search={{ syncIssues: 1 }}
+      className="block rounded-2xl border border-[var(--line)] bg-white p-6 transition hover:border-[var(--coral)]/40"
+    >
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-[var(--ink-soft)]">
+          Users with sync errors (24h)
+        </div>
+        {count > 0 ? (
+          <span
+            title="At least one unrecovered sync error logged in the last 24h"
+            className="inline-block h-2 w-2 rounded-full bg-[var(--coral)]"
+          />
+        ) : null}
+      </div>
+      <div className="mt-2 text-3xl font-semibold tracking-tight">
+        {count.toLocaleString()}
+      </div>
+      {count === 0 ? (
+        <p className="mt-2 text-xs italic text-[var(--ink-soft)]">
+          Sync is healthy across all users.
+        </p>
+      ) : (
+        <p className="mt-2 text-xs text-[var(--teal-dark)]">
+          View affected users →
+        </p>
+      )}
+    </Link>
   );
 }
 

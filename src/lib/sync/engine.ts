@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 import { doc, setDoc } from "firebase/firestore";
 import { getStorage, ref, uploadBytes } from "firebase/storage";
 
-import { db, type SyncOutboxRow } from "@/lib/db";
+import { db, type SyncError, type SyncOutboxRow } from "@/lib/db";
 import { getFirebaseApp, getFirebaseDb, isFirebaseConfigured } from "@/lib/firebase/client";
 import { getSettingsSnapshot } from "@/lib/settings";
 
@@ -51,6 +51,10 @@ const SYNCED_TABLES = [
   "suggestionsLog",
   "helperDrafts",
   "manualReplies",
+  // The sync-error log itself syncs to Firestore so the admin overview
+  // can aggregate unrecovered errors across users via a collectionGroup
+  // query. Text-only — no entry in AUDIO_TABLES.
+  "syncErrors",
 ] as const;
 
 type SyncedTable = (typeof SYNCED_TABLES)[number];
@@ -74,6 +78,20 @@ const FLUSH_BATCH_SIZE = 50;
 const FLUSH_BACKOFF_MAX_MS = 60_000;
 
 const CURSOR_ID = "cursor";
+
+/**
+ * Once an outbox row has failed this many times in a row, we drop a
+ * SyncError row so the user and the admin can see it's stuck. We don't
+ * stop retrying — exponential backoff continues — we just surface the
+ * fact that this particular row is in trouble.
+ */
+const MAX_RETRIES_BEFORE_LOG = 3;
+
+/** Cap on locally-retained SyncError rows per device. Older rows are pruned. */
+const MAX_SYNC_ERRORS_LOCAL = 50;
+
+/** Trim the message we persist so it never carries a giant payload / secret. */
+const SYNC_ERROR_MESSAGE_MAX = 500;
 
 // --------------------------------------------------------------------------
 // Engine state
@@ -285,6 +303,13 @@ async function getCursor(): Promise<number> {
 function installHooks(handle: EngineHandle): void {
   const d = db();
   for (const name of SYNCED_TABLES) {
+    // syncErrors is deliberately excluded from the hook-driven outbox
+    // path: a failed sync that records into syncErrors would re-fire
+    // this hook and enqueue itself, which after MAX_RETRIES_BEFORE_LOG
+    // failures recurses into recordSyncError again — chronic write loop
+    // capped only by the 50-row prune. recordSyncError instead pushes
+    // its row to Firestore directly (best-effort, never throws).
+    if (name === "syncErrors") continue;
     // Dexie's runtime table lookup. The static class fields are typed
     // separately, but a string-indexed access is the only generic way
     // to attach hooks across the full list. `d.table(name)` throws if
@@ -452,6 +477,18 @@ async function flushBatch(
         const live = await db().syncOutbox.get(entry.id);
         if (live && live.queuedAt === entry.queuedAt) {
           await db().syncOutbox.delete(entry.id);
+          // The row finally went through — mark any matching SyncError
+          // as recovered so the admin can tell "broke once, healed" from
+          // "currently broken". Wrapped so the recovery write never
+          // crashes the outer flush loop.
+          try {
+            await markSyncErrorRecovered(entry.table, entry.rowId);
+          } catch (recErr) {
+            console.warn(
+              "[sync] failed to mark sync error recovered",
+              recErr instanceof Error ? recErr.message : recErr,
+            );
+          }
         }
       } else if (sent === "audio-pending") {
         // Blob upload succeeded but Firestore write failed — keep the
@@ -464,9 +501,23 @@ async function flushBatch(
       const message = errorMessage(err);
       status.lastError = message;
       emitStatus();
-      await db().syncOutbox.update(entry.id, {
-        retries: (entry.retries ?? 0) + 1,
-      });
+      const nextRetries = (entry.retries ?? 0) + 1;
+      await db().syncOutbox.update(entry.id, { retries: nextRetries });
+      // Surface a SyncError once we've crossed the threshold. The first
+      // crossing creates the row; subsequent failures bump retries +
+      // refresh the message in place, so the admin sees the latest
+      // failure attached to the same logical entry. Defensive try/catch
+      // — a logging hiccup must never break the flush loop.
+      if (nextRetries >= MAX_RETRIES_BEFORE_LOG) {
+        try {
+          await recordSyncError({ ...entry, retries: nextRetries }, message);
+        } catch (logErr) {
+          console.warn(
+            "[sync] failed to record sync error",
+            logErr instanceof Error ? logErr.message : logErr,
+          );
+        }
+      }
     }
   }
   return allOk;
@@ -540,6 +591,191 @@ async function processOne(
   const fs = getFirebaseDb();
   await setDoc(doc(fs, "users", uid, entry.table, entry.rowId), payload);
   return "synced";
+}
+
+// --------------------------------------------------------------------------
+// Sync-error log
+// --------------------------------------------------------------------------
+
+/**
+ * Idempotent log of "this outbox row has been stuck for a while". Only one
+ * unrecovered SyncError exists per (table, rowId) at a time — subsequent
+ * calls just bump the retries field on the existing row so the admin sees
+ * the count rise rather than dozens of duplicate entries.
+ *
+ * After write, prune the on-device log to MAX_SYNC_ERRORS_LOCAL via a
+ * single range query so we don't fill IndexedDB on a chronically broken
+ * device. Pruning is best-effort — if it fails the next write will retry.
+ *
+ * Never throws — the caller has wrapped this in try/catch defensively but
+ * we also swallow inside so a bad row can't bubble out into the flush loop.
+ */
+async function recordSyncError(
+  entry: SyncOutboxRow,
+  rawMessage: string | null,
+): Promise<void> {
+  const now = Date.now();
+  const message = trimMessage(rawMessage);
+  const kind = classifyErrorKind(entry, rawMessage);
+
+  // Find an existing unrecovered row for this target. Booleans aren't
+  // sortable IDB keys, so we scan rows with this (table, rowId) and
+  // filter by `recovered === false` in memory. The active set is small
+  // (capped at MAX_SYNC_ERRORS_LOCAL on the device) so this stays cheap.
+  const candidates = await db()
+    .syncErrors.where("table")
+    .equals(entry.table)
+    .toArray();
+  const prior = candidates.find(
+    (e) => e.rowId === entry.rowId && e.recovered === false,
+  );
+
+  let written: SyncError;
+  if (prior) {
+    written = {
+      ...prior,
+      retries: entry.retries ?? prior.retries,
+      message,
+      kind,
+      updatedAt: now,
+    };
+    await db().syncErrors.update(prior.id, {
+      retries: written.retries,
+      message: written.message,
+      kind: written.kind,
+      updatedAt: written.updatedAt,
+    });
+  } else {
+    written = {
+      id: nanoid(),
+      table: entry.table,
+      rowId: entry.rowId,
+      op: "upsert",
+      message,
+      retries: entry.retries ?? 0,
+      kind,
+      recovered: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db().syncErrors.put(written);
+  }
+
+  await pruneSyncErrorsIfNeeded();
+  // Direct upload (no outbox enqueue, no Dexie hook): bypasses the loop
+  // where a failed flush of a syncErrors row would itself record another
+  // syncError. Best-effort; the cockpit never blocks on it.
+  void pushSyncErrorDirect(written);
+}
+
+/**
+ * When an outbox row finally succeeds, flip its matching unrecovered
+ * SyncError to `recovered: true`. The admin view uses this to distinguish
+ * "broke once, healed itself" from "currently broken right now".
+ */
+async function markSyncErrorRecovered(table: string, rowId: string): Promise<void> {
+  const candidates = await db().syncErrors.where("table").equals(table).toArray();
+  const matches = candidates.filter(
+    (e) => e.rowId === rowId && e.recovered === false,
+  );
+  if (matches.length === 0) return;
+  const now = Date.now();
+  // Individual updates keep it portable across Dexie minor versions where
+  // bulkUpdate availability isn't guaranteed. The match set is tiny in
+  // practice (almost always 1), so this isn't a hot path.
+  await Promise.all(
+    matches.map(async (m) => {
+      await db().syncErrors.update(m.id, { recovered: true, updatedAt: now });
+      void pushSyncErrorDirect({ ...m, recovered: true, updatedAt: now });
+    }),
+  );
+}
+
+/**
+ * Push a SyncError row to Firestore via a direct setDoc, bypassing the
+ * outbox + Dexie hook path so a failed sync of a syncErrors row can't
+ * cascade into recording another syncError. Best-effort: silent no-op
+ * when no engine is running or Firebase isn't configured. Failures are
+ * swallowed (the row is still in local Dexie; the admin gets it next
+ * time something works).
+ */
+async function pushSyncErrorDirect(row: SyncError): Promise<void> {
+  try {
+    if (!active || active.stopped) return;
+    if (!isFirebaseConfigured()) return;
+    const uid = active.uid;
+    const fs = getFirebaseDb();
+    await setDoc(doc(fs, "users", uid, "syncErrors", row.id), {
+      table: row.table,
+      rowId: row.rowId,
+      op: row.op,
+      message: row.message,
+      retries: row.retries,
+      kind: row.kind,
+      recovered: row.recovered,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+  } catch {
+    // Direct push failed; nothing to do — the local row stands and the
+    // next successful flush cycle will see it via list queries from the
+    // admin anyway.
+  }
+}
+
+/**
+ * Keep at most MAX_SYNC_ERRORS_LOCAL rows on the device. We delete by an
+ * orderBy/offset query so the whole prune is a single Dexie call — no
+ * per-row trips. If we're under the cap, this short-circuits cheaply.
+ */
+async function pruneSyncErrorsIfNeeded(): Promise<void> {
+  const total = await db().syncErrors.count();
+  if (total <= MAX_SYNC_ERRORS_LOCAL) return;
+  const excess = total - MAX_SYNC_ERRORS_LOCAL;
+  // Oldest createdAt first → delete the first `excess` of them. Dexie
+  // supports a single delete() on a filtered query, which is one IDB
+  // round trip regardless of row count.
+  await db()
+    .syncErrors.orderBy("createdAt")
+    .limit(excess)
+    .delete();
+}
+
+/**
+ * Guess whether a stuck row is failing because of the audio upload or
+ * the Firestore write. Used to colour the kind badge in the admin view;
+ * the heuristic doesn't have to be precise — just useful at a glance.
+ */
+function classifyErrorKind(
+  entry: SyncOutboxRow,
+  message: string | null,
+): "text" | "blob" | "unknown" {
+  // Audio-bearing tables that haven't finished their blob upload are
+  // almost certainly stuck on Storage rather than Firestore.
+  if (entry.table === "voiceprintContributions" && !entry.audioUploaded) {
+    return "blob";
+  }
+  if (entry.table === "cachedPhraseAudio" && !entry.audioUploaded) {
+    return "blob";
+  }
+  // Cheap message sniff for the obvious Storage failure modes.
+  if (message) {
+    const m = message.toLowerCase();
+    if (m.includes("storage") || m.includes("uploadbytes") || m.includes("blob")) {
+      return "blob";
+    }
+    if (m.includes("firestore") || m.includes("setdoc") || m.includes("permission")) {
+      return "text";
+    }
+  }
+  return "unknown";
+}
+
+function trimMessage(raw: string | null): string {
+  if (!raw) return "(no message)";
+  const s = String(raw);
+  if (s.length <= SYNC_ERROR_MESSAGE_MAX) return s;
+  return s.slice(0, SYNC_ERROR_MESSAGE_MAX - 1) + "…";
 }
 
 // --------------------------------------------------------------------------

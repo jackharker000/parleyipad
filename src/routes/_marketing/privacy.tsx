@@ -2,6 +2,16 @@ import { createFileRoute } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/_marketing/privacy")({
   component: PrivacyPage,
+  head: () => ({
+    meta: [
+      { title: "Privacy and safety — Parley" },
+      {
+        name: "description",
+        content:
+          "What syncs to our cloud, what stays on the iPad, who can see it, and how to take it back. Plain English.",
+      },
+    ],
+  }),
 });
 
 function PrivacyPage() {

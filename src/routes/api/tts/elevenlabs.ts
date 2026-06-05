@@ -39,17 +39,17 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
         const start = Date.now();
 
         const apiKey = process.env.ELEVENLABS_API_KEY;
-        if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server");
+        if (!apiKey) return errorResponse(500, "ELEVENLABS_API_KEY not set on the server", request);
 
         let body: RequestBody;
         try {
           body = (await request.json()) as RequestBody;
         } catch {
-          return errorResponse(400, "Body must be JSON");
+          return errorResponse(400, "Body must be JSON", request);
         }
 
         if (!body.text || typeof body.text !== "string") {
-          return errorResponse(400, "`text` is required");
+          return errorResponse(400, "`text` is required", request);
         }
 
         const voiceId =
@@ -86,13 +86,25 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
             status,
           });
           if (isTimeout) {
-            return errorResponse(504, `Flash TTS timed out after ${UPSTREAM_TIMEOUT_MS}ms`);
+            return errorResponse(
+              504,
+              `Flash TTS timed out after ${UPSTREAM_TIMEOUT_MS}ms`,
+              request,
+            );
           }
-          return errorResponse(502, `Flash TTS request failed: ${(err as Error).message}`);
+          return errorResponse(
+            502,
+            `Flash TTS request failed: ${(err as Error).message}`,
+            request,
+          );
         }
 
         if (!upstream.ok || !upstream.body) {
           const text = await upstream.text();
+          // Log upstream body server-side for debuggability, but never echo it
+          // to the caller — it can include request ids, billing-org ids, and
+          // (on auth errors) substrings of the API key.
+          console.warn("[elevenlabs-tts] upstream", upstream.status, ":", text);
           await meter(request, {
             kind: "tts",
             provider: "elevenlabs",
@@ -101,7 +113,7 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
             durationMs: Date.now() - start,
             status: upstream.status,
           });
-          return errorResponse(upstream.status, `Flash TTS ${upstream.status}: ${text}`);
+          return errorResponse(upstream.status, `Flash TTS returned ${upstream.status}`, request);
         }
 
         // Tee the upstream audio so we can log usage once the response
@@ -142,20 +154,23 @@ export const Route = createFileRoute("/api/tts/elevenlabs")({
 
         return new Response(out, {
           status: 200,
-          headers: withCors({
-            "content-type": "audio/mpeg",
-            "cache-control": "no-cache",
-            "x-accel-buffering": "no",
-          }),
+          headers: withCors(
+            {
+              "content-type": "audio/mpeg",
+              "cache-control": "no-cache",
+              "x-accel-buffering": "no",
+            },
+            request,
+          ),
         });
       },
     },
   },
 });
 
-function errorResponse(status: number, error: string): Response {
+function errorResponse(status: number, error: string, request?: Request): Response {
   return new Response(JSON.stringify({ error }), {
     status,
-    headers: withCors({ "content-type": "application/json" }),
+    headers: withCors({ "content-type": "application/json" }, request),
   });
 }

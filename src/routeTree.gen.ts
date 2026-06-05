@@ -51,6 +51,7 @@ import { Route as ApiAdminUserDataRouteImport } from './routes/api/admin/user-da
 import { Route as ApiAdminUserActionRouteImport } from './routes/api/admin/user-action'
 import { Route as ApiAdminUserRouteImport } from './routes/api/admin/user'
 import { Route as ApiAdminUsageRouteImport } from './routes/api/admin/usage'
+import { Route as ApiAdminSyncErrorsSummaryRouteImport } from './routes/api/admin/sync-errors-summary'
 import { Route as ApiAdminConversationRouteImport } from './routes/api/admin/conversation'
 import { Route as ApiAdminAudioUrlRouteImport } from './routes/api/admin/audio-url'
 import { Route as ApiAdminActivityRouteImport } from './routes/api/admin/activity'
@@ -265,6 +266,12 @@ const ApiAdminUsageRoute = ApiAdminUsageRouteImport.update({
   path: '/api/admin/usage',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAdminSyncErrorsSummaryRoute =
+  ApiAdminSyncErrorsSummaryRouteImport.update({
+    id: '/api/admin/sync-errors-summary',
+    path: '/api/admin/sync-errors-summary',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiAdminConversationRoute = ApiAdminConversationRouteImport.update({
   id: '/api/admin/conversation',
   path: '/api/admin/conversation',
@@ -319,6 +326,7 @@ export interface FileRoutesByFullPath {
   '/api/admin/activity': typeof ApiAdminActivityRoute
   '/api/admin/audio-url': typeof ApiAdminAudioUrlRoute
   '/api/admin/conversation': typeof ApiAdminConversationRoute
+  '/api/admin/sync-errors-summary': typeof ApiAdminSyncErrorsSummaryRoute
   '/api/admin/usage': typeof ApiAdminUsageRoute
   '/api/admin/user': typeof ApiAdminUserRoute
   '/api/admin/user-action': typeof ApiAdminUserActionRoute
@@ -364,6 +372,7 @@ export interface FileRoutesByTo {
   '/api/admin/activity': typeof ApiAdminActivityRoute
   '/api/admin/audio-url': typeof ApiAdminAudioUrlRoute
   '/api/admin/conversation': typeof ApiAdminConversationRoute
+  '/api/admin/sync-errors-summary': typeof ApiAdminSyncErrorsSummaryRoute
   '/api/admin/usage': typeof ApiAdminUsageRoute
   '/api/admin/user': typeof ApiAdminUserRoute
   '/api/admin/user-action': typeof ApiAdminUserActionRoute
@@ -414,6 +423,7 @@ export interface FileRoutesById {
   '/api/admin/activity': typeof ApiAdminActivityRoute
   '/api/admin/audio-url': typeof ApiAdminAudioUrlRoute
   '/api/admin/conversation': typeof ApiAdminConversationRoute
+  '/api/admin/sync-errors-summary': typeof ApiAdminSyncErrorsSummaryRoute
   '/api/admin/usage': typeof ApiAdminUsageRoute
   '/api/admin/user': typeof ApiAdminUserRoute
   '/api/admin/user-action': typeof ApiAdminUserActionRoute
@@ -463,6 +473,7 @@ export interface FileRouteTypes {
     | '/api/admin/activity'
     | '/api/admin/audio-url'
     | '/api/admin/conversation'
+    | '/api/admin/sync-errors-summary'
     | '/api/admin/usage'
     | '/api/admin/user'
     | '/api/admin/user-action'
@@ -508,6 +519,7 @@ export interface FileRouteTypes {
     | '/api/admin/activity'
     | '/api/admin/audio-url'
     | '/api/admin/conversation'
+    | '/api/admin/sync-errors-summary'
     | '/api/admin/usage'
     | '/api/admin/user'
     | '/api/admin/user-action'
@@ -557,6 +569,7 @@ export interface FileRouteTypes {
     | '/api/admin/activity'
     | '/api/admin/audio-url'
     | '/api/admin/conversation'
+    | '/api/admin/sync-errors-summary'
     | '/api/admin/usage'
     | '/api/admin/user'
     | '/api/admin/user-action'
@@ -587,6 +600,7 @@ export interface RootRouteChildren {
   ApiAdminActivityRoute: typeof ApiAdminActivityRoute
   ApiAdminAudioUrlRoute: typeof ApiAdminAudioUrlRoute
   ApiAdminConversationRoute: typeof ApiAdminConversationRoute
+  ApiAdminSyncErrorsSummaryRoute: typeof ApiAdminSyncErrorsSummaryRoute
   ApiAdminUsageRoute: typeof ApiAdminUsageRoute
   ApiAdminUserRoute: typeof ApiAdminUserRoute
   ApiAdminUserActionRoute: typeof ApiAdminUserActionRoute
@@ -902,6 +916,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminUsageRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/admin/sync-errors-summary': {
+      id: '/api/admin/sync-errors-summary'
+      path: '/api/admin/sync-errors-summary'
+      fullPath: '/api/admin/sync-errors-summary'
+      preLoaderRoute: typeof ApiAdminSyncErrorsSummaryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/admin/conversation': {
       id: '/api/admin/conversation'
       path: '/api/admin/conversation'
@@ -1047,6 +1068,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminActivityRoute: ApiAdminActivityRoute,
   ApiAdminAudioUrlRoute: ApiAdminAudioUrlRoute,
   ApiAdminConversationRoute: ApiAdminConversationRoute,
+  ApiAdminSyncErrorsSummaryRoute: ApiAdminSyncErrorsSummaryRoute,
   ApiAdminUsageRoute: ApiAdminUsageRoute,
   ApiAdminUserRoute: ApiAdminUserRoute,
   ApiAdminUserActionRoute: ApiAdminUserActionRoute,

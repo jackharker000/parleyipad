@@ -362,6 +362,7 @@ const SYNCED_TABS: SyncedTab[] = [
   { key: "events", label: "Events", table: "events" },
   { key: "memories", label: "Memories", table: "memories" },
   { key: "suggestionsLog", label: "Suggestions log", table: "suggestionsLog" },
+  { key: "syncErrors", label: "Sync errors", table: "syncErrors" },
 ];
 
 function SyncedDataSection({ uid }: { uid: string }) {
@@ -434,6 +435,12 @@ function SyncedDataSection({ uid }: { uid: string }) {
         {SYNCED_TABS.map((t) => {
           const isActive = t.key === activeKey;
           const n = counts?.[t.table];
+          // The sync-errors chip gets a coral dot whenever there's any
+          // logged error, because telling unrecovered-vs-recovered apart
+          // from up here would require a second query. The chip view
+          // itself (SyncErrorsTable) shows the per-row status.
+          const isSyncErrors = t.key === "syncErrors";
+          const showWarn = isSyncErrors && typeof n === "number" && n > 0;
           return (
             <button
               key={t.key}
@@ -446,6 +453,16 @@ function SyncedDataSection({ uid }: { uid: string }) {
                   : "inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium text-[var(--ink-soft)] hover:text-foreground"
               }
             >
+              {showWarn ? (
+                <span
+                  aria-hidden="true"
+                  title="This user has sync errors logged"
+                  className={cn(
+                    "inline-block h-1.5 w-1.5 rounded-full",
+                    isActive ? "bg-white" : "bg-[var(--coral)]",
+                  )}
+                />
+              ) : null}
               <span>{t.label}</span>
               {typeof n === "number" ? (
                 <span
@@ -539,6 +556,14 @@ function SyncedTableView({
     );
   }
   if (!rows || rows.length === 0) {
+    if (tableKey === "syncErrors") {
+      return (
+        <p className="px-3 py-6 text-center text-sm text-[var(--ink-soft)]">
+          No sync errors recorded yet. The engine retries quietly and only logs
+          an error after it&apos;s stuck for several attempts.
+        </p>
+      );
+    }
     return (
       <p className="px-3 py-6 text-center text-sm text-[var(--ink-soft)]">
         Nothing in this table yet. New accounts have empty data until they start using
@@ -573,6 +598,9 @@ function SyncedTableView({
   }
   if (tableKey === "suggestionsLog") {
     return <SuggestionsLogTable rows={rows} peopleById={peopleById} />;
+  }
+  if (tableKey === "syncErrors") {
+    return <SyncErrorsTable rows={rows} />;
   }
 
   return <GenericTable rows={rows} />;
@@ -1003,6 +1031,163 @@ function SuggestionsLogTable({
       </tbody>
     </table>
   );
+}
+
+/**
+ * Sync error log renderer — surfaces per-row failures recorded by the
+ * write-behind engine after MAX_RETRIES_BEFORE_LOG attempts. Rows that
+ * eventually went through are flagged "recovered" so the admin can tell
+ * "broke once, healed itself" from "currently broken".
+ */
+function SyncErrorsTable({ rows }: { rows: Array<Record<string, unknown>> }) {
+  // Toggling open shows the full (untrimmed) message — Firestore-stored
+  // SyncError.message is already capped to 500 chars by the engine, so
+  // "full" here just means past the table's per-row 80-char preview.
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  return (
+    <table className="w-full border-separate border-spacing-0 text-sm">
+      <thead>
+        <tr>
+          <Th>When</Th>
+          <Th>Table</Th>
+          <Th>Row id</Th>
+          <Th>Kind</Th>
+          <Th>Retries</Th>
+          <Th>Status</Th>
+          <Th>Message</Th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) => {
+          const id = readString(r.id) ?? `row-${i}`;
+          const isOpen = openId === id;
+          const rowId = readString(r.rowId);
+          const message = readString(r.message);
+          const recovered =
+            typeof r.recovered === "boolean" ? r.recovered : false;
+          const rawKind = readString(r.kind);
+          const kind: "text" | "blob" | "unknown" =
+            rawKind === "text" || rawKind === "blob"
+              ? rawKind
+              : "unknown";
+          const retries = readNumber(r.retries) ?? 0;
+          const table = readString(r.table);
+          const createdAt = readString(r.createdAt) ?? readNumber(r.createdAt);
+          return (
+            <tr key={id}>
+              <Td>
+                <span title={fmtMaybeDateText(createdAt)}>
+                  {relativeTime(typeof createdAt === "number" ? createdAt : createdAt ?? null)}
+                </span>
+              </Td>
+              <Td>
+                {table ? (
+                  <span className="font-mono text-xs">{table}</span>
+                ) : (
+                  <Muted>—</Muted>
+                )}
+              </Td>
+              <Td>
+                {rowId ? (
+                  <span
+                    title={rowId}
+                    className="font-mono text-xs text-[var(--ink-soft)]"
+                  >
+                    {rowId.length > 8 ? `${rowId.slice(0, 8)}…` : rowId}
+                  </span>
+                ) : (
+                  <Muted>—</Muted>
+                )}
+              </Td>
+              <Td>
+                <SyncErrorKindBadge kind={kind} />
+              </Td>
+              <Td className="tabular-nums">{retries.toLocaleString()}</Td>
+              <Td>
+                <SyncErrorStatusBadge recovered={recovered} />
+              </Td>
+              <Td className="max-w-[28rem]">
+                <button
+                  type="button"
+                  onClick={() => setOpenId(isOpen ? null : id)}
+                  className="text-left text-xs text-[var(--ink-soft)] hover:text-foreground"
+                  aria-expanded={isOpen}
+                >
+                  {message ? (
+                    isOpen ? (
+                      <span className="whitespace-pre-wrap break-words">
+                        {message}
+                      </span>
+                    ) : (
+                      <span className="line-clamp-1">
+                        {message.length > 80
+                          ? `${message.slice(0, 80)}…`
+                          : message}
+                      </span>
+                    )
+                  ) : (
+                    <Muted>—</Muted>
+                  )}
+                </button>
+              </Td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+/** Kind badge — colour by which part of the sync stack is suspected. */
+function SyncErrorKindBadge({ kind }: { kind: "text" | "blob" | "unknown" }) {
+  const cls =
+    kind === "blob"
+      ? "bg-[var(--teal)]/10 text-[var(--teal-dark)]"
+      : kind === "unknown"
+        ? "bg-[var(--sun)]/30 text-[var(--ink)]"
+        : "bg-[var(--sand-2)] text-[var(--ink-soft)]";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        cls,
+      )}
+    >
+      {kind}
+    </span>
+  );
+}
+
+function SyncErrorStatusBadge({ recovered }: { recovered: boolean }) {
+  if (recovered) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-[var(--teal)]/10 px-2 py-0.5 text-xs font-medium text-[var(--teal-dark)]">
+        <span aria-hidden="true">✓</span>
+        Recovered
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-full bg-[var(--coral)]/10 px-2 py-0.5 text-xs font-medium text-[var(--coral)]">
+      Failing
+    </span>
+  );
+}
+
+/** String form of a timestamp for tooltip purposes — falls back to a dash. */
+function fmtMaybeDateText(v: unknown): string {
+  if (v == null) return "—";
+  if (typeof v === "string") {
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return d.toLocaleString();
+    return v;
+  }
+  if (typeof v === "number" && Number.isFinite(v)) {
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return d.toLocaleString();
+  }
+  return "—";
 }
 
 function GenericTable({ rows }: { rows: Array<Record<string, unknown>> }) {
