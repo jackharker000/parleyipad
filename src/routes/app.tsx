@@ -1,12 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, Outlet, createFileRoute, useLocation, useRouter } from "@tanstack/react-router";
+import { toast } from "sonner";
 
 import { ParleyLogo } from "@/components/ParleyLogo";
 import { cn } from "@/lib/cn";
 import { drainPendingJobs } from "@/lib/jobs/drain";
 import { useSession } from "@/lib/auth";
 import { useCloudSync } from "@/lib/sync/use-cloud-sync";
-import { useSettings } from "@/lib/settings";
+import { persistSettings, useSettings } from "@/lib/settings";
 
 export const Route = createFileRoute("/app")({
   component: AppLayout,
@@ -41,9 +42,25 @@ function AppLayout() {
   const { user, loading } = useSession();
   const settings = useSettings();
   // `cloudSyncEnabled` defaults to true (undefined === on, matching the
-  // CloudSyncCard reader). Only show the "Sync paused" pill when the user
+  // CloudSyncCard reader). Only show the "Resume sync" pill when the user
   // has explicitly turned it off.
   const syncPaused = settings.cloudSyncEnabled === false;
+  const [resumingSync, setResumingSync] = useState(false);
+
+  async function resumeSync() {
+    if (resumingSync) return;
+    setResumingSync(true);
+    try {
+      await persistSettings({ cloudSyncEnabled: true });
+      toast.success("Cloud sync resumed");
+    } catch (err) {
+      toast.error(
+        `Couldn't resume sync: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setResumingSync(false);
+    }
+  }
 
   // Mount the write-behind cloud-sync engine. Starts when the user is
   // signed in and `cloudSyncEnabled` is on (default ON for new
@@ -126,13 +143,15 @@ function AppLayout() {
                   </Link>
                 ) : null}
                 {syncPaused && (
-                  <Link
-                    to="/app/settings"
-                    className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--sand-2)] px-2.5 py-1 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--sand-2)]/80"
-                    title="Cloud sync is off for this account. Tap to manage in Settings."
+                  <button
+                    type="button"
+                    onClick={resumeSync}
+                    disabled={resumingSync}
+                    className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--sand-2)] px-2.5 py-1 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--sand-2)]/80 disabled:opacity-60"
+                    title="Cloud sync is off for this account. Tap to resume."
                   >
-                    Sync paused
-                  </Link>
+                    {resumingSync ? "Resuming…" : "Resume sync"}
+                  </button>
                 )}
               </div>
             </nav>
@@ -146,13 +165,15 @@ function AppLayout() {
       {isCockpit && (syncPaused || user.is_admin) && (
         <div className="pointer-events-none absolute right-4 top-4 z-30 flex items-center gap-2">
           {syncPaused && (
-            <Link
-              to="/app/settings"
-              className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--sand-2)] px-2.5 py-1 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--sand-2)]/80"
-              title="Cloud sync is off for this account. Tap to manage in Settings."
+            <button
+              type="button"
+              onClick={resumeSync}
+              disabled={resumingSync}
+              className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--sand-2)] px-2.5 py-1 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--sand-2)]/80 disabled:opacity-60"
+              title="Cloud sync is off for this account. Tap to resume."
             >
-              Sync paused
-            </Link>
+              {resumingSync ? "Resuming…" : "Resume sync"}
+            </button>
           )}
           {user.is_admin ? (
             <Link

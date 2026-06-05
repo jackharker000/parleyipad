@@ -11,7 +11,7 @@ import { ImportDataCard } from "@/components/settings/ImportDataCard";
 import { Switch } from "@/components/ui/switch";
 import { db, type SettingsRecord } from "@/lib/db";
 import { signOut, useSession } from "@/lib/auth";
-import { useSettings } from "@/lib/settings";
+import { persistSettings, useSettings } from "@/lib/settings";
 import { drainPendingJobs } from "@/lib/jobs/drain";
 import {
   exportEncryptedBackup,
@@ -97,26 +97,6 @@ function AccountCard() {
       </CardContent>
     </Card>
   );
-}
-
-// --------------------------------------------------------------------------
-
-async function persistSettings(patch: Partial<SettingsRecord>) {
-  const existing = await db().settings.get("singleton");
-  const next: SettingsRecord = {
-    id: "singleton",
-    llmProvider: "anthropic",
-    sttProvider: "elevenlabs-scribe",
-    ttsProvider: "elevenlabs-flash",
-    speakerIdWebGPU: true,
-    speakerIdAcceptThreshold: 0.7,
-    speakerIdAskThreshold: 0.45,
-    gpsEnabled: false,
-    displayPreset: "11",
-    ...existing,
-    ...patch,
-  };
-  await db().settings.put(next);
 }
 
 // --------------------------------------------------------------------------

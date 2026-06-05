@@ -45,3 +45,23 @@ export function useSetting<K extends keyof SettingsRecord>(
 export async function getSettingsSnapshot(): Promise<SettingsRecord> {
   return readSettings();
 }
+
+/**
+ * Imperative patch — merge into the existing row (or DEFAULT_SETTINGS if
+ * there isn't one yet) and upsert. Use this from anywhere that needs to
+ * change a setting outside React (event handlers, command palette, the
+ * "Resume sync" pill in the app shell). React surfaces should prefer
+ * `useSetting` so they get the re-render for free.
+ */
+export async function persistSettings(
+  patch: Partial<SettingsRecord>,
+): Promise<void> {
+  const existing = await db().settings.get("singleton");
+  const next: SettingsRecord = {
+    ...DEFAULT_SETTINGS,
+    ...(existing ?? {}),
+    ...patch,
+    id: "singleton",
+  };
+  await db().settings.put(next);
+}
