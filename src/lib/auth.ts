@@ -164,6 +164,15 @@ export async function getIdToken(): Promise<string | null> {
  * Reactive session. Subscribes to Firebase auth state and reads the admin
  * custom claim from the ID token. `loading` is true until the first auth
  * state resolves.
+ *
+ * Also force-refreshes the ID token whenever the PWA returns to the
+ * foreground (`visibilitychange` → visible, `pageshow`). The Firebase SDK
+ * normally refreshes on its own schedule, but a PWA can sit suspended
+ * for hours or days; touching the token on resume catches any expiry
+ * before the next /api/admin call surprises us with a 401 and shoves the
+ * user back to /login. The IDB persistence layer in
+ * `lib/firebase/client.ts` makes this refresh succeed silently — no
+ * network round-trip for the user.
  */
 export function useSession(): { user: SessionUser | null; loading: boolean } {
   const [user, setUser] = useState<SessionUser | null>(null);
@@ -189,7 +198,29 @@ export function useSession(): { user: SessionUser | null; loading: boolean } {
       }
       setLoading(false);
     });
-    return () => unsub();
+
+    // Resume-refresh: when the tab comes back to the foreground (or the
+    // PWA resumes from suspend), force a token refresh so the next
+    // authenticated request can't trip a 401-expired race.
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      const current = getFirebaseAuth().currentUser;
+      if (!current) return;
+      void current.getIdToken(true).catch(() => {
+        // Refresh failure is non-fatal — onAuthStateChanged will fire
+        // with null if the user is genuinely signed out and the
+        // existing redirect handles it. A network blip just leaves the
+        // old (still-valid) token in place.
+      });
+    };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("pageshow", refresh);
+
+    return () => {
+      unsub();
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("pageshow", refresh);
+    };
   }, []);
 
   return { user, loading };

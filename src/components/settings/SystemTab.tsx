@@ -294,12 +294,8 @@ function GpsCard() {
 // --------------------------------------------------------------------------
 
 function CloudSyncCard() {
-  const settings = useSettings();
-  const enabled = settings.cloudSyncEnabled !== false; // undefined = on
   const { running, pendingCount, lastFlushAt, lastError } = useCloudSync();
   const configured = isFirebaseConfigured();
-
-  const setEnabled = (v: boolean) => void persistSettings({ cloudSyncEnabled: v });
 
   // Human-friendly relative time for the last-flush row.
   const lastFlushLabel = formatRelativeTime(lastFlushAt);
@@ -324,22 +320,12 @@ function CloudSyncCard() {
           </CardDescription>
         )}
       </CardHeader>
-      <CardContent className="space-y-5">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium text-foreground">Sync this account to the cloud</p>
-            <p className="text-xs text-muted-foreground">
-              On by default. Turn off to keep everything strictly on this device.
-            </p>
-          </div>
-          <Switch checked={enabled} onCheckedChange={setEnabled} disabled={!configured} />
-        </div>
-
+      <CardContent>
         <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3 text-xs">
           <StatusRow
             label="Engine"
-            value={running ? "Running" : enabled ? "Idle" : "Disabled"}
-            tone={running ? "ok" : enabled ? "neutral" : "muted"}
+            value={running ? "Running" : configured ? "Idle" : "Disabled"}
+            tone={running ? "ok" : configured ? "neutral" : "muted"}
           />
           <StatusRow
             label="Pending writes"

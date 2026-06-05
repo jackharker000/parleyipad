@@ -6,7 +6,6 @@ import { cn } from "@/lib/cn";
 import { drainPendingJobs } from "@/lib/jobs/drain";
 import { useSession } from "@/lib/auth";
 import { useCloudSync } from "@/lib/sync/use-cloud-sync";
-import { useSettings } from "@/lib/settings";
 
 export const Route = createFileRoute("/app")({
   component: AppLayout,
@@ -39,16 +38,10 @@ function AppLayout() {
   const router = useRouter();
   const location = useLocation();
   const { user, loading } = useSession();
-  const settings = useSettings();
-  // `cloudSyncEnabled` defaults to true (undefined === on, matching the
-  // CloudSyncCard reader). Only show the "Sync paused" pill when the user
-  // has explicitly turned it off.
-  const syncPaused = settings.cloudSyncEnabled === false;
 
-  // Mount the write-behind cloud-sync engine. Starts when the user is
-  // signed in and `cloudSyncEnabled` is on (default ON for new
-  // accounts); tears down on sign-out or when the user toggles it off
-  // in Settings. Status is consumed by the Cloud sync panel.
+  // Mount the write-behind cloud-sync engine. Always runs for a signed-in
+  // user when Firebase is configured; tears down on sign-out. Status is
+  // consumed by the Cloud sync panel in Settings → System.
   useCloudSync();
 
   useEffect(() => {
@@ -116,52 +109,32 @@ function AppLayout() {
                   {item.label}
                 </Link>
               ))}
-              <div className="ml-2 flex items-center gap-2 border-l border-border pl-2">
-                {user.is_admin ? (
+              {user.is_admin ? (
+                <div className="ml-2 flex items-center gap-2 border-l border-border pl-2">
                   <Link
                     to="/admin"
                     className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
                     Admin
                   </Link>
-                ) : null}
-                {syncPaused && (
-                  <Link
-                    to="/app/settings"
-                    className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--sand-2)] px-2.5 py-1 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--sand-2)]/80"
-                    title="Cloud sync is off for this account. Tap to manage in Settings."
-                  >
-                    Sync paused
-                  </Link>
-                )}
-              </div>
+                </div>
+              ) : null}
             </nav>
           </div>
         </header>
       )}
 
-      {/* Cockpit-only floating corner — sync-paused pill + admin link.
+      {/* Cockpit-only floating corner — admin link.
           Sign out moved to Settings → System → Account so this chrome
           stays quiet during a live conversation. */}
-      {isCockpit && (syncPaused || user.is_admin) && (
+      {isCockpit && user.is_admin && (
         <div className="pointer-events-none absolute right-4 top-4 z-30 flex items-center gap-2">
-          {syncPaused && (
-            <Link
-              to="/app/settings"
-              className="pointer-events-auto inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--sand-2)] px-2.5 py-1 text-xs font-medium text-[var(--ink-soft)] hover:bg-[var(--sand-2)]/80"
-              title="Cloud sync is off for this account. Tap to manage in Settings."
-            >
-              Sync paused
-            </Link>
-          )}
-          {user.is_admin ? (
-            <Link
-              to="/admin"
-              className="pointer-events-auto rounded-md bg-background/80 px-2 py-1 text-xs font-medium text-muted-foreground backdrop-blur hover:bg-muted hover:text-foreground"
-            >
-              Admin
-            </Link>
-          ) : null}
+          <Link
+            to="/admin"
+            className="pointer-events-auto rounded-md bg-background/80 px-2 py-1 text-xs font-medium text-muted-foreground backdrop-blur hover:bg-muted hover:text-foreground"
+          >
+            Admin
+          </Link>
         </div>
       )}
 
