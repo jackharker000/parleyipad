@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 
 import { db, type PersonLexiconEntry, type TranscriptSegment } from "@/lib/db";
 import type { DomainAI } from "@/lib/ai";
+import { getJamesProfile } from "@/lib/jamesProfile";
 
 /**
  * Post-conversation lexicon updater. Walks the just-finished transcript,
@@ -43,13 +44,18 @@ export async function updatePersonLexicon(conversationId: string, ai: DomainAI):
     bucket.push(seg);
   }
 
+  // Resolve the user's display name once so the contextual transcript labels
+  // their own turns with the actual name rather than the legacy "James" sentinel.
+  const jamesProfile = await getJamesProfile();
+  const selfLabel = jamesProfile.displayName?.trim() || "Me";
+
   for (const [personId, personSegments] of byPerson) {
     if (personSegments.length < 4) continue;
 
     const person = await db().people.get(personId);
     if (!person) continue;
 
-    const transcriptBlock = buildContextualTranscript(ordered, personId);
+    const transcriptBlock = buildContextualTranscript(ordered, personId, selfLabel);
 
     // Existing terms — passed to the LLM so it skips repeats. Lowercased
     // for dedupe and term filter both.
@@ -102,6 +108,7 @@ export async function updatePersonLexicon(conversationId: string, ai: DomainAI):
 function buildContextualTranscript(
   allSegments: TranscriptSegment[],
   focusPersonId: string,
+  selfLabel: string,
 ): string {
   const lines: string[] = [];
   for (let i = 0; i < allSegments.length; i++) {
@@ -111,7 +118,7 @@ function buildContextualTranscript(
     // Pull one segment of context if available and not already included.
     const prev = i > 0 ? allSegments[i - 1] : undefined;
     if (prev && (!lines.length || !lines[lines.length - 1].includes(prev.text))) {
-      const prevSpeaker = prev.speakerKind === "self" ? "James" : (prev.speakerLabel ?? "Other");
+      const prevSpeaker = prev.speakerKind === "self" ? selfLabel : (prev.speakerLabel ?? "Other");
       lines.push(`${prevSpeaker}: ${prev.text}`);
     }
     lines.push(`Them: ${seg.text}`);

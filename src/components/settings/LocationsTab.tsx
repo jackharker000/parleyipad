@@ -167,7 +167,7 @@ function EmptyDetailPanel({ onAdd }: { onAdd: () => void }) {
         Select a location to edit, or add a new one.
       </h3>
       <p className="mt-2 max-w-md text-sm leading-relaxed text-[var(--ink-soft)]">
-        Places James talks at — home, library, the cafe round the corner. Tagging the people
+        Places you talk at — home, library, the cafe round the corner. Tagging the people
         commonly here boosts the speaker-ID prior at this location.
       </p>
       <div className="mt-4">
@@ -306,7 +306,7 @@ function PlaceEditor({
         label="GPS coordinates"
         hint={
           gpsEnabled
-            ? "Used to auto-detect this place when James arrives."
+            ? "Used to auto-detect this place when you arrive."
             : "Optional — GPS auto-detection is off in System settings, but these still serve as background info."
         }
       >

@@ -40,10 +40,11 @@ export function ConversationDetail({
   eventsById: Map<string, EventRecord>;
   onBack: () => void;
 }) {
-  // James's display name. Hard-coded here for now to match what drain.ts
-  // uses when it stitches the transcript for the summariser. Will swap to
-  // the JamesProfile singleton lookup once that lands.
-  const jamesName = "James";
+  // Self-segment display label. Reads the live JamesProfile row so a new
+  // account that hasn't filled in Settings → Profile still gets a sensible
+  // "Me" label rather than the legacy "James" sentinel.
+  const jamesProfile = useLiveQuery(() => db().jamesProfile.get("singleton"), []);
+  const jamesName = jamesProfile?.displayName?.trim() || "Me";
 
   const conversation = useLiveQuery(() => db().conversations.get(conversationId), [conversationId]);
   const segments = useLiveQuery(

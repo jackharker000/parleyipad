@@ -175,7 +175,7 @@ function VoiceSection() {
       <CardHeader>
         <CardTitle>Voice</CardTitle>
         <CardDescription>
-          The voice the cockpit uses for suggestions, quick phrases, and type-and-speak. James's
+          The voice the cockpit uses for suggestions, quick phrases, and type-and-speak. Your
           cloned voice (when uploaded) lives in "My voices".
         </CardDescription>
       </CardHeader>
@@ -243,7 +243,7 @@ function VoiceSection() {
             <input
               value={newCustom.name}
               onChange={(e) => setNewCustom((c) => ({ ...c, name: e.target.value }))}
-              placeholder="Name (e.g. James's clone)"
+              placeholder="Name (e.g. My clone)"
               className="w-full max-w-[14rem] flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <input

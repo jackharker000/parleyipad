@@ -92,6 +92,9 @@ export type SummarizeConversationContext = {
   transcript: string;
   /** Optional people present for grounding the summary. */
   peopleNames?: string[];
+  /** The Parley user's display name (the "self" speaker in the transcript).
+   * Falls back to "the user" in the prompt when empty. */
+  userName?: string;
 };
 
 export type SummarizeConversationResult = {
@@ -446,7 +449,7 @@ export class DomainAI {
       temperature: 0.4,
       cacheSystem: false,
       messages: [
-        { role: "system", content: summarizeSystemPrompt() },
+        { role: "system", content: summarizeSystemPrompt(ctx) },
         { role: "user", content: summarizeUserPrompt(ctx) },
       ],
     });
@@ -548,7 +551,7 @@ export class DomainAI {
       temperature: 0.3,
       cacheSystem: false,
       messages: [
-        { role: "system", content: distillStyleSystemPrompt() },
+        { role: "system", content: distillStyleSystemPrompt(ctx) },
         { role: "user", content: distillStyleUserPrompt(ctx) },
       ],
     });
@@ -567,7 +570,7 @@ export class DomainAI {
       temperature: 0.3,
       cacheSystem: false,
       messages: [
-        { role: "system", content: extractMemoriesSystemPrompt() },
+        { role: "system", content: extractMemoriesSystemPrompt(ctx) },
         { role: "user", content: extractMemoriesUserPrompt(ctx) },
       ],
     });
@@ -586,7 +589,7 @@ export class DomainAI {
       temperature: 0.3,
       cacheSystem: false,
       messages: [
-        { role: "system", content: enrichPersonProfileSystemPrompt() },
+        { role: "system", content: enrichPersonProfileSystemPrompt(ctx) },
         { role: "user", content: enrichPersonProfileUserPrompt(ctx) },
       ],
     });
@@ -659,7 +662,10 @@ export class DomainAI {
 // --------------------------------------------------------------------------
 
 function suggestionsSystemPrompt(ctx: SuggestionContext): string {
-  const name = ctx.jamesName || "James";
+  // Fall back to "the user" rather than the literal "James" — this prompt is
+  // shared across all accounts and the displayName variable can legitimately
+  // be empty for a brand-new sign-up that hasn't filled in Settings → Profile.
+  const name = ctx.jamesName || ctx.jamesProfile?.displayName?.trim() || "the user";
   const personaBlock = ctx.jamesProfile ? `\n${jamesProfileBlock(ctx.jamesProfile)}` : "";
   const styleBlock = ctx.styleProfile ? `\n${styleProfileBlock(ctx.styleProfile, name)}` : "";
   const deadBlock =
@@ -719,11 +725,13 @@ function suggestionsUserPrompt(ctx: SuggestionContext): string {
   }
   lines.push(`Mood preset: ${ctx.mood}`);
 
+  // Same fallback logic as suggestionsSystemPrompt — keep the two in lock-step
+  // so the cached system block and the live user block address the same person.
+  const userName = ctx.jamesName || ctx.jamesProfile?.displayName?.trim() || "the user";
+
   if (ctx.categoryHints && ctx.categoryHints.size > 0) {
     lines.push("");
-    lines.push(
-      `Per-person preferences (tap rate by category, ${ctx.jamesName || "James"}'s history):`,
-    );
+    lines.push(`Per-person preferences (tap rate by category, ${userName}'s history):`);
     for (const [personName, hints] of ctx.categoryHints.entries()) {
       const top = Object.entries(hints)
         .filter(([, v]) => typeof v === "number" && v > 0)
@@ -747,7 +755,7 @@ function suggestionsUserPrompt(ctx: SuggestionContext): string {
   lines.push("Recent transcript:");
   lines.push(formatTranscript(ctx.transcript));
   lines.push("");
-  lines.push("Generate 6 reply suggestions James could tap right now. JSON only.");
+  lines.push(`Generate 6 reply suggestions ${userName} could tap right now. JSON only.`);
   return lines.join("\n");
 }
 
@@ -782,8 +790,8 @@ function styleProfileBlock(sp: StyleProfile, name: string): string {
 }
 
 function expandSystemPrompt(ctx: ExpandContext): string {
-  const name = ctx.jamesName || "James";
-  return `You polish ${name}'s rough typed input into one short, natural sentence in his voice.
+  const name = ctx.jamesName || "the user";
+  return `You polish ${name}'s rough typed input into one short, natural sentence in their voice.
 
 Rules:
 - Keep it to one or two sentences.
@@ -989,8 +997,9 @@ function parseSingleSuggestion(objText: string): SuggestionDraft | null {
 // Post-conversation summary prompts + parser
 // --------------------------------------------------------------------------
 
-function summarizeSystemPrompt(): string {
-  return `You summarise transcripts of conversations involving James, a non-verbal man with cerebral palsy who replies via an AAC iPad. Your summary appears in his Recent view so he can scan past chats at a glance.
+function summarizeSystemPrompt(ctx: SummarizeConversationContext): string {
+  const name = ctx.userName?.trim() || "the user";
+  return `You summarise transcripts of conversations involving ${name}, a non-verbal person with cerebral palsy who replies via an AAC iPad. Your summary appears in their Recent view so they can scan past chats at a glance.
 
 Output strictly as JSON, no commentary:
 
@@ -1000,7 +1009,7 @@ Output strictly as JSON, no commentary:
 }
 
 Rules:
-- summary: who was there, what they talked about, any decisions or commitments. Past tense, third-person where natural ("James asked about...", "Mum mentioned..."). 2-4 sentences max.
+- summary: who was there, what they talked about, any decisions or commitments. Past tense, third-person where natural ("${name} asked about...", "Mum mentioned..."). 2-4 sentences max.
 - highlights: 3-6 short bullets (each under 12 words). Concrete moments, not generic observations. Skip filler.
 - NEVER invent facts or details not present in the transcript. If the transcript is sparse, return a short summary and few highlights.`;
 }
@@ -1107,7 +1116,7 @@ function parseExtractLexicon(raw: string): ExtractLexiconResult {
 }
 
 function eventPrepSystemPrompt(ctx: EventPrepContext): string {
-  const name = ctx.jamesProfile?.displayName || "James";
+  const name = ctx.jamesProfile?.displayName || "the user";
   const personaBlock = ctx.jamesProfile ? `\n${jamesProfileBlock(ctx.jamesProfile)}\n` : "";
   return `You help ${name}, a non-verbal man with cerebral palsy who communicates by tapping suggested replies on an iPad, prepare for an upcoming conversation. Your output appears on the Events page before the conversation happens.
 ${personaBlock}
@@ -1169,7 +1178,7 @@ function parseEventPrep(raw: string): EventPrepResult {
 
 function jamesProfileBlock(jp: JamesProfile | undefined): string {
   if (!jp) return "";
-  const lines: string[] = [`# About ${jp.displayName || "James"} (the person writing)`];
+  const lines: string[] = [`# About ${jp.displayName || "the user"} (the person writing)`];
   if (jp.background) lines.push(`Background: ${jp.background}`);
   if (jp.personality) lines.push(`Personality: ${jp.personality}`);
   if (jp.humorStyle) lines.push(`Humor style: ${jp.humorStyle}`);
@@ -1189,7 +1198,7 @@ function jamesProfileBlock(jp: JamesProfile | undefined): string {
 }
 
 function draftReplySystemPrompt(ctx: DraftReplyContext): string {
-  const name = ctx.jamesProfile?.displayName || "James";
+  const name = ctx.jamesProfile?.displayName || "the user";
   const platformLabel =
     ctx.platform === "email"
       ? "an email"
@@ -1224,7 +1233,7 @@ function draftReplyUserPrompt(ctx: DraftReplyContext): string {
   const incomingBlock = ctx.incoming?.trim()
     ? `# What he received / is replying to\n"""\n${ctx.incoming.trim()}\n"""\n`
     : "";
-  const name = ctx.jamesProfile?.displayName || "James";
+  const name = ctx.jamesProfile?.displayName || "the user";
   const override = ctx.toneOverride?.trim();
   const overrideLine = override
     ? `\nOverride the tone — make this version ${override}. Keep the same intent and content.`
@@ -1271,7 +1280,7 @@ function parseDraftReply(raw: string, fallbackText: string): DraftReplyResult {
 }
 
 function extractInterestsSystemPrompt(ctx: ExtractInterestsContext): string {
-  const name = ctx.jamesName || "James";
+  const name = ctx.jamesName || "the user";
   return `You are a careful profile-keeper for ${name}, a non-speaking AAC user. Looking at a message he just wrote (and optionally what he received), suggest 0-3 SHORT additions to his profile that would help an AI assistant respond more like him in the future.
 
 Categories:
@@ -1311,14 +1320,17 @@ Return 0-3 suggested profile additions. JSON only.`;
 // Style distillation prompts + parser
 // --------------------------------------------------------------------------
 
-function distillStyleSystemPrompt(): string {
-  return `You distill James's reply-style evidence into a structured profile that downstream prompts will inject. James is a non-verbal man with cerebral palsy who taps AI-suggested replies on an iPad.
+function distillStyleSystemPrompt(ctx: DistillStyleContext): string {
+  // Plug the actual user's name into the prompt when it's set, so the model
+  // doesn't see a stale "James" sentinel on accounts that aren't James's.
+  const name = ctx.jamesProfile?.displayName?.trim() || "the user";
+  return `You distill ${name}'s reply-style evidence into a structured profile that downstream prompts will inject. ${name} is a non-verbal person with cerebral palsy who taps AI-suggested replies on an iPad.
 
 You are given four evidence channels:
-- tappedExamples: suggestions James actually tapped (proxy for "yes, this is me").
-- ignoredExamples: suggestions James left unread (proxy for "not me").
-- editedExamples: where the model proposed X and James edited it to Y before speaking (the strongest signal — Y is his voice).
-- helperEdits: Helpers-tab drafts where the model proposed "recommended" and James edited to "jamesEdit" before sending. Same strong signal as editedExamples.
+- tappedExamples: suggestions ${name} actually tapped (proxy for "yes, this is me").
+- ignoredExamples: suggestions ${name} left unread (proxy for "not me").
+- editedExamples: where the model proposed X and ${name} edited it to Y before speaking (the strongest signal — Y is their voice).
+- helperEdits: Helpers-tab drafts where the model proposed "recommended" and ${name} edited to "jamesEdit" before sending. Same strong signal as editedExamples.
 
 Roll these into a stable style profile. Be conservative: prefer the smaller / safer claim when evidence is thin. Don't echo phrases verbatim unless they recur.
 
@@ -1337,13 +1349,13 @@ Output strictly as JSON, no commentary:
 }
 
 Rules:
-- preferredOpeners / preferredSignOffs: 0-6 entries each. Phrases James actually uses, not generic ones.
+- preferredOpeners / preferredSignOffs: 0-6 entries each. Phrases ${name} actually uses, not generic ones.
 - humorMarkers: 0-8 short phrases or recurring jokes. Skip if no humor signal.
-- tabooPhrases: 0-8 phrases James consistently ignored or edited away. These become "do NOT propose" hints.
+- tabooPhrases: 0-8 phrases ${name} consistently ignored or edited away. These become "do NOT propose" hints.
 - formality: pick one. "neutral" is the safe default.
 - averageSentenceLength: in words. Estimate from tapped+edited rows.
 - readingGradeEstimate: US grade level (e.g. 6 = sixth grade). Rough estimate.
-- categoryPreferenceScores: 0.0–1.0 per category. Higher = James picks it more often. Omit categories with no signal rather than guessing 0.
+- categoryPreferenceScores: 0.0–1.0 per category. Higher = ${name} picks it more often. Omit categories with no signal rather than guessing 0.
 - summary: optional one sentence ("now leans short and dry", "more questions for family"). Skip when nothing meaningful changed.`;
 }
 
@@ -1414,8 +1426,9 @@ function parseStyleProfile(raw: string): DistilledStyleProfile {
 // Memory extraction prompts + parser
 // --------------------------------------------------------------------------
 
-function extractMemoriesSystemPrompt(): string {
-  return `You extract short, durable memories from a conversation involving James, a non-speaking man with cerebral palsy who replies via an AAC iPad. These memories feed semantic top-K retrieval for future suggestion calls — only the memorable, person-specific or place-specific items are worth keeping.
+function extractMemoriesSystemPrompt(ctx: ExtractMemoriesContext): string {
+  const name = ctx.jamesProfile?.displayName?.trim() || "the user";
+  return `You extract short, durable memories from a conversation involving ${name}, a non-speaking person with cerebral palsy who replies via an AAC iPad. These memories feed semantic top-K retrieval for future suggestion calls — only the memorable, person-specific or place-specific items are worth keeping.
 
 Output strictly as JSON, no commentary:
 
@@ -1487,11 +1500,12 @@ function parseExtractedMemories(raw: string, peopleNames: string[]): ExtractMemo
 // Profile enrichment prompts + parser
 // --------------------------------------------------------------------------
 
-function enrichPersonProfileSystemPrompt(): string {
-  return `You are a conservative profile-keeper. Looking at a focused transcript of one person's turns (with James's responses for context), propose 0-5 SHORT additions to their Person row. Only emit a proposal when the evidence is clear and durable — single passing remarks don't count.
+function enrichPersonProfileSystemPrompt(ctx: EnrichPersonProfileContext): string {
+  const name = ctx.jamesProfile?.displayName?.trim() || "the user";
+  return `You are a conservative profile-keeper. Looking at a focused transcript of one person's turns (with ${name}'s responses for context), propose 0-5 SHORT additions to their Person row. Only emit a proposal when the evidence is clear and durable — single passing remarks don't count.
 
 You may propose against three fields:
-- relationship: how this person relates to James (e.g. "mum", "carer", "schoolfriend"). Use "set" op.
+- relationship: how this person relates to ${name} (e.g. "mum", "carer", "schoolfriend"). Use "set" op.
 - topicsLoved: subjects they clearly enjoy talking about. Use "append" op, one topic per proposal.
 - notes: short factual notes about them. Use "append" op, one note per proposal.
 
@@ -1569,7 +1583,7 @@ function parseEnrichPersonProfile(raw: string): EnrichPersonProfileResult {
 // --------------------------------------------------------------------------
 
 function detectIntroductionsSystemPrompt(): string {
-  return `You confirm which regex-shortlisted names are actual self-introductions in a transcript. A self-introduction is when someone names themselves to James ("Hi, I'm Sarah", "This is Dr Patel speaking", "My name's Anna"). Skip false positives like "meet me at the cafe" or generic mentions of a third party.
+  return `You confirm which regex-shortlisted names are actual self-introductions in a transcript. A self-introduction is when someone names themselves to the AAC user ("Hi, I'm Sarah", "This is Dr Patel speaking", "My name's Anna"). Skip false positives like "meet me at the cafe" or generic mentions of a third party.
 
 Output strictly as JSON, no commentary:
 
@@ -1622,7 +1636,7 @@ function parseDetectIntroductions(raw: string): DetectIntroductionsResult {
 }
 
 function identifySpeakerSystemPrompt(ctx: IdentifySpeakerContext): string {
-  const jamesName = ctx.jamesProfile?.displayName || "James";
+  const jamesName = ctx.jamesProfile?.displayName || "the user";
   const candList = ctx.candidates.map((c) => `- ${c}`).join("\n");
   return `You are the speaker-identification tie-breaker for ${jamesName}'s AAC iPad. The voice-similarity matcher couldn't decide between two candidates; you read the recent transcript window and pick the single best match.
 

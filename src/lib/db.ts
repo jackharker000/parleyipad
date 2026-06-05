@@ -545,9 +545,14 @@ export const DEFAULT_SETTINGS: SettingsRecord = {
   displayPreset: "11",
 };
 
+// Empty `displayName` means "not yet set" — the onboarding checklist already
+// prompts the user to fill this in, and downstream call-sites (cockpit
+// transcript labels, AI prompts, etc.) fall back to a generic "you" / "the
+// user" when it's empty. Don't seed it with a real name here: a new account
+// shouldn't presuppose a particular user.
 export const DEFAULT_JAMES_PROFILE: JamesProfile = {
   id: "singleton",
-  displayName: "James",
+  displayName: "",
   updatedAt: 0,
 };
 

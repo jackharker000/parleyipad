@@ -207,11 +207,17 @@ async function runSummariseConversation(
     people.filter((p): p is NonNullable<typeof p> => !!p).map((p) => [p.id, p.name]),
   );
 
+  // Use the user's actual display name when set; fall back to "Me" so the
+  // summariser still gets a stable label rather than the legacy "James"
+  // sentinel that misled the AI on non-James accounts.
+  const jamesProfile = await db().jamesProfile.get("singleton");
+  const selfLabel = jamesProfile?.displayName?.trim() || "Me";
+
   const transcriptLines = ordered
     .map((s) => {
       const speaker =
         s.speakerKind === "self"
-          ? "James"
+          ? selfLabel
           : (s.personId && nameById.get(s.personId)) || s.speakerLabel || "Unknown";
       return `${speaker}: ${s.text}`;
     })
@@ -226,7 +232,10 @@ async function runSummariseConversation(
       : transcriptLines;
 
   const ai = makeAI(llmProvider);
-  const result = await ai.summarizeConversation({ transcript: truncated });
+  const result = await ai.summarizeConversation({
+    transcript: truncated,
+    userName: jamesProfile?.displayName?.trim() || undefined,
+  });
 
   await db().conversations.update(job.conversationId, {
     summary: result.summary,

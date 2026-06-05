@@ -77,9 +77,13 @@ function ProfileCard() {
 
   // Hydrate the draft from the loaded profile once. Subsequent edits keep
   // local state so live-query refreshes don't clobber the user's typing.
+  // We only re-hydrate after the live row has materialised (updatedAt !== 0
+  // is the "real saved row" signal); an empty default profile is left as-is
+  // so the form fields don't flicker between the empty default and an
+  // already-typed draft.
   useEffect(() => {
     if (hydrated) return;
-    if (profile.updatedAt !== 0 || profile.displayName !== "James") {
+    if (profile.updatedAt !== 0) {
       setDraft(draftFromProfile(profile));
     }
     setHydrated(true);
@@ -121,9 +125,9 @@ function ProfileCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>About James</CardTitle>
+        <CardTitle>Your profile</CardTitle>
         <CardDescription>
-          The richer this is, the more suggestions sound like him. Edit anytime — changes apply to
+          The richer this is, the more suggestions sound like you. Edit anytime — changes apply to
           the next conversation.
         </CardDescription>
       </CardHeader>
@@ -133,7 +137,7 @@ function ProfileCard() {
             <TextInput
               value={draft.displayName}
               onChange={(v) => set("displayName", v)}
-              placeholder="James"
+              placeholder="Your name"
               autoComplete="off"
             />
           </Field>
@@ -142,7 +146,7 @@ function ProfileCard() {
           </Field>
         </div>
 
-        <Field label="Background" hint="Family, career, where he grew up, important life details">
+        <Field label="Background" hint="Family, career, where you grew up, important life details">
           <TextareaWithCount
             rows={4}
             value={draft.background}
@@ -177,7 +181,7 @@ function ProfileCard() {
           </Field>
           <Field
             label="Current life context"
-            hint="What's on his mind right now — recent events, what's coming up"
+            hint="What's on your mind right now — recent events, what's coming up"
           >
             <TextareaWithCount
               rows={3}
@@ -187,14 +191,14 @@ function ProfileCard() {
           </Field>
         </div>
 
-        <Field label="Topics he loves" hint="Comma-separated">
+        <Field label="Topics you love" hint="Comma-separated">
           <TextInput
             value={draft.topicsLoved}
             onChange={(v) => set("topicsLoved", v)}
             placeholder="e.g. cricket, dogs, jazz"
           />
         </Field>
-        <Field label="Topics he avoids" hint="Comma-separated">
+        <Field label="Topics you avoid" hint="Comma-separated">
           <TextInput
             value={draft.topicsAvoided}
             onChange={(v) => set("topicsAvoided", v)}
@@ -203,7 +207,7 @@ function ProfileCard() {
         </Field>
         <Field
           label="Signature phrases"
-          hint="Comma-separated — actual things he'd say. The AI will reuse these verbatim."
+          hint="Comma-separated — actual things you'd say. The AI will reuse these verbatim."
         >
           <TextInput
             value={draft.signaturePhrases}
@@ -285,7 +289,7 @@ function DocumentsCard() {
       <CardHeader>
         <CardTitle>Reference documents</CardTitle>
         <CardDescription>
-          Attach background docs the AI should know about James. Plain-text only (.txt, .md). Each
+          Attach background docs the AI should know about you. Plain-text only (.txt, .md). Each
           file is capped at ~60k characters.
         </CardDescription>
       </CardHeader>

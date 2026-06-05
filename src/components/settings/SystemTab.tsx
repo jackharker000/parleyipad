@@ -406,7 +406,7 @@ function DeadPhraseCard() {
       <CardHeader>
         <CardTitle>Dead-phrase suppression</CardTitle>
         <CardDescription>
-          The cockpit hides suggestions James has consistently passed over. Tune the thresholds if
+          The cockpit hides suggestions you have consistently passed over. Tune the thresholds if
           phrases are vanishing too fast — or sticking around when they shouldn't.
         </CardDescription>
       </CardHeader>

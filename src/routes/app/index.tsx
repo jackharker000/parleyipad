@@ -250,7 +250,9 @@ function Cockpit() {
       embedderRef,
       ai,
       settings,
-      jamesName: jamesProfile?.displayName ?? "James",
+      // Empty string is "not yet set" — downstream code (AI prompts,
+      // transcript labels) substitutes the appropriate generic fallback.
+      jamesName: jamesProfile?.displayName?.trim() ?? "",
       jamesProfile: jamesProfile ?? undefined,
       eventId: selectedEventId ?? undefined,
       placeId: selectedPlaceId ?? undefined,
@@ -472,13 +474,15 @@ function Cockpit() {
       const recent = transcript.slice(-12).map((s) => ({
         speaker:
           s.speakerKind === "self"
-            ? (jamesProfile?.displayName ?? "Me")
+            ? jamesProfile?.displayName?.trim() || "Me"
             : (s.personName ?? "Speaker"),
         text: s.text,
       }));
       const polished = await ai
         .expandUtterance({
-          jamesName: jamesProfile?.displayName ?? "James",
+          // Empty when unset — `expandSystemPrompt` substitutes a generic
+          // fallback so the model doesn't see a stale "James" presupposition.
+          jamesName: jamesProfile?.displayName?.trim() ?? "",
           rawText: raw,
           recentTranscript: recent,
         })
@@ -767,7 +771,7 @@ function Cockpit() {
           {/* Live transcript (flex-3) */}
           <TranscriptPanel
             transcript={transcript}
-            jamesName={jamesProfile?.displayName ?? "Me"}
+            jamesName={jamesProfile?.displayName?.trim() || "Me"}
             rosterPeople={people.filter((p) => selectedPersonIds.includes(p.id))}
             onReassign={(segmentId, personId) => {
               const conv = conversationRef.current;

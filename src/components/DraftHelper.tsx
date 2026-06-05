@@ -217,7 +217,9 @@ export function DraftHelper(props: {
   async function acceptInterest(s: InterestSuggestion) {
     const current = (await db().jamesProfile.get("singleton")) ?? {
       id: "singleton" as const,
-      displayName: "James",
+      // Empty string = "not yet set" (matches DEFAULT_JAMES_PROFILE so the
+      // onboarding checklist still nudges the user to fill it in afterwards).
+      displayName: "",
       updatedAt: 0,
     };
     const updates: Partial<JamesProfile> = {};
@@ -232,7 +234,7 @@ export function DraftHelper(props: {
       updates.signaturePhrases = arr;
     }
     await db().jamesProfile.put({ ...current, ...updates, updatedAt: Date.now() });
-    toast.success("Added to James's profile");
+    toast.success("Added to your profile");
     setInterestSuggestions((arr) => arr.filter((x) => x !== s));
   }
 
@@ -453,7 +455,7 @@ export function DraftHelper(props: {
           {interestSuggestions.length > 0 && (
             <Card className="border-amber-500/40 bg-amber-500/5 p-4">
               <div className="text-xs font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
-                Learned from this draft — add to James's profile?
+                Learned from this draft — add to your profile?
               </div>
               <ul className="mt-2 space-y-2">
                 {interestSuggestions.map((s, i) => (

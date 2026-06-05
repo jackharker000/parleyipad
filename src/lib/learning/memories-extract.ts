@@ -47,11 +47,12 @@ export async function extractMemoriesFromConversation(
     const nameById = new Map(present.map((p) => [p.id, p.name]));
     const peopleNames = present.map((p) => p.name);
 
-    const transcript = buildTranscript(segments, nameById);
-
     const settings = await getSettingsSnapshot();
     const ai = makeAI(settings.llmProvider);
     const jamesProfile = await getJamesProfile();
+    const selfLabel = jamesProfile.displayName?.trim() || "Me";
+
+    const transcript = buildTranscript(segments, nameById, selfLabel);
 
     const result = await ai.extractMemories({
       transcript,
@@ -100,12 +101,16 @@ export async function extractMemoriesFromConversation(
   }
 }
 
-function buildTranscript(segments: TranscriptSegment[], nameById: Map<string, string>): string {
+function buildTranscript(
+  segments: TranscriptSegment[],
+  nameById: Map<string, string>,
+  selfLabel: string,
+): string {
   const ordered = segments.slice().sort((a, b) => a.startedAt - b.startedAt);
   const lines = ordered.map((s) => {
     const speaker =
       s.speakerKind === "self"
-        ? "James"
+        ? selfLabel
         : (s.personId && nameById.get(s.personId)) || s.speakerLabel || "Unknown";
     return `${speaker}: ${s.text}`;
   });

@@ -37,69 +37,82 @@ const SELF_INTRO_REGEXES: RegExp[] = [
   /\b([A-Z][a-zA-Z'-]{2,})\s+here\b/,
 ];
 
-const STOP_NAMES = new Set(
-  [
-    "James",
-    "Mr",
-    "Mrs",
-    "Ms",
-    "Dr",
-    "Hello",
-    "Hi",
-    "Hey",
-    "Yes",
-    "No",
-    "OK",
-    "Okay",
-    "Sorry",
-    "Thanks",
-    "Thank",
-    "Speaker",
-    "I",
-    "Im",
-    "Ive",
-    "Ill",
-    "Id",
-    "A",
-    "An",
-    "The",
-    "Just",
-    "Only",
-    "Actually",
-    "Really",
-    "Here",
-    "There",
-    "Back",
-    "Home",
-    "Now",
-    "Today",
-    "Tonight",
-    "Tomorrow",
-    "Yesterday",
-    "Going",
-    "Coming",
-    "Doing",
-    "Trying",
-    "Looking",
-    "Sure",
-    "Fine",
-    "Good",
-    "Great",
-    "Right",
-    "Wrong",
-    "Tired",
-    "Happy",
-    "Sad",
-    "So",
-    "Very",
-    "Still",
-    "Mum",
-    "Mom",
-    "Dad",
-    "Nan",
-    "Pop",
-  ].map((s) => s.toLowerCase()),
-);
+// Stop-name list for the intro-detect regex pre-filter. Names here never get
+// surfaced as "someone newly introducing themselves". The user's own display
+// name is added dynamically per-call (see `buildStopNames`) so accounts other
+// than the original James-the-user one don't accidentally let their owner's
+// own name through.
+const BASE_STOP_NAMES: readonly string[] = [
+  "Mr",
+  "Mrs",
+  "Ms",
+  "Dr",
+  "Hello",
+  "Hi",
+  "Hey",
+  "Yes",
+  "No",
+  "OK",
+  "Okay",
+  "Sorry",
+  "Thanks",
+  "Thank",
+  "Speaker",
+  "I",
+  "Im",
+  "Ive",
+  "Ill",
+  "Id",
+  "A",
+  "An",
+  "The",
+  "Just",
+  "Only",
+  "Actually",
+  "Really",
+  "Here",
+  "There",
+  "Back",
+  "Home",
+  "Now",
+  "Today",
+  "Tonight",
+  "Tomorrow",
+  "Yesterday",
+  "Going",
+  "Coming",
+  "Doing",
+  "Trying",
+  "Looking",
+  "Sure",
+  "Fine",
+  "Good",
+  "Great",
+  "Right",
+  "Wrong",
+  "Tired",
+  "Happy",
+  "Sad",
+  "So",
+  "Very",
+  "Still",
+  "Mum",
+  "Mom",
+  "Dad",
+  "Nan",
+  "Pop",
+];
+
+function buildStopNames(selfName: string): Set<string> {
+  const lowered = BASE_STOP_NAMES.map((s) => s.toLowerCase());
+  const own = selfName.trim();
+  if (own.length > 0) lowered.push(own.toLowerCase());
+  // "James" was the historic single-user default; keep it in the stop list so
+  // accounts created before the multi-user pivot don't generate spurious
+  // "Hi I'm James" detections on the original owner's transcripts.
+  lowered.push("james");
+  return new Set(lowered);
+}
 
 export async function detectIntroductionsInConversation(
   conversationId: string,
@@ -112,10 +125,17 @@ export async function detectIntroductionsInConversation(
     if (segments.length === 0) return { created: 0 };
     const ordered = segments.sort((a, b) => a.startedAt - b.startedAt);
 
+    // Load the user's display name up front so the regex pre-filter can
+    // stop-list it (we don't want "Hi I'm Sarah" to create a new Person when
+    // Sarah is the account owner).
+    const jamesProfile = await getJamesProfile();
+    const jamesName = jamesProfile.displayName?.trim() || "Me";
+    const stopNames = buildStopNames(jamesProfile.displayName ?? "");
+
     // 1. Regex pre-filter — collect candidate names tied to a speakerLabel.
     const candidatesByName = new Map<string, { name: string; speakerLabel: string }>();
     for (const seg of ordered) {
-      const hits = extractIntroducedNames(seg.text);
+      const hits = extractIntroducedNames(seg.text, stopNames);
       for (const name of hits) {
         const key = name.toLowerCase();
         if (!candidatesByName.has(key)) {
@@ -139,8 +159,6 @@ export async function detectIntroductionsInConversation(
     // out false positives.
     const settings = await getSettingsSnapshot();
     const ai = makeAI(settings.llmProvider);
-    const jamesProfile = await getJamesProfile();
-    const jamesName = jamesProfile.displayName || "James";
 
     const transcript = ordered
       .map((s) => {
@@ -260,14 +278,14 @@ async function seedVoiceprint(
  * names that pass the stop-word filter. Order-preserving, deduped within
  * the call (first match wins).
  */
-function extractIntroducedNames(text: string): string[] {
+function extractIntroducedNames(text: string, stopNames: Set<string>): string[] {
   if (!text) return [];
   const out: string[] = [];
   const seen = new Set<string>();
   for (const rx of SELF_INTRO_REGEXES) {
     const m = text.match(rx);
     if (!m?.[1]) continue;
-    const normalised = normaliseName(m[1]);
+    const normalised = normaliseName(m[1], stopNames);
     if (!normalised) continue;
     const key = normalised.toLowerCase();
     if (seen.has(key)) continue;
@@ -277,10 +295,10 @@ function extractIntroducedNames(text: string): string[] {
   return out;
 }
 
-function normaliseName(raw: string): string | null {
+function normaliseName(raw: string, stopNames: Set<string>): string | null {
   const stripped = raw.replace(/['’]/g, "").trim();
   if (stripped.length < 2) return null;
-  if (STOP_NAMES.has(stripped.toLowerCase())) return null;
+  if (stopNames.has(stripped.toLowerCase())) return null;
   if (!/^[A-Za-z][A-Za-z-]*$/.test(stripped)) return null;
   return stripped[0].toUpperCase() + stripped.slice(1).toLowerCase();
 }

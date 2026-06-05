@@ -284,13 +284,18 @@ async function applyTieBreaker(args: {
   const nameToId = new Map<string, string>();
   for (const p of personById.values()) nameToId.set(p.name.toLowerCase(), p.id);
 
+  // Use the user's actual display name (or "Me" when unset) for self-segments
+  // so the tie-breaker prompt isn't labelling them as the legacy "James".
+  const jamesProfile = await db().jamesProfile.get("singleton");
+  const selfLabel = jamesProfile?.displayName?.trim() || "Me";
+
   const orderedTranscript = args.segments
     .slice()
     .sort((a, b) => a.startedAt - b.startedAt)
     .map((s) => {
       const speaker =
         s.speakerKind === "self"
-          ? "James"
+          ? selfLabel
           : (s.personId && personById.get(s.personId)?.name) || s.speakerLabel || "Unknown";
       return `${speaker}: ${s.text}`;
     })

@@ -46,7 +46,7 @@ export async function enrichProfilesFromConversation(
     const jamesProfile = await getJamesProfile();
     const settings = await getSettingsSnapshot();
     const ai = makeAI(settings.llmProvider);
-    const jamesName = jamesProfile.displayName || "James";
+    const jamesName = jamesProfile.displayName?.trim() || "Me";
 
     let proposalsAdded = 0;
     for (const personId of conversation.personIds) {

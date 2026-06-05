@@ -21,20 +21,32 @@ import { SystemTab } from "@/components/settings/SystemTab";
  * right pane.
  */
 
-const TAB_IDS = [
-  "about-james",
-  "people",
-  "locations",
-  "events",
-  "voice-models",
-  "system",
-] as const;
+const TAB_IDS = ["profile", "people", "locations", "events", "voice-models", "system"] as const;
 
 type TabId = (typeof TAB_IDS)[number];
 
+/**
+ * The Profile tab used to be `?tab=about-james` (a "Parley-for-James" relic).
+ * It's now `?tab=profile`. Older bookmarks / external links still pass the
+ * legacy value, so we accept it as a synonym in the zod parse and normalise
+ * it to `profile` on first render — see `tabFromSearch` below.
+ */
+const LEGACY_TAB_ALIASES: Record<string, TabId> = {
+  "about-james": "profile",
+};
+
+// Accept any string in the search param so legacy values (and typos) don't
+// bounce through zod's `.catch` and clobber the URL — `tabFromSearch` is the
+// single source of truth for resolving the actual tab.
 const SettingsSearch = z.object({
-  tab: z.enum(TAB_IDS).optional().catch("about-james"),
+  tab: z.string().optional(),
 });
+
+function tabFromSearch(raw: string | undefined): TabId {
+  if (!raw) return "profile";
+  if (raw in LEGACY_TAB_ALIASES) return LEGACY_TAB_ALIASES[raw];
+  return (TAB_IDS as readonly string[]).includes(raw) ? (raw as TabId) : "profile";
+}
 
 export const Route = createFileRoute("/app/settings")({
   validateSearch: SettingsSearch,
@@ -44,11 +56,11 @@ export const Route = createFileRoute("/app/settings")({
 function SettingsPage() {
   const navigate = useNavigate({ from: "/app/settings" });
   const search = Route.useSearch();
-  const tab: TabId = (search.tab ?? "about-james") as TabId;
+  const tab: TabId = tabFromSearch(search.tab);
 
   const setTab = (next: string) => {
     void navigate({
-      search: (prev) => ({ ...prev, tab: next === "about-james" ? undefined : (next as TabId) }),
+      search: (prev) => ({ ...prev, tab: next === "profile" ? undefined : (next as TabId) }),
       replace: true,
     });
   };
@@ -61,14 +73,14 @@ function SettingsPage() {
         </p>
         <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
         <p className="text-muted-foreground">
-          Configure James&apos;s profile, the people he talks to, the places he visits, the events
-          he&apos;s preparing for, the AI providers, and the speaker-ID matcher.
+          Configure your profile, the people you talk to, the places you visit, the events
+          you&apos;re preparing for, the AI providers, and the speaker-ID matcher.
         </p>
       </header>
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex h-auto w-full flex-wrap gap-1 p-1">
-          <TabsTrigger value="about-james">About James</TabsTrigger>
+          <TabsTrigger value="profile">Profile</TabsTrigger>
           <TabsTrigger value="people">People</TabsTrigger>
           <TabsTrigger value="locations">Locations</TabsTrigger>
           <TabsTrigger value="events">Events</TabsTrigger>
@@ -76,7 +88,7 @@ function SettingsPage() {
           <TabsTrigger value="system">System</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="about-james">
+        <TabsContent value="profile">
           <AboutJamesTab />
         </TabsContent>
         <TabsContent value="people">

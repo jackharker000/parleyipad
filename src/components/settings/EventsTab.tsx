@@ -204,7 +204,7 @@ function EmptyDetailPanel({ onAdd }: { onAdd: () => void }) {
         Select an event to edit, or add a new one.
       </h3>
       <p className="mt-2 max-w-md text-sm leading-relaxed text-[var(--ink-soft)]">
-        Anything James has on the calendar he&apos;d like Parley to prep him for. Tagged attendees
+        Anything you have on the calendar you&apos;d like Parley to prep you for. Tagged attendees
         bias the speaker-ID matcher during the event, and the key info feeds the live cockpit
         prompt.
       </p>

@@ -15,7 +15,7 @@ export const Route = createFileRoute("/app/helpers")({
       {
         name: "description",
         content:
-          "Draft messages, emails and Facebook posts in James's voice — copy and paste into the app of your choice.",
+          "Draft messages, emails and Facebook posts in your voice — copy and paste into the app of your choice.",
       },
     ],
   }),
@@ -99,7 +99,7 @@ function HelpersPage() {
             incomingPlaceholder="Paste the iMessage / text here…"
             draftLabel="Type roughly — what do you want to reply?"
             draftPlaceholder="e.g. yep on my way 10 min"
-            contextPlaceholder="e.g. from his son Jack"
+            contextPlaceholder="e.g. from my son Jack"
           />
         </div>
       )}
@@ -124,7 +124,7 @@ function HelpersPage() {
             incomingPlaceholder="Paste the email here so the AI knows what you're replying to…"
             draftLabel="Type roughly — what do you want to say?"
             draftPlaceholder="e.g. thx great see u sat 7pm bring wine"
-            contextPlaceholder="e.g. from his sister Anna"
+            contextPlaceholder="e.g. from my sister Anna"
           />
         </div>
       )}

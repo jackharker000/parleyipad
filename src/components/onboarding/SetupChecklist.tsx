@@ -19,11 +19,11 @@ import { db, type JamesProfile, type SettingsRecord } from "@/lib/db";
  *   1) all five steps are complete, OR
  *   2) the user has tapped Dismiss.
  *
- * displayName sentinel: `DEFAULT_JAMES_PROFILE.displayName` is "James" (the
- * historic single-user default that several downstream call-sites rely on as
- * a fallback). Rather than break those, the checklist treats both an absent
- * row AND the literal "James" string as "not yet set" — matching the
- * AboutJamesTab's own "is this real?" gate (`displayName !== "James"`).
+ * displayName check: the default `DEFAULT_JAMES_PROFILE.displayName` is now
+ * the empty string, so a non-empty trimmed value is "done". The legacy
+ * "James" literal is still treated as "not yet set" for accounts that were
+ * created before the default flipped — they get one more nudge to swap in
+ * their own name.
  */
 
 const DISMISS_KEY = "parley.onboarding.dismissed";
@@ -46,11 +46,11 @@ type Step = {
 function isDisplayNameSet(profile: JamesProfile | undefined): boolean {
   const name = profile?.displayName?.trim();
   if (!name) return false;
-  // "James" is the historic seed value (see DEFAULT_JAMES_PROFILE) and is
-  // treated as "not yet set" so non-James users get prompted to fill it in.
-  // James himself will see this step pre-checked once he hits Save in
-  // Settings (the trimmed string still passes the !== "James" guard if he
-  // typed "James " or "James H" etc.).
+  // Backward-compat: "James" was the historic seed default (see
+  // DEFAULT_JAMES_PROFILE), so accounts that landed before the empty-string
+  // flip still see this step as "not yet set" and get nudged to swap in
+  // their own name. New accounts default to empty, which the !name check
+  // above already handles.
   if (name === "James") return false;
   return true;
 }

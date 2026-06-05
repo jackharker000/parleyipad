@@ -986,12 +986,17 @@ export class LiveConversation {
       void this.refreshMemories(activePersonIds);
       if (abort.signal.aborted) return;
 
+      // When the user hasn't set a display name yet, the AI prompt falls back
+      // to "the user" inside `generateSuggestions`; we mirror that in the
+      // transcript labels so the model doesn't see an empty-string speaker.
+      const selfLabel = this.deps.jamesName?.trim() || "Me";
+
       const drafts = await this.deps.ai.generateSuggestions(
         {
           jamesName: this.deps.jamesName,
           mood: this.mood,
           transcript: this.transcriptCache.map((t) => ({
-            speaker: t.speakerKind === "self" ? this.deps.jamesName : (t.personName ?? "Other"),
+            speaker: t.speakerKind === "self" ? selfLabel : (t.personName ?? "Other"),
             text: t.text,
           })),
           peopleNames: peopleNames.length > 0 ? peopleNames : undefined,
