@@ -142,7 +142,7 @@ export function ImportDataCard() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".parley.enc,.json,application/json,application/octet-stream"
+                  accept=".parley.enc,.parlbak,.json,application/json,application/octet-stream"
                   onChange={(e) => void handleFilePicked(e.target.files?.[0] ?? null)}
                   className="sr-only"
                   id="parley-restore-file"

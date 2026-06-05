@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { decryptManifestBytes, hasParleyMagic } from "@/lib/crypto-passphrase";
+import { hasLegacyParlbakMagic, importLegacyParlbak } from "@/lib/legacy-backup-import";
 import type { ExportManifest } from "@/lib/data-export";
 
 /**
@@ -50,6 +51,29 @@ export type ParsedExport = {
 export async function parseExportFile(file: File, password?: string): Promise<ParsedExport> {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
+
+  // Legacy `.parlbak` (pre-rebuild app, "PRLY" v2 + snake_case schema).
+  // Always encrypted. Decrypt + migrate to the current manifest shape so
+  // the rest of the restore flow is identical to a modern export.
+  if (hasLegacyParlbakMagic(bytes)) {
+    const pw = password?.trim() ?? "";
+    if (pw.length === 0) {
+      return {
+        manifest: PLACEHOLDER_MANIFEST,
+        fileType: "encrypted",
+        fileBytes: file.size,
+        encryptedNeedsPassword: true,
+      };
+    }
+    const manifest = await importLegacyParlbak(bytes, pw);
+    return {
+      manifest,
+      fileType: "encrypted",
+      fileBytes: file.size,
+      encryptedNeedsPassword: false,
+    };
+  }
+
   const isEncrypted = hasParleyMagic(bytes);
 
   if (isEncrypted) {
