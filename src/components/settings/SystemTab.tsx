@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
+import { useRouter } from "@tanstack/react-router";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,7 @@ import { ExportDataCard } from "@/components/settings/ExportDataCard";
 import { ImportDataCard } from "@/components/settings/ImportDataCard";
 import { Switch } from "@/components/ui/switch";
 import { db, type SettingsRecord } from "@/lib/db";
+import { signOut, useSession } from "@/lib/auth";
 import { useSettings } from "@/lib/settings";
 import { drainPendingJobs } from "@/lib/jobs/drain";
 import {
@@ -42,6 +44,7 @@ const DEFAULT_DEAD_PHRASE_WINDOW_DAYS = 7;
 export function SystemTab() {
   return (
     <div className="space-y-6">
+      <AccountCard />
       <DisplayPresetCard />
       <SpeakerIdCard />
       <CloudSyncCard />
@@ -52,6 +55,47 @@ export function SystemTab() {
       <ImportDataCard />
       <DangerZoneCard />
     </div>
+  );
+}
+
+function AccountCard() {
+  const router = useRouter();
+  const { user } = useSession();
+  const [busy, setBusy] = useState(false);
+
+  async function handleSignOut() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await signOut();
+      router.navigate({ to: "/login" });
+    } catch (err) {
+      setBusy(false);
+      toast.error(err instanceof Error ? err.message : "Sign-out failed");
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Account</CardTitle>
+        <CardDescription>
+          {user?.email
+            ? `Signed in as ${user.email}.`
+            : "You're signed in to Parley."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button
+          variant="outline"
+          onClick={handleSignOut}
+          disabled={busy}
+          className="min-h-[44px]"
+        >
+          {busy ? "Signing out…" : "Sign out"}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 

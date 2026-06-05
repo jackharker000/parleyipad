@@ -2,24 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { nanoid } from "nanoid";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { MapPin, Plus, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { db, type Person, type Place } from "@/lib/db";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/cn";
 
 /**
- * Locations tab. Ported from `legacy-src/routes/settings.tsx` PlacesTab,
- * adapted to the rebuild's `Place` shape (camelCase + optional lat/lng +
- * `personIds` for the "people commonly here" multi-select).
- *
- * No real map picker yet — lat/lng are plain number inputs, hidden entirely
- * when `settings.gpsEnabled === false` (the speaker-ID prior only needs
- * `personIds` to do its job, and a single-user iPad set up at the kitchen
- * table doesn't need GPS to know which room it's in).
+ * Locations tab. Left rail (Add + saved-locations list) + right detail
+ * panel (Name, GPS coords + radius, Notes, people commonly here, Save +
+ * Delete). Brings back the pre-login left-list / right-edit pattern, and
+ * exposes lat/lng + radius even when the GPS feature toggle is off (the
+ * fields are useful background data; the toggle only gates auto-detection).
  */
 
 const EMPTY_PLACES: Place[] = [];
@@ -46,79 +42,168 @@ function draftFromPlace(p: Place): PlaceDraft {
 }
 
 export function LocationsTab() {
-  const settings = useSettings();
   const places = useLiveQuery(() => db().places.orderBy("name").toArray(), [], EMPTY_PLACES);
   const people = useLiveQuery(() => db().people.orderBy("name").toArray(), [], EMPTY_PEOPLE);
+  const settings = useSettings();
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // If the selected place is deleted underneath us, clear the selection.
+  useEffect(() => {
+    if (selectedId && !places.some((p) => p.id === selectedId)) {
+      setSelectedId(null);
+    }
+  }, [places, selectedId]);
+
+  const selected = selectedId ? places.find((p) => p.id === selectedId) ?? null : null;
 
   const addPlace = async () => {
+    const id = nanoid();
     const now = Date.now();
     await db().places.add({
-      id: nanoid(),
+      id,
       name: "New location",
       personIds: [],
       createdAt: now,
       updatedAt: now,
     });
+    setSelectedId(id);
     toast.success("Location added");
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <CardTitle>Locations</CardTitle>
-            <CardDescription>
-              Places James talks at — home, library, the cafe round the corner. Tagging the people
-              commonly here boosts the speaker-ID prior at this location.
-            </CardDescription>
-          </div>
-          <Button variant="default" onClick={addPlace}>
-            <Plus />
-            Add place
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {places.length === 0 ? (
-          <p className="rounded-md border border-dashed border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
-            No locations yet. Add one above.
-          </p>
+    <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
+      <SavedLocationsRail
+        places={places}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onAdd={addPlace}
+      />
+      <div>
+        {selected ? (
+          <PlaceEditor
+            key={selected.id}
+            place={selected}
+            people={people}
+            gpsEnabled={settings.gpsEnabled}
+            onDeleted={() => setSelectedId(null)}
+          />
         ) : (
-          places.map((place) => (
-            <PlaceRow
-              key={place.id}
-              place={place}
-              people={people}
-              gpsEnabled={settings.gpsEnabled}
-            />
-          ))
+          <EmptyDetailPanel onAdd={addPlace} />
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
-function PlaceRow({
+// --------------------------------------------------------------------------
+
+function SavedLocationsRail({
+  places,
+  selectedId,
+  onSelect,
+  onAdd,
+}: {
+  places: Place[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+}) {
+  return (
+    <div className="space-y-3 rounded-2xl border border-[var(--line)] bg-white p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Saved locations ({places.length})
+        </p>
+        <Button size="sm" onClick={onAdd}>
+          <Plus />
+          Add
+        </Button>
+      </div>
+      {places.length === 0 ? (
+        <p className="rounded-md border border-dashed border-border bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">
+          No saved locations yet.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {places.map((p) => {
+            const isSelected = p.id === selectedId;
+            return (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(p.id)}
+                  aria-current={isSelected ? "true" : undefined}
+                  className={cn(
+                    "flex w-full min-h-[44px] items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
+                    isSelected
+                      ? "border-[var(--teal)] bg-[var(--teal)]/10"
+                      : "border-transparent hover:border-border hover:bg-muted/40",
+                  )}
+                >
+                  <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-foreground">{p.name}</div>
+                    {p.lat != null && p.lng != null && (
+                      <div className="truncate text-xs text-muted-foreground">
+                        {p.lat.toFixed(4)}, {p.lng.toFixed(4)}
+                      </div>
+                    )}
+                  </div>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function EmptyDetailPanel({ onAdd }: { onAdd: () => void }) {
+  return (
+    <div className="flex h-full min-h-[280px] flex-col items-center justify-center rounded-2xl border border-[var(--line)] bg-white p-8 text-center">
+      <h3 className="text-lg font-semibold tracking-tight text-[var(--ink)]">
+        Select a location to edit, or add a new one.
+      </h3>
+      <p className="mt-2 max-w-md text-sm leading-relaxed text-[var(--ink-soft)]">
+        Places James talks at — home, library, the cafe round the corner. Tagging the people
+        commonly here boosts the speaker-ID prior at this location.
+      </p>
+      <div className="mt-4">
+        <Button onClick={onAdd}>
+          <Plus />
+          Add location
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+
+function PlaceEditor({
   place,
   people,
   gpsEnabled,
+  onDeleted,
 }: {
   place: Place;
   people: Person[];
   gpsEnabled: boolean;
+  onDeleted: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<PlaceDraft>(() => draftFromPlace(place));
   const [saving, setSaving] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [locating, setLocating] = useState(false);
 
-  // Keep draft in sync if the place was edited elsewhere (e.g. created
-  // moments ago with the "Add place" button) but only while collapsed —
-  // mid-edit changes shouldn't get clobbered by the live query.
+  // If the live row updates underneath us (e.g. cross-device sync), only
+  // re-sync when our local draft hasn't been touched — checking against the
+  // current draft would lose typed edits.
   useEffect(() => {
-    if (!open) setDraft(draftFromPlace(place));
-  }, [place, open]);
+    setDraft(draftFromPlace(place));
+  }, [place.id]);
 
   const set = <K extends keyof PlaceDraft>(key: K, value: PlaceDraft[K]) =>
     setDraft((cur) => ({ ...cur, [key]: value }));
@@ -135,6 +220,33 @@ function PlaceRow({
     });
   };
 
+  const useCurrentLocation = () => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      toast.error("Geolocation isn't available in this browser.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        setDraft((cur) => ({
+          ...cur,
+          lat: pos.coords.latitude.toFixed(6),
+          lng: pos.coords.longitude.toFixed(6),
+        }));
+        toast.success("GPS coordinates captured");
+      },
+      (err) => {
+        setLocating(false);
+        toast.error(`Couldn't read location: ${err.message}`);
+      },
+      { enableHighAccuracy: true, timeout: 10_000 },
+    );
+  };
+
+  const clearCoords = () =>
+    setDraft((cur) => ({ ...cur, lat: "", lng: "" }));
+
   const save = async () => {
     if (saving) return;
     const trimmedName = draft.name.trim();
@@ -146,13 +258,15 @@ function PlaceRow({
     try {
       const latNum = draft.lat.trim() === "" ? undefined : Number(draft.lat);
       const lngNum = draft.lng.trim() === "" ? undefined : Number(draft.lng);
-      const radiusNum = draft.radiusM.trim() === "" ? undefined : Number(draft.radiusM);
+      const radiusNum =
+        draft.radiusM.trim() === "" ? undefined : Number(draft.radiusM);
       await db().places.put({
         ...place,
         name: trimmedName,
-        lat: Number.isFinite(latNum) ? latNum : undefined,
-        lng: Number.isFinite(lngNum) ? lngNum : undefined,
-        radiusM: Number.isFinite(radiusNum) ? radiusNum : undefined,
+        lat: latNum != null && Number.isFinite(latNum) ? latNum : undefined,
+        lng: lngNum != null && Number.isFinite(lngNum) ? lngNum : undefined,
+        radiusM:
+          radiusNum != null && Number.isFinite(radiusNum) ? radiusNum : undefined,
         notes: draft.notes.trim() || undefined,
         personIds: draft.personIds,
         updatedAt: Date.now(),
@@ -169,127 +283,135 @@ function PlaceRow({
     try {
       await db().places.delete(place.id);
       toast.success("Location removed");
+      onDeleted();
     } catch (err) {
       toast.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
-  const summary = useMemo(() => {
-    const parts: string[] = [];
-    if (place.personIds && place.personIds.length > 0) {
-      parts.push(`${place.personIds.length} ${place.personIds.length === 1 ? "person" : "people"}`);
-    }
-    if (place.lat != null && place.lng != null) {
-      parts.push(`${place.lat.toFixed(4)}, ${place.lng.toFixed(4)}`);
-    }
-    if (place.radiusM != null) parts.push(`${place.radiusM}m radius`);
-    return parts.join(" · ");
-  }, [place]);
+  const hasCoords = draft.lat.trim() !== "" && draft.lng.trim() !== "";
 
   return (
-    <div className="rounded-xl border border-border bg-card">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+    <div className="space-y-4 rounded-2xl border border-[var(--line)] bg-white p-6">
+      <Field label="Name">
+        <input
+          value={draft.name}
+          onChange={(e) => set("name", e.target.value)}
+          placeholder="e.g. Home, Library, Mum's house"
+          className="h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+      </Field>
+
+      <Field
+        label="GPS coordinates"
+        hint={
+          gpsEnabled
+            ? "Used to auto-detect this place when James arrives."
+            : "Optional — GPS auto-detection is off in System settings, but these still serve as background info."
+        }
       >
-        {open ? (
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{place.name}</div>
-          {summary && <div className="truncate text-xs text-muted-foreground">{summary}</div>}
-        </div>
-      </button>
-      {open && (
-        <div className="space-y-4 border-t border-border bg-muted/20 p-4">
-          <Field label="Name">
-            <TextInput
-              value={draft.name}
-              onChange={(v) => set("name", v)}
-              placeholder="e.g. Home, Library, Mum's house"
+        <div className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              value={hasCoords ? `${draft.lat}` : ""}
+              readOnly
+              placeholder="Latitude"
+              className="h-11 w-full rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-sm text-muted-foreground"
             />
-          </Field>
-
-          {gpsEnabled && (
-            <div className="grid grid-cols-3 gap-3">
-              <Field label="Latitude">
-                <TextInput
-                  type="number"
-                  value={draft.lat}
-                  onChange={(v) => set("lat", v)}
-                  placeholder="optional"
-                />
-              </Field>
-              <Field label="Longitude">
-                <TextInput
-                  type="number"
-                  value={draft.lng}
-                  onChange={(v) => set("lng", v)}
-                  placeholder="optional"
-                />
-              </Field>
-              <Field label="Radius (m)">
-                <TextInput
-                  type="number"
-                  value={draft.radiusM}
-                  onChange={(v) => set("radiusM", v)}
-                  placeholder="optional"
-                />
-              </Field>
-            </div>
-          )}
-
-          <Field label="Notes" hint="Useful context for suggestions here">
-            <Textarea rows={3} value={draft.notes} onChange={(v) => set("notes", v)} />
-          </Field>
-
-          <Field
-            label="People commonly here"
-            hint="Each tag boosts the speaker-ID prior when this place is the active location."
-          >
-            {people.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                Add people on the People page first; they'll show up here as tags.
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {people.map((p) => {
-                  const selected = draft.personIds.includes(p.id);
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => togglePerson(p.id)}
-                      className={cn(
-                        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                        selected
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground",
-                      )}
-                      aria-pressed={selected}
-                    >
-                      {p.name}
-                    </button>
-                  );
-                })}
-              </div>
+            <input
+              value={hasCoords ? `${draft.lng}` : ""}
+              readOnly
+              placeholder="Longitude"
+              className="h-11 w-full rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-sm text-muted-foreground"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={useCurrentLocation}
+              disabled={locating}
+            >
+              <MapPin />
+              {locating ? "Locating…" : "Use current location"}
+            </Button>
+            {hasCoords && (
+              <Button type="button" variant="ghost" size="sm" onClick={clearCoords}>
+                <X />
+                Clear
+              </Button>
             )}
-          </Field>
-
-          <div className="flex items-center gap-2 pt-1">
-            <Button onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
-            <Button variant="ghost" onClick={() => setConfirmDeleteOpen(true)}>
-              <Trash2 />
-              Delete
-            </Button>
           </div>
         </div>
-      )}
+      </Field>
+
+      <Field
+        label="Snap radius (m)"
+        hint="GPS auto-detect treats anything inside this radius as 'at this location'. Default 50m."
+      >
+        <input
+          type="number"
+          min={1}
+          value={draft.radiusM}
+          onChange={(e) => set("radiusM", e.target.value)}
+          placeholder="50"
+          className="h-11 w-32 rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+      </Field>
+
+      <Field label="Notes" hint="Useful context for suggestions here">
+        <textarea
+          rows={3}
+          value={draft.notes}
+          onChange={(e) => set("notes", e.target.value)}
+          className="block w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+      </Field>
+
+      <Field
+        label="People commonly here"
+        hint="Each tag boosts the speaker-ID prior when this place is the active location."
+      >
+        {people.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Add people on the People tab first; they&apos;ll show up here as tags.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {people.map((p) => {
+              const selected = draft.personIds.includes(p.id);
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => togglePerson(p.id)}
+                  className={cn(
+                    "min-h-[36px] rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                    selected
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border bg-background text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+                  )}
+                  aria-pressed={selected}
+                >
+                  {p.name}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </Field>
+
+      <div className="flex items-center gap-2 pt-1">
+        <Button onClick={save} disabled={saving}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
+        <Button variant="ghost" onClick={() => setConfirmDeleteOpen(true)}>
+          <Trash2 />
+          Delete
+        </Button>
+      </div>
+
       <ConfirmDialog
         open={confirmDeleteOpen}
         onOpenChange={setConfirmDeleteOpen}
@@ -320,44 +442,5 @@ function Field({
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
       {children}
     </div>
-  );
-}
-
-type TextInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange"> & {
-  value: string;
-  onChange: (value: string) => void;
-};
-
-function TextInput(props: TextInputProps) {
-  const { value, onChange, className, ...rest } = props;
-  return (
-    <input
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={
-        "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring " +
-        (className ?? "")
-      }
-      {...rest}
-    />
-  );
-}
-
-function Textarea({
-  rows,
-  value,
-  onChange,
-}: {
-  rows: number;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <textarea
-      rows={rows}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="block w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-    />
   );
 }

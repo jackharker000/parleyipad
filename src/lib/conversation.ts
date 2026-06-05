@@ -283,6 +283,37 @@ export class LiveConversation {
   }
 
   /**
+   * Id of the most-recent "other"-speaker transcript segment, used by the
+   * SpeakerPanel's per-row Confirm / Not-them buttons. Returns null if the
+   * cache is empty or the most recent segment is James himself.
+   *
+   * Ported from claude/tier3-engine-wins so the SpeakerPanel can re-attribute
+   * the borderline-suggested top guess with a single tap.
+   */
+  getLastOtherSegmentId(): string | null {
+    for (let i = this.transcriptCache.length - 1; i >= 0; i--) {
+      const s = this.transcriptCache[i];
+      if (s.speakerKind === "other") return s.id;
+    }
+    return null;
+  }
+
+  /**
+   * Manual "Refresh" trigger for the Suggestions panel. Pretends the most
+   * recent other-speaker segment just landed and re-runs the suggestion
+   * pipeline against the current state of the conversation. Useful when
+   * James wants a different set of cards without waiting for the next
+   * turn. No-op if the conversation isn't live or no other-speaker
+   * segment has been seen.
+   */
+  async requestNewSuggestions(): Promise<void> {
+    if (this.state !== "listening" && this.state !== "speech") return;
+    const segId = this.getLastOtherSegmentId();
+    if (!segId) return;
+    await this.regenerateSuggestions(segId);
+  }
+
+  /**
    * Speak the "Sorry, who am I speaking with?" phrase and hold subsequent
    * segments for manual confirmation. Held segments are still written to
    * the transcript so James can see the response text, but the speaker

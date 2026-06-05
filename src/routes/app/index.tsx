@@ -3,25 +3,33 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  HelpCircle,
+  AlertCircle,
+  Calendar,
+  Check,
+  History,
   Loader2,
-  Merge,
   Mic,
-  MicOff,
-  Rewind,
-  Send,
+  Plus,
+  Reply,
+  Settings as SettingsIcon,
+  Sparkles,
   Square,
-  UserPlus,
+  Users,
+  Volume2,
+  X,
 } from "lucide-react";
+import { nanoid } from "nanoid";
 
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { SetupChecklist } from "@/components/onboarding/SetupChecklist";
+import { SpeakerPanel } from "@/components/SpeakerPanel";
+import { VoiceSampleRecorder } from "@/components/VoiceSampleRecorder";
 import { cn } from "@/lib/cn";
 import {
   db,
   type EventRecord,
   type Person,
-  type Place,
   type SuggestionCategory,
   type Voiceprint,
   type VoiceprintContribution,
@@ -40,7 +48,6 @@ import {
   QUICK_PHRASES as CACHED_PHRASES,
 } from "@/lib/audio/quick-phrase-cache";
 import { speakText, stopAllPlayback } from "@/lib/audio/speak-text";
-import { getLastSegment, playLastSegment } from "@/lib/audio/last-segment-store";
 import { drainPendingJobs } from "@/lib/jobs/drain";
 
 export const Route = createFileRoute("/app/")({
@@ -50,27 +57,52 @@ export const Route = createFileRoute("/app/")({
 const EMPTY_PEOPLE: Person[] = [];
 const EMPTY_VOICEPRINTS: Voiceprint[] = [];
 const EMPTY_EVENTS: EventRecord[] = [];
-const EMPTY_PLACES: Place[] = [];
 const EMPTY_CONTRIBUTIONS: VoiceprintContribution[] = [];
 
-const QUICK_PHRASES: { text: string; label?: string }[] = [
-  { text: "Yes" },
-  { text: "No" },
-  { text: "Wait" },
-  { text: "I'm not finished" },
-  { text: "Give me a moment" },
-  { text: "Could you repeat that?" },
-  { text: "I need help" },
-  { text: "Sorry, who am I speaking with?", label: "Who is this?" },
+/**
+ * The five canonical quick phrases shown along the bottom of the
+ * Suggestions panel. Order and exact text are locked because the
+ * pre-warmed audio cache in `quick-phrase-cache.ts` keys on the literal
+ * strings; drift here silently downgrades quick-phrase taps to live TTS.
+ */
+const QUICK_PHRASES: string[] = [
+  "Yes",
+  "No",
+  "Give me a moment",
+  "Could you repeat that?",
+  "Sorry, who am I speaking with?",
 ];
 
-// Sanity guard: keep the cockpit's display labels in lock-step with the cache's
-// canonical phrase strings. Cache hits use exact-string lookup, so any drift
-// (e.g. "Yes." vs "Yes") silently downgrades quick phrases to live TTS.
-if (typeof window !== "undefined" && QUICK_PHRASES.some((p, i) => p.text !== CACHED_PHRASES[i])) {
+if (typeof window !== "undefined" && QUICK_PHRASES.some((p, i) => p !== CACHED_PHRASES[i])) {
   console.warn(
     "[cockpit] QUICK_PHRASES text drifted from cached set — quick phrases will miss cache",
   );
+}
+
+type MoodChip = { id: Mood; label: string; tone: string };
+
+/**
+ * Visual swatches for the mood pills along the bottom. The IDs match the
+ * `Mood` union from `@/lib/ai` exactly so passing the active chip back into
+ * `setMood` is a straight assignment.
+ */
+const MOOD_CHIPS: MoodChip[] = [
+  { id: "normal", label: "Normal", tone: "bg-secondary text-secondary-foreground" },
+  { id: "calm", label: "Calm", tone: "bg-sky-500 text-white" },
+  { id: "excited", label: "Excited", tone: "bg-amber-500 text-white" },
+  { id: "sad", label: "Sad", tone: "bg-blue-700 text-white" },
+  { id: "upset", label: "Upset", tone: "bg-red-600 text-white" },
+  { id: "empathetic", label: "Empathetic", tone: "bg-emerald-600 text-white" },
+  { id: "amused", label: "Amused", tone: "bg-fuchsia-600 text-white" },
+];
+// Sanity guard: keep the chips list in lock-step with MOODS so a new mood
+// landing in ai/domain.ts surfaces as a missing pill warning during dev.
+if (typeof window !== "undefined") {
+  for (const m of MOODS) {
+    if (!MOOD_CHIPS.some((c) => c.id === m)) {
+      console.warn(`[cockpit] missing mood chip for "${m}"`);
+    }
+  }
 }
 
 function HomePage() {
@@ -88,21 +120,23 @@ function ClientCockpit() {
 
 /**
  * Layout-preserving skeleton for the cockpit's first paint. Mirrors the
- * three-column grid so the viewport doesn't reflow when the real cockpit
- * mounts. Plain pulsing blocks — no shimmer, no spinner.
+ * action row + main grid so the viewport doesn't reflow when the real
+ * cockpit mounts.
  */
 function CockpitSkeleton() {
   return (
     <div
-      className="mx-auto w-full max-w-6xl space-y-5 px-4 py-6"
+      className="flex h-full w-full flex-col bg-background"
       role="status"
       aria-label="Loading cockpit"
     >
-      <div className="h-8 w-40 animate-pulse rounded-lg bg-[var(--sand-2)]/60" />
-      <div className="grid gap-5 lg:grid-cols-[1fr_2fr_1fr]">
-        <div className="h-32 animate-pulse rounded-2xl bg-[var(--sand-2)]/60" />
-        <div className="h-48 animate-pulse rounded-2xl bg-[var(--sand-2)]/60" />
-        <div className="h-32 animate-pulse rounded-2xl bg-[var(--sand-2)]/60" />
+      <div className="flex shrink-0 items-stretch gap-2 border-b border-border bg-card px-3 py-3">
+        <div className="h-[120px] w-[120px] animate-pulse rounded-2xl bg-muted" />
+        <div className="h-[120px] flex-1 animate-pulse rounded-2xl bg-muted" />
+        <div className="h-[120px] w-[120px] animate-pulse rounded-2xl bg-muted" />
+        <div className="h-[120px] w-[120px] animate-pulse rounded-2xl bg-muted" />
+        <div className="h-[120px] w-[120px] animate-pulse rounded-2xl bg-muted" />
+        <div className="h-[120px] w-[120px] animate-pulse rounded-2xl bg-muted" />
       </div>
     </div>
   );
@@ -113,7 +147,11 @@ function CockpitSkeleton() {
 function Cockpit() {
   const settings = useSettings();
 
-  // Embedder warmup — shared with the spike's lifecycle.
+  // Embedder warmup. Worker-backed transformers.js — the periodic dispose
+  // +warmup cycle (every N turns per the OOM mitigation) runs off the main
+  // thread so the cockpit never freezes. dispose() terminates the worker,
+  // which is the only reliable way to actually release ORT's WASM heap on
+  // iPad Safari.
   const embedderRef = useRef<SpeakerEmbedder | null>(null);
   const [embedderReady, setEmbedderReady] = useState(false);
   const [embedderError, setEmbedderError] = useState<string | null>(null);
@@ -121,11 +159,6 @@ function Cockpit() {
     setEmbedderReady(false);
     setEmbedderError(null);
     embedderRef.current?.dispose?.();
-    // Worker-backed embedder: the entire transformers.js call lives in a
-    // separate JSC VM so the periodic dispose+warmup cycle (every 12 turns
-    // per the OOM mitigation) doesn't freeze the cockpit. dispose() on the
-    // client side terminates the worker, which is the only reliable way
-    // to actually release ORT's WASM heap on iPad Safari.
     const next = makeWorkerEmbedder({ preferWebGPU: settings.speakerIdWebGPU });
     embedderRef.current = next;
     let cancelled = false;
@@ -150,7 +183,9 @@ function Cockpit() {
     [],
     EMPTY_EVENTS,
   );
-  const places = useLiveQuery(() => db().places.orderBy("name").toArray(), [], EMPTY_PLACES);
+  // Places are not surfaced as a picker in the cockpit chrome (the legacy
+  // chip lives in Settings → Locations), but the engine still reads
+  // selectedPlaceId for the 2× speaker-ID prior boost when one is set.
   const voiceprintContributions = useLiveQuery(
     () => db().voiceprintContributions.toArray(),
     [],
@@ -158,12 +193,16 @@ function Cockpit() {
   );
   const jamesProfile = useLiveQuery(() => db().jamesProfile.get("singleton"), []);
 
-  // Closed-set roster state. Pre-Record; survives until the user re-opens
-  // the picker. Mid-conversation additions go straight through the
-  // LiveConversation.addToRoster path so we don't have to re-sync here.
+  // Closed-set roster state. Maintained pre-Record from the People picker
+  // modal; mid-conversation additions flow through LiveConversation.addToRoster.
   const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([]);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+
+  // Modal visibility for the People + Event pickers (popovers, not pages —
+  // tier3 + legacy both kept these inline so the cockpit never navigates).
+  const [showPeoplePicker, setShowPeoplePicker] = useState(false);
+  const [showEventPicker, setShowEventPicker] = useState(false);
 
   // Auto-fill the roster from a selected event's expected attendees.
   useEffect(() => {
@@ -196,6 +235,10 @@ function Cockpit() {
   const [mood, setMood] = useState<Mood>("normal");
   const [speakingText, setSpeakingText] = useState<string | null>(null);
   const [missingKeys, setMissingKeys] = useState<Set<string>>(new Set());
+  // "Type roughly" draft text — sticky across re-renders so the keyboard
+  // never closes mid-thought. Cleared on Speak.
+  const [draft, setDraft] = useState("");
+  const [expanding, setExpanding] = useState(false);
 
   const conversationRef = useRef<LiveConversation | null>(null);
 
@@ -276,9 +319,8 @@ function Cockpit() {
   }, []);
 
   // Warm the quick-phrase audio cache as soon as the voice id is known.
-  // Single-iPad app: this runs once per voice on first cockpit mount and
-  // never again unless the voice id changes. Failure is silent — the speak
-  // path falls back to live TTS.
+  // Runs once per voice on first cockpit mount and again only if the voice
+  // id changes. Failure is silent — the speak path falls back to live TTS.
   useEffect(() => {
     if (!settings.jamesVoiceId) return;
     void warmQuickPhraseCache({
@@ -311,14 +353,35 @@ function Cockpit() {
     setSelectedPersonIds((prev) => (prev.includes(personId) ? prev : [...prev, personId]));
   }, []);
 
-  const reassignSegment = useCallback(async (segmentId: string, personId: string | null) => {
+  /**
+   * Confirm the matcher's top guess for the most-recent segment. Re-attribute
+   * the current top segment to this person so the centroid learns from the
+   * sample even when the borderline posterior left it as "suggested." Ported
+   * from claude/tier3-engine-wins via `getLastOtherSegmentId()`.
+   */
+  const confirmTopSpeaker = useCallback((personId: string) => {
     const conv = conversationRef.current;
     if (!conv) return;
-    try {
-      await conv.reassignSegment(segmentId, personId);
-    } catch (err) {
+    const segId = conv.getLastOtherSegmentId();
+    if (!segId) return;
+    void conv.reassignSegment(segId, personId).catch((err) => {
       toast.error(err instanceof Error ? err.message : String(err));
+    });
+  }, []);
+
+  /**
+   * "Not them" — reject the matcher's current top guess. Strips the
+   * personId from the last segment and tells the matcher to treat the
+   * next utterance as a new cluster.
+   */
+  const clearTopSpeaker = useCallback(() => {
+    const conv = conversationRef.current;
+    if (!conv) return;
+    const segId = conv.getLastOtherSegmentId();
+    if (segId) {
+      void conv.reassignSegment(segId, null).catch(() => {});
     }
+    conv.forceNewClusterNextSegment();
   }, []);
 
   const askWhoIsThis = useCallback(async () => {
@@ -370,9 +433,7 @@ function Cockpit() {
    * Single entry point for "make a sound." Routes cache-aware playback
    * through speakText regardless of whether a LiveConversation is started,
    * so quick phrases and type-and-speak work during cold start, between
-   * conversations, and when the embedder is mid-reset. Only when a live
-   * conversation exists do we also fold the spoken text into Dexie logs
-   * via conv.speak().
+   * conversations, and when the embedder is mid-reset.
    */
   const speak = useCallback(
     async (s: { text: string; category?: SuggestionCategory; why?: string }) => {
@@ -398,126 +459,376 @@ function Cockpit() {
     [settings.jamesVoiceId, settings.ttsProvider],
   );
 
-  const replay = useCallback(async () => {
-    const seg = getLastSegment();
-    if (!seg) {
-      toast.message("No recent speech to replay");
-      return;
+  /**
+   * Expand-and-speak: send the typed draft through the smart-model
+   * `expandUtterance` rewrite, then speak the polished result. Falls back to
+   * raw speak() on AI error so the user is never left silent.
+   */
+  const expandAndSpeak = useCallback(async () => {
+    const raw = draft.trim();
+    if (!raw || expanding) return;
+    setExpanding(true);
+    try {
+      const recent = transcript.slice(-12).map((s) => ({
+        speaker:
+          s.speakerKind === "self"
+            ? (jamesProfile?.displayName ?? "Me")
+            : (s.personName ?? "Speaker"),
+        text: s.text,
+      }));
+      const polished = await ai
+        .expandUtterance({
+          jamesName: jamesProfile?.displayName ?? "James",
+          rawText: raw,
+          recentTranscript: recent,
+        })
+        .catch(() => raw);
+      const text = (polished || raw).trim();
+      setDraft("");
+      await speak({ text });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExpanding(false);
     }
-    stopAllPlayback();
-    const ok = await playLastSegment();
-    if (!ok) toast.error("Couldn't replay — Web Audio unavailable");
+  }, [draft, expanding, transcript, ai, jamesProfile?.displayName, speak]);
+
+  /**
+   * Manual refresh of the suggestion grid. Re-runs the suggestion pipeline
+   * against the most-recent other-speaker segment without waiting for a
+   * fresh utterance. Engine no-ops when the conversation isn't live.
+   */
+  const refreshSuggestions = useCallback(async () => {
+    const conv = conversationRef.current;
+    if (!conv) return;
+    try {
+      await conv.requestNewSuggestions();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
   }, []);
 
+  const isLive = state === "listening" || state === "speech";
+
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-5 px-4 py-6">
+    <div className="flex h-full w-full flex-col bg-background text-foreground">
       <SetupChecklist />
-      <header className="space-y-1">
-        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Live cockpit
-        </p>
-        <div className="flex flex-wrap items-center gap-3">
-          {state === "idle" ? (
-            <Button
-              variant="accent"
-              size="lg"
-              onClick={start}
-              disabled={!embedderReady}
-              className="px-8"
-            >
-              <Mic className="h-5 w-5" />
-              Record
-            </Button>
+
+      {/* Top action row — 120×120 buttons + flex textarea, locked landscape
+          layout that matches the deployed tier3 preview. */}
+      <header className="flex shrink-0 items-stretch gap-2 border-b border-border bg-card px-3 py-3">
+        {/* Combined Record / Stop button */}
+        <button
+          type="button"
+          onClick={isLive ? stop : start}
+          disabled={!embedderReady || state === "starting" || state === "stopping"}
+          aria-label={isLive ? "Stop conversation" : "Start conversation"}
+          className={cn(
+            "flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl text-white shadow-sm transition-all active:scale-95",
+            "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2",
+            state === "stopping"
+              ? "bg-rose-300 ring-2 ring-rose-400"
+              : isLive
+                ? "bg-rose-600 hover:bg-rose-500"
+                : "bg-[var(--teal)] hover:opacity-90 disabled:opacity-50",
+          )}
+        >
+          {isLive ? (
+            <>
+              <Square className="size-7" />
+              <span className="text-sm font-medium">Stop</span>
+            </>
           ) : (
-            <Button variant="destructive" size="lg" onClick={stop} className="px-8">
-              <MicOff className="h-5 w-5" />
-              Stop
-            </Button>
+            <>
+              <Mic className="size-7" />
+              <span className="text-sm font-medium">Record</span>
+            </>
           )}
-          {speakingText && (
-            <Button
-              variant="destructive"
-              size="lg"
-              onClick={() => {
-                stopAllPlayback();
-                setSpeakingText(null);
-              }}
-              className="px-8"
-            >
-              <Square className="h-5 w-5" />
-              Stop speaking
-            </Button>
+        </button>
+
+        {/* Type roughly textarea — fills remaining width */}
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void expandAndSpeak();
+            }
+          }}
+          placeholder="Type roughly — AI will clarify and speak it…"
+          className="h-[120px] min-h-[120px] flex-1 resize-none rounded-2xl border border-input bg-background px-4 py-3 text-base shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          autoCapitalize="sentences"
+          autoCorrect="on"
+          spellCheck
+        />
+
+        {/* Speak button — primary color */}
+        <button
+          type="button"
+          onClick={expandAndSpeak}
+          disabled={expanding || !draft.trim() || !!speakingText}
+          aria-label="Speak"
+          className={cn(
+            "flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl bg-primary text-primary-foreground shadow-sm transition-all active:scale-95 hover:opacity-90 disabled:opacity-50",
+            "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2",
           )}
-          <StateBadge state={state} embedderReady={embedderReady} />
-          {embedderError && (
-            <span className="rounded-md bg-destructive/15 px-3 py-1.5 text-xs text-destructive">
-              Embedder failed: {embedderError}
-            </span>
+        >
+          {expanding ? (
+            <Sparkles className="size-7 animate-pulse" />
+          ) : (
+            <Volume2 className="size-7" />
           )}
-          {!settings.jamesVoiceId && (
-            <Link
-              to="/app/settings"
-              className="rounded-md bg-muted px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted/80"
-            >
-              No James voice set — using default. Open settings →
-            </Link>
-          )}
-        </div>
+          <span className="text-sm font-medium">{expanding ? "Clarifying" : "Speak"}</span>
+        </button>
+
+        {/* Recent */}
+        <Link
+          to="/app/recent"
+          aria-label="Recent conversations"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-foreground transition hover:bg-secondary focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
+        >
+          <History className="size-7" />
+          <span className="text-sm font-medium">Recent</span>
+        </Link>
+
+        {/* Helpers */}
+        <Link
+          to="/app/helpers"
+          aria-label="Reply helpers"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-foreground transition hover:bg-secondary focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
+        >
+          <Reply className="size-7" />
+          <span className="text-sm font-medium">Helpers</span>
+        </Link>
+
+        {/* Settings */}
+        <Link
+          to="/app/settings"
+          aria-label="Settings"
+          className="flex h-[120px] w-[120px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border border-border bg-secondary/40 text-foreground transition hover:bg-secondary focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
+        >
+          <SettingsIcon className="size-7" />
+          <span className="text-sm font-medium">Settings</span>
+        </Link>
       </header>
 
-      {missingKeys.size > 0 && <MissingKeysBanner keys={missingKeys} />}
+      {/* Context / status strip — Choose people + Event pickers + status. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card/60 px-3 py-3 text-base text-muted-foreground">
+        <button
+          type="button"
+          onClick={() => setShowPeoplePicker(true)}
+          className="flex items-center gap-2 rounded-full border border-border bg-secondary/40 px-5 py-3 text-base hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        >
+          <Users className="size-5" />
+          {selectedPersonIds.length === 0
+            ? "Choose people"
+            : people
+                .filter((p) => selectedPersonIds.includes(p.id))
+                .map((p) => p.name)
+                .join(", ")}
+        </button>
 
-      {state === "idle" && (
-        <RosterPicker
+        <button
+          type="button"
+          onClick={() => setShowEventPicker(true)}
+          className={cn(
+            "flex items-center gap-2 rounded-full border px-5 py-3 text-base transition",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+            selectedEventId
+              ? "border-primary/40 bg-primary/10 text-foreground"
+              : "border-border bg-secondary/40 hover:bg-secondary",
+          )}
+        >
+          <Calendar className="size-5" />
+          {selectedEventId
+            ? (events.find((e) => e.id === selectedEventId)?.name ?? "Event (optional)")
+            : "Event (optional)"}
+        </button>
+
+        <StateBadge state={state} embedderReady={embedderReady} />
+
+        {embedderError && (
+          <span className="rounded-md bg-destructive/15 px-3 py-1.5 text-xs text-destructive">
+            Embedder failed: {embedderError}
+          </span>
+        )}
+
+        {!settings.jamesVoiceId && (
+          <Link
+            to="/app/settings"
+            className="ml-auto rounded-md bg-muted px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted/80"
+          >
+            No voice set — open settings →
+          </Link>
+        )}
+
+        {speakingText && (
+          <button
+            type="button"
+            onClick={() => {
+              stopAllPlayback();
+              setSpeakingText(null);
+            }}
+            className="ml-auto inline-flex items-center gap-2 rounded-full bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:opacity-90"
+          >
+            <Square className="size-4" />
+            Stop speaking
+          </button>
+        )}
+      </div>
+
+      {missingKeys.size > 0 && (
+        <div className="border-b border-border px-3 py-2">
+          <MissingKeysBanner keys={missingKeys} />
+        </div>
+      )}
+
+      {/* Main grid: suggestions panel (80%) + right sidebar (20%). The
+          right column itself is a vertical stack: Live transcript on top
+          (flex-3), Speakers on the bottom (flex-2). */}
+      <div className="flex min-h-0 flex-1 gap-2 p-2">
+        {/* Suggestions panel — 80% width */}
+        <section className="flex min-h-0 w-4/5 flex-col rounded-2xl border border-border bg-card/40">
+          <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+            <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              <Sparkles className="size-4" /> Suggestions
+            </h2>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void refreshSuggestions()}
+              disabled={suggestionsLoading || !isLive}
+            >
+              {suggestionsLoading ? "Thinking…" : "Refresh"}
+            </Button>
+          </div>
+
+          {/* 6-cell grid (3×2). Empty cells render as dashed placeholders so
+              the grid keeps its size and rhythm even when the model returned
+              fewer than 6 ideas. */}
+          <SuggestionGrid
+            suggestions={suggestions}
+            loading={suggestionsLoading}
+            isLive={isLive}
+            speakingText={speakingText}
+            onSpeak={speak}
+          />
+
+          {/* Quick phrases — 5 columns, fixed h-16 */}
+          <div className="grid grid-cols-5 gap-1.5 border-t border-border p-2">
+            {QUICK_PHRASES.map((p) => (
+              <Button
+                key={p}
+                variant="outline"
+                onClick={() => speak({ text: p })}
+                disabled={!!speakingText}
+                className={cn(
+                  "h-16 rounded-xl px-3 text-base font-medium leading-tight whitespace-normal",
+                  "focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2",
+                  speakingText === p && "ring-2 ring-accent",
+                )}
+              >
+                {p}
+              </Button>
+            ))}
+          </div>
+
+          {/* Mood selector */}
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-border p-2">
+            <span className="mr-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Mood
+            </span>
+            {MOOD_CHIPS.map((m) => {
+              const active = mood === m.id;
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setMood(m.id)}
+                  aria-pressed={active}
+                  className={cn(
+                    "rounded-full border-2 px-5 py-2.5 text-base font-medium transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2",
+                    active
+                      ? `${m.tone} border-transparent shadow`
+                      : "border-border bg-background text-muted-foreground hover:bg-secondary",
+                  )}
+                >
+                  {m.label}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Right sidebar — 20% width, vertical split */}
+        <aside className="flex min-h-0 w-1/5 flex-col gap-2">
+          {/* Live transcript (flex-3) */}
+          <TranscriptPanel
+            transcript={transcript}
+            jamesName={jamesProfile?.displayName ?? "Me"}
+            rosterPeople={people.filter((p) => selectedPersonIds.includes(p.id))}
+            onReassign={(segmentId, personId) => {
+              const conv = conversationRef.current;
+              if (!conv) return;
+              void conv.reassignSegment(segmentId, personId).catch((err) => {
+                toast.error(err instanceof Error ? err.message : String(err));
+              });
+            }}
+          />
+
+          {/* Speakers (flex-2) */}
+          <div className="min-h-0 flex-[2]">
+            <SpeakerPanel
+              candidates={candidates}
+              transcript={transcript}
+              acceptThreshold={settings.speakerIdAcceptThreshold}
+              people={people}
+              selectedPersonIds={selectedPersonIds}
+              isLive={isLive}
+              onAddToRoster={addToActiveRoster}
+              onAskWhoIsThis={askWhoIsThis}
+              onForceNew={forceNewSpeaker}
+              onMergeInto={mergeIntoPerson}
+              onConfirmTop={confirmTopSpeaker}
+              onClearTop={clearTopSpeaker}
+            />
+          </div>
+        </aside>
+      </div>
+
+      {/* Modals */}
+      {showPeoplePicker && (
+        <PeoplePickerModal
           people={people}
           selectedPersonIds={selectedPersonIds}
+          sampleCountByPerson={sampleCountByPerson}
+          embedderRef={embedderRef}
+          embedderReady={embedderReady}
           onTogglePerson={(id) =>
             setSelectedPersonIds((prev) =>
               prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
             )
           }
-          events={events}
-          selectedEventId={selectedEventId}
-          onSelectEvent={setSelectedEventId}
-          places={places}
-          selectedPlaceId={selectedPlaceId}
-          onSelectPlace={setSelectedPlaceId}
-          sampleCountByPerson={sampleCountByPerson}
+          onClose={() => setShowPeoplePicker(false)}
         />
       )}
-
-      <div className="grid gap-5 lg:grid-cols-[1fr_2fr_1fr]">
-        <SpeakerColumn
-          candidates={candidates}
-          acceptThreshold={settings.speakerIdAcceptThreshold}
-          people={people}
-          selectedPersonIds={selectedPersonIds}
-          isLive={state === "listening" || state === "speech"}
-          onAddToRoster={addToActiveRoster}
-          onAskWhoIsThis={askWhoIsThis}
-          onForceNew={forceNewSpeaker}
-          onMergeInto={mergeIntoPerson}
+      {showEventPicker && (
+        <EventPickerModal
+          events={events}
+          selectedEventId={selectedEventId}
+          onSelect={(id) => {
+            setSelectedEventId(id);
+            setShowEventPicker(false);
+          }}
+          onClose={() => setShowEventPicker(false)}
         />
-        <div className="flex flex-col gap-4">
-          <TypeAndSpeakInput speakingText={speakingText} onSpeak={(text) => speak({ text })} />
-          <SuggestionGrid
-            suggestions={suggestions}
-            loading={suggestionsLoading}
-            speakingText={speakingText}
-            onSpeak={speak}
-          />
-        </div>
-        <TranscriptColumn
-          transcript={transcript}
-          jamesName={jamesProfile?.displayName ?? "Me"}
-          rosterPeople={people.filter((p) => selectedPersonIds.includes(p.id))}
-          onReassign={reassignSegment}
-          displayPreset={settings?.displayPreset ?? "11"}
-        />
-      </div>
-
-      <QuickPhrasesRow speakingText={speakingText} onSpeak={speak} onReplay={replay} />
-      <MoodSelector mood={mood} onChange={setMood} />
+      )}
+      {/* Place picker is reachable from the Settings → Locations tab; the
+          cockpit's strip omits a dedicated chip to keep the row short. The
+          underlying selectedPlaceId is still wired through to the engine for
+          future re-exposure (the prior 2× boost applies invisibly). */}
     </div>
   );
 }
@@ -549,8 +860,8 @@ function MissingKeysBanner({ keys }: { keys: Set<string> }) {
       </p>
       <p className="mt-2 text-muted-foreground">
         Set them in Vercel → ipad-aac-buddy → Settings → Environment Variables → Production, then
-        trigger a redeploy (env changes don't auto-rebuild). Until then the cockpit can record +
-        match speakers but can't transcribe, generate suggestions, or speak.
+        trigger a redeploy. Until then the cockpit can record + match speakers but can't transcribe,
+        generate suggestions, or speak.
       </p>
     </div>
   );
@@ -563,8 +874,6 @@ function StateBadge({
   state: ConversationState;
   embedderReady: boolean;
 }) {
-  // Warming-up is a distinct visual state (blue pulse) so users can tell
-  // "engine cold" apart from "engine idle, waiting on you".
   const isWarming = !embedderReady && state === "idle";
   const label = isWarming
     ? "Warming up embedder…"
@@ -581,14 +890,14 @@ function StateBadge({
   const dotClass = isWarming
     ? "bg-blue-500 animate-pulse"
     : state === "idle"
-      ? "bg-[var(--ink-soft)]/40"
+      ? "bg-foreground/30"
       : state === "listening"
         ? "bg-emerald-500"
         : state === "speech"
           ? "bg-amber-500 animate-pulse"
           : state === "starting"
             ? "bg-blue-500 animate-pulse"
-            : "bg-[var(--ink-soft)]"; // stopping
+            : "bg-foreground/40";
 
   return (
     <span
@@ -612,72 +921,68 @@ function StateBadge({
 function SuggestionGrid({
   suggestions,
   loading,
+  isLive,
   speakingText,
   onSpeak,
 }: {
   suggestions: SuggestionDraft[];
   loading: boolean;
+  isLive: boolean;
   speakingText: string | null;
   onSpeak: (s: { text: string; category?: SuggestionCategory; why?: string }) => void;
 }) {
-  if (suggestions.length === 0 && !loading) {
-    return (
-      <div
-        className="flex min-h-[260px] flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-muted/40 p-6 text-center text-sm text-muted-foreground"
-        aria-live="polite"
-        aria-busy={loading}
-      >
-        Suggestions appear here after each turn.
-        <span className="mt-1 text-xs">Tap Record and let someone speak.</span>
-      </div>
-    );
-  }
-
+  // Always exactly 6 cells. Empty cells render as dashed placeholders so
+  // James's spatial muscle memory for "the bottom-left card is always
+  // there" never breaks.
   const cards: (SuggestionDraft | null)[] =
     suggestions.length >= 6 ? suggestions.slice(0, 6) : [...suggestions];
   while (cards.length < 6) cards.push(null);
 
   return (
-    <div className="relative" aria-live="polite" aria-busy={loading}>
+    <div
+      className="relative grid min-h-0 flex-1 grid-cols-3 grid-rows-2 gap-2 overflow-hidden p-2"
+      aria-live="polite"
+      aria-busy={loading}
+    >
       {loading && (
-        <div className="absolute right-3 top-3 z-10 inline-flex items-center gap-2 rounded-full bg-background/90 px-3 py-1 text-xs text-muted-foreground">
+        <div className="pointer-events-none absolute right-3 top-3 z-10 inline-flex items-center gap-2 rounded-full bg-background/90 px-3 py-1 text-xs text-muted-foreground shadow">
           <Loader2 className="h-3 w-3 animate-spin" />
           Generating…
         </div>
       )}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
-        {cards.map((s, i) => (
+      {!isLive && suggestions.length === 0 && !loading && (
+        <Card className="col-span-3 row-span-2 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
+          Press the record button to start a conversation. Suggestions will appear here.
+        </Card>
+      )}
+      {isLive && suggestions.length === 0 && !loading && (
+        <Card className="col-span-3 row-span-2 flex items-center justify-center p-5 text-center text-sm text-muted-foreground">
+          Listening… suggestions will appear after a few words.
+        </Card>
+      )}
+      {(isLive || suggestions.length > 0) &&
+        cards.map((s, i) => (
           <SuggestionCard
             key={s ? `${s.text}-${i}` : `empty-${i}`}
             suggestion={s}
             speaking={!!s && speakingText === s.text}
             onSpeak={onSpeak}
             index={i}
+            disabled={!!speakingText}
           />
         ))}
-      </div>
     </div>
   );
 }
 
-const CATEGORY_LABEL: Record<SuggestionCategory, string> = {
-  answer: "Answer",
-  question: "Question",
-  followup: "Follow-up",
-  planned: "Planned",
-  humor: "Humour",
-  clarify: "Clarify",
-  "give-me-a-moment": "Moment",
-};
-
-const CATEGORY_DOT: Record<SuggestionCategory, string> = {
-  answer: "bg-[var(--teal,#14b8a6)]",
-  question: "bg-amber-500",
-  followup: "bg-emerald-500",
-  planned: "bg-indigo-500",
-  humor: "bg-orange-500",
-  clarify: "bg-teal-700",
-  "give-me-a-moment": "bg-stone-400",
+const CATEGORY_CLASS: Record<SuggestionCategory, string> = {
+  answer: "bg-[var(--cat-answer,#14b8a6)]/15 border-[var(--cat-answer,#14b8a6)]/40",
+  question: "bg-[var(--cat-question,#f59e0b)]/15 border-[var(--cat-question,#f59e0b)]/40",
+  followup: "bg-[var(--cat-followup,#10b981)]/15 border-[var(--cat-followup,#10b981)]/40",
+  planned: "bg-[var(--cat-planned,#6366f1)]/15 border-[var(--cat-planned,#6366f1)]/40",
+  humor: "bg-[var(--cat-humor,#f97316)]/15 border-[var(--cat-humor,#f97316)]/40",
+  clarify: "bg-[var(--cat-clarify,#0f766e)]/15 border-[var(--cat-clarify,#0f766e)]/40",
+  "give-me-a-moment": "bg-[var(--cat-moment,#a8a29e)]/30 border-[var(--cat-moment,#a8a29e)]",
 };
 
 function SuggestionCard({
@@ -685,65 +990,54 @@ function SuggestionCard({
   speaking,
   onSpeak,
   index,
+  disabled,
 }: {
   suggestion: SuggestionDraft | null;
   speaking: boolean;
   onSpeak: (s: { text: string; category?: SuggestionCategory; why?: string }) => void;
   index: number;
+  disabled: boolean;
 }) {
   if (!suggestion) {
     return (
-      <div className="min-h-[180px] rounded-2xl border border-dashed border-border bg-muted/30" />
+      <div className="flex h-full min-h-0 w-full items-center justify-center rounded-2xl border-2 border-dashed border-border/60 bg-muted/20 text-2xl text-muted-foreground/60">
+        —
+      </div>
     );
   }
-  // Glide-in: tiny fade + translate, staggered 40ms per card. CSS animation
-  // (not a transition on mount) so it replays whenever React remounts the
-  // card with a new suggestion text.
   const animationDelay = `${index * 40}ms`;
   return (
     <button
       type="button"
       onClick={() => onSpeak(suggestion)}
+      disabled={disabled}
       style={{ animationDelay }}
       className={cn(
-        "group flex min-h-[180px] flex-col justify-between rounded-2xl border border-border bg-card p-5 text-left shadow-sm transition active:scale-[0.99]",
+        "flex h-full min-h-0 w-full items-center justify-center rounded-2xl border-2 p-3 text-center text-xl font-medium leading-snug transition-transform active:scale-[0.98]",
         "animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out fill-mode-both",
         "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2",
         speaking && "ring-2 ring-accent",
+        disabled && "opacity-60",
+        CATEGORY_CLASS[suggestion.category] ?? "bg-secondary border-border",
       )}
     >
-      <span className="text-xl font-medium leading-snug text-foreground sm:text-2xl">
-        {suggestion.text}
-      </span>
-      <span className="mt-3 inline-flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-        <span className={cn("h-2 w-2 rounded-full", CATEGORY_DOT[suggestion.category])} />
-        {CATEGORY_LABEL[suggestion.category]}
-      </span>
+      <span className="line-clamp-5">{suggestion.text}</span>
     </button>
   );
 }
 
 // --------------------------------------------------------------------------
 
-const TRANSCRIPT_MAX_HEIGHT_PX: Record<"mini" | "11" | "12.9" | "13", number> = {
-  mini: 220,
-  "11": 320,
-  "12.9": 460,
-  "13": 520,
-};
-
-function TranscriptColumn({
+function TranscriptPanel({
   transcript,
   jamesName,
   rosterPeople,
   onReassign,
-  displayPreset,
 }: {
   transcript: LiveTranscriptSegment[];
   jamesName: string;
   rosterPeople: Person[];
   onReassign: (segmentId: string, personId: string | null) => void;
-  displayPreset: "mini" | "11" | "12.9" | "13";
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [reassigningId, setReassigningId] = useState<string | null>(null);
@@ -751,20 +1045,14 @@ function TranscriptColumn({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [transcript.length]);
 
-  const maxHeightPx = TRANSCRIPT_MAX_HEIGHT_PX[displayPreset];
-
   return (
-    <div className="rounded-2xl border border-border bg-card">
-      <div className="px-4 pt-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-        Transcript
+    <div className="flex min-h-0 flex-[3] flex-col rounded-2xl border border-border bg-card">
+      <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Live transcript
       </div>
-      <div
-        ref={scrollRef}
-        className="overflow-y-auto p-4"
-        style={{ maxHeight: `${maxHeightPx}px` }}
-      >
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-3">
         {transcript.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Live transcript appears here.</p>
+          <p className="text-sm text-muted-foreground">Listening…</p>
         ) : (
           <ul className="space-y-2 text-sm">
             {transcript.map((t) => {
@@ -800,7 +1088,7 @@ function TranscriptColumn({
                       </span>
                       {rosterPeople.length === 0 ? (
                         <span className="text-[10px] italic text-muted-foreground">
-                          Pick people in the roster first
+                          Pick people first
                         </span>
                       ) : (
                         rosterPeople.map((p) => (
@@ -841,439 +1129,346 @@ function TranscriptColumn({
 
 // --------------------------------------------------------------------------
 
-function SpeakerColumn({
-  candidates,
-  acceptThreshold,
+function PeoplePickerModal({
   people,
   selectedPersonIds,
-  isLive,
-  onAddToRoster,
-  onAskWhoIsThis,
-  onForceNew,
-  onMergeInto,
-}: {
-  candidates: Candidate[];
-  acceptThreshold: number;
-  people: Person[];
-  selectedPersonIds: string[];
-  isLive: boolean;
-  onAddToRoster: (personId: string) => void;
-  onAskWhoIsThis: () => void;
-  onForceNew: () => void;
-  onMergeInto: (fromPersonId: string | undefined, toPersonId: string) => void;
-}) {
-  const top = candidates[0];
-  const [showAddPicker, setShowAddPicker] = useState(false);
-  const [showMergePicker, setShowMergePicker] = useState(false);
-
-  // People enrolled but not currently in the active roster — the candidates
-  // for the "Add to roster" mid-conversation chip.
-  const offRoster = useMemo(
-    () => people.filter((p) => !selectedPersonIds.includes(p.id)),
-    [people, selectedPersonIds],
-  );
-  const rosterPeople = useMemo(
-    () => people.filter((p) => selectedPersonIds.includes(p.id)),
-    [people, selectedPersonIds],
-  );
-
-  return (
-    <div className="rounded-2xl border border-border bg-card">
-      <div className="flex flex-wrap items-center justify-between gap-1 px-4 pt-3">
-        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Speaker
-        </span>
-        {isLive && (
-          <div className="flex flex-wrap items-center gap-1">
-            <button
-              type="button"
-              onClick={onAskWhoIsThis}
-              className="inline-flex min-h-[40px] items-center gap-1 rounded-md border border-input bg-background px-3 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
-              title="Speak 'Sorry, who am I speaking with?' and hold the next utterance for manual attribution"
-            >
-              <HelpCircle className="h-4 w-4" />
-              Ask
-            </button>
-            <button
-              type="button"
-              onClick={onForceNew}
-              className="inline-flex min-h-[40px] items-center gap-1 rounded-md border border-input bg-background px-3 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
-              title="Treat the next utterance as a new speaker"
-            >
-              <UserPlus className="h-4 w-4" />
-              New
-            </button>
-            {top?.personId && rosterPeople.length > 1 && (
-              <button
-                type="button"
-                onClick={() => setShowMergePicker((v) => !v)}
-                className="inline-flex min-h-[40px] items-center gap-1 rounded-md border border-input bg-background px-3 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
-                title="Merge this cluster into another person"
-              >
-                <Merge className="h-4 w-4" />
-                Merge
-              </button>
-            )}
-            {offRoster.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowAddPicker((v) => !v)}
-                className="inline-flex min-h-[40px] items-center rounded-md border border-input bg-background px-3 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
-                title="Add a person who walked in late"
-              >
-                + Add
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-      <div className="p-4">
-        {!top ? (
-          <p className="text-sm text-muted-foreground">Listening…</p>
-        ) : (
-          <>
-            <div className="flex items-baseline justify-between">
-              <span className="text-lg font-semibold">{top.name}</span>
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-xs font-medium",
-                  top.personId && top.posterior >= acceptThreshold
-                    ? "bg-accent text-accent-foreground"
-                    : "bg-muted text-foreground",
-                )}
-              >
-                {top.personId && top.posterior >= acceptThreshold ? "confirmed" : "suggested"}
-              </span>
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {(top.posterior * 100).toFixed(0)}% posterior
-              {top.similarity !== undefined && <> · sim {(top.similarity * 100).toFixed(0)}%</>}
-            </p>
-            {candidates.length > 1 && (
-              <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
-                {candidates.slice(1, 4).map((c) => (
-                  <li key={c.personId ?? "unknown"} className="flex items-center justify-between">
-                    <span>{c.name}</span>
-                    <span>{(c.posterior * 100).toFixed(0)}%</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        )}
-        {showAddPicker && offRoster.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-1 border-t border-border pt-3">
-            <span className="w-full text-[10px] uppercase tracking-wider text-muted-foreground">
-              Add to roster
-            </span>
-            {offRoster.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => {
-                  onAddToRoster(p.id);
-                  setShowAddPicker(false);
-                }}
-                className="rounded-full border border-input bg-background px-2.5 py-0.5 text-xs hover:bg-muted"
-              >
-                {p.name}
-              </button>
-            ))}
-          </div>
-        )}
-        {showMergePicker && top?.personId && (
-          <div className="mt-3 flex flex-wrap gap-1 border-t border-border pt-3">
-            <span className="w-full text-[10px] uppercase tracking-wider text-muted-foreground">
-              Merge {top.name} into…
-            </span>
-            {rosterPeople
-              .filter((p) => p.id !== top.personId)
-              .map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => {
-                    onMergeInto(top.personId ?? undefined, p.id);
-                    setShowMergePicker(false);
-                  }}
-                  className="rounded-full border border-input bg-background px-2.5 py-0.5 text-xs hover:bg-muted"
-                >
-                  {p.name}
-                </button>
-              ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Pre-Record control: declare who's in the room. Picking 2–4 names here
- * collapses the matcher from an open-set to a closed-set decision, which
- * is the single highest-leverage speaker-ID accuracy change in the build.
- * Picking an event auto-populates the roster from its expected attendees.
- */
-function RosterPicker({
-  people,
-  selectedPersonIds,
-  onTogglePerson,
-  events,
-  selectedEventId,
-  onSelectEvent,
-  places,
-  selectedPlaceId,
-  onSelectPlace,
   sampleCountByPerson,
+  embedderRef,
+  embedderReady,
+  onTogglePerson,
+  onClose,
 }: {
   people: Person[];
   selectedPersonIds: string[];
-  onTogglePerson: (id: string) => void;
-  events: EventRecord[];
-  selectedEventId: string | null;
-  onSelectEvent: (id: string | null) => void;
-  places: Place[];
-  selectedPlaceId: string | null;
-  onSelectPlace: (id: string | null) => void;
   sampleCountByPerson: Map<string, number>;
+  embedderRef: { current: SpeakerEmbedder | null };
+  embedderReady: boolean;
+  onTogglePerson: (id: string) => void;
+  onClose: () => void;
 }) {
-  if (people.length === 0 && events.length === 0 && places.length === 0) {
-    return (
-      <div className="rounded-2xl border border-dashed border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-        No enrolled people yet. Add some on the{" "}
-        <Link to="/app/people" className="underline">
-          People
-        </Link>{" "}
-        page so the speaker-ID matcher has someone to compare against.
-      </div>
-    );
-  }
+  const [addingPerson, setAddingPerson] = useState(false);
+  const [newPersonName, setNewPersonName] = useState("");
+  const [newPersonRel, setNewPersonRel] = useState("");
+  const [expandedRecorderPersonId, setExpandedRecorderPersonId] = useState<string | null>(null);
 
   return (
-    <div className="space-y-3 rounded-2xl border border-border bg-card p-4">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Who's in the room?
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {selectedPersonIds.length === 0
-            ? "open match — slower & less accurate"
-            : `${selectedPersonIds.length} selected`}
-        </span>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {people.map((p) => {
-          const selected = selectedPersonIds.includes(p.id);
-          const samples = sampleCountByPerson.get(p.id) ?? 0;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => onTogglePerson(p.id)}
-              className={cn(
-                "flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors",
-                selected
-                  ? "border-accent bg-accent text-accent-foreground"
-                  : "border-input bg-background hover:bg-muted",
-              )}
-            >
-              <span>{p.name}</span>
-              <span
-                className={cn(
-                  "rounded-full px-1.5 text-[10px]",
-                  samples === 0
-                    ? "bg-destructive/15 text-destructive"
-                    : "bg-background/40 text-current/70",
-                )}
-                title={samples === 0 ? "No voice samples — won't match" : `${samples} samples`}
-              >
-                {samples === 0 ? "no voice" : samples}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-      {(events.length > 0 || places.length > 0) && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">
-          {places.length > 0 && (
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Place
-              </label>
-              <select
-                value={selectedPlaceId ?? ""}
-                onChange={(e) => onSelectPlace(e.target.value || null)}
-                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
-              >
-                <option value="">— none —</option>
-                {places.map((pl) => (
-                  <option key={pl.id} value={pl.id}>
-                    {pl.name}
-                  </option>
-                ))}
-              </select>
-              {selectedPlaceId && (
-                <span className="text-xs text-muted-foreground">boosts prior 2×</span>
-              )}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <Card
+        className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden p-0"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <Users className="size-5" /> Who's in this conversation?
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close people picker"
+            className="rounded-full p-2 hover:bg-secondary"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5">
+          {people.length === 0 ? (
+            <p className="text-sm italic text-muted-foreground">
+              No people added yet. Add them in{" "}
+              <Link to="/app/settings" search={{ tab: "people" }} className="underline">
+                Settings → People
+              </Link>
+              .
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {people.map((p) => {
+                const sel = selectedPersonIds.includes(p.id);
+                const samples = sampleCountByPerson.get(p.id) ?? 0;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => onTogglePerson(p.id)}
+                    className={cn(
+                      "flex items-center gap-2 rounded-full border-2 px-4 py-2 text-base transition-colors",
+                      sel
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary",
+                    )}
+                  >
+                    {sel && <Check className="size-4" />}
+                    <span className="font-medium">{p.name}</span>
+                    {p.relationship && <span className="text-xs opacity-70">{p.relationship}</span>}
+                    <span
+                      className={cn(
+                        "ml-1 rounded-full px-1.5 text-[10px]",
+                        samples === 0
+                          ? "bg-destructive/15 text-destructive"
+                          : "bg-background/40 text-muted-foreground",
+                      )}
+                    >
+                      {samples === 0 ? "no voice" : `${samples} samples`}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
-          {events.length > 0 && (
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Event
-              </label>
-              <select
-                value={selectedEventId ?? ""}
-                onChange={(e) => onSelectEvent(e.target.value || null)}
-                className="rounded-md border border-input bg-background px-2 py-1 text-sm"
-              >
-                <option value="">— none —</option>
-                {events.map((ev) => (
-                  <option key={ev.id} value={ev.id}>
-                    {ev.name}
-                  </option>
-                ))}
-              </select>
-              {selectedEventId && (
+
+          {/* Voice recognition section — appears once at least one person
+              has been picked, mirrors the legacy people picker so a
+              caregiver can capture a voice sample without leaving the
+              cockpit. */}
+          {selectedPersonIds.length > 0 && (
+            <div className="mt-5 border-t border-border pt-4">
+              <div className="mb-2 flex items-center justify-between">
+                <h4 className="text-sm font-semibold">Voice recognition</h4>
                 <span className="text-xs text-muted-foreground">
-                  Auto-fills attendees · boosts prior 2.5×
+                  Recording a sample makes identification instant
                 </span>
-              )}
+              </div>
+              <div className="space-y-2">
+                {selectedPersonIds.map((pid) => {
+                  const person = people.find((p) => p.id === pid);
+                  if (!person) return null;
+                  const sampleCount = sampleCountByPerson.get(pid) ?? 0;
+                  const hasPrint = sampleCount > 0;
+                  const expanded = expandedRecorderPersonId === pid;
+                  return (
+                    <div
+                      key={pid}
+                      className={cn(
+                        "rounded-lg border",
+                        hasPrint
+                          ? "border-emerald-500/30 bg-emerald-500/5"
+                          : "border-amber-500/40 bg-amber-500/5",
+                      )}
+                    >
+                      <div className="flex items-center gap-3 px-3 py-2">
+                        <span className="font-medium">{person.name}</span>
+                        {hasPrint ? (
+                          <span className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400">
+                            <Check className="size-3" />
+                            Voice learned · {sampleCount} sample{sampleCount === 1 ? "" : "s"}
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
+                            <AlertCircle className="size-3" />
+                            No voice sample yet
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setExpandedRecorderPersonId(expanded ? null : pid)}
+                          className="ml-auto flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium hover:bg-secondary"
+                        >
+                          <Mic className="size-3" />
+                          {hasPrint
+                            ? expanded
+                              ? "Hide"
+                              : "Re-record"
+                            : expanded
+                              ? "Hide"
+                              : "Record now"}
+                        </button>
+                      </div>
+                      {expanded && (
+                        <div className="border-t border-border px-3 py-3">
+                          <VoiceSampleRecorder
+                            personId={pid}
+                            embedder={embedderRef.current}
+                            embedderReady={embedderReady}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
+        </div>
+        <div className="border-t border-border px-5 py-3">
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              onClick={() => {
+                setNewPersonName("");
+                setNewPersonRel("");
+                setAddingPerson(true);
+              }}
+            >
+              <Plus className="size-4" /> Add new person
+            </Button>
+            <Button className="flex-1" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {addingPerson && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+          onClick={(e) => {
+            e.stopPropagation();
+            setAddingPerson(false);
+          }}
+        >
+          <Card className="w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+              <Plus className="size-5" /> Add new person
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium">Name</label>
+                <input
+                  autoFocus
+                  value={newPersonName}
+                  onChange={(e) => setNewPersonName(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-base"
+                  placeholder="e.g. Sarah"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium">Relationship (optional)</label>
+                <input
+                  value={newPersonRel}
+                  onChange={(e) => setNewPersonRel(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-base"
+                  placeholder="e.g. care worker, friend"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setAddingPerson(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  const name = newPersonName.trim();
+                  if (!name) {
+                    toast.error("Name is required");
+                    return;
+                  }
+                  const now = Date.now();
+                  const p: Person = {
+                    id: nanoid(),
+                    name,
+                    relationship: newPersonRel.trim() || undefined,
+                    interests: [],
+                    notes: "",
+                    status: "active",
+                    createdAt: now,
+                    updatedAt: now,
+                  };
+                  await db().people.put(p);
+                  onTogglePerson(p.id);
+                  setAddingPerson(false);
+                  toast.success(`Added ${p.name}`);
+                }}
+              >
+                Add
+              </Button>
+            </div>
+          </Card>
         </div>
       )}
     </div>
   );
 }
 
-// --------------------------------------------------------------------------
-
-function QuickPhrasesRow({
-  speakingText,
-  onSpeak,
-  onReplay,
+function EventPickerModal({
+  events,
+  selectedEventId,
+  onSelect,
+  onClose,
 }: {
-  speakingText: string | null;
-  onSpeak: (s: { text: string }) => void;
-  onReplay: () => void;
+  events: EventRecord[];
+  selectedEventId: string | null;
+  onSelect: (id: string | null) => void;
+  onClose: () => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-2">
-      {QUICK_PHRASES.map((p) => (
-        <Button
-          key={p.text}
-          variant="outline"
-          size="lg"
-          onClick={() => onSpeak({ text: p.text })}
-          className={cn(
-            "min-h-[48px] flex-1 focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 sm:flex-none",
-            speakingText === p.text && "ring-2 ring-accent",
-          )}
-        >
-          {p.label ?? p.text}
-        </Button>
-      ))}
-      <Button
-        variant="outline"
-        size="lg"
-        onClick={onReplay}
-        className="min-h-[48px] flex-1 focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 sm:flex-none"
-        title="Replay the last thing said in the room"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <Card
+        className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden p-0"
+        onClick={(e) => e.stopPropagation()}
       >
-        <Rewind className="h-4 w-4" />
-        Replay
-      </Button>
-    </div>
-  );
-}
-
-/**
- * Always-visible "speak as me" input. Lives above the suggestion grid so
- * James doesn't have to scan past suggestions to reach it during a turn
- * he wants to compose freely. Plain <input> (not <textarea>) because the
- * iPad soft keyboard already eats half the screen and James's motor
- * control makes precise cursor placement painful — a single line plus a
- * large Speak button is the cheapest accessible primitive.
- */
-function TypeAndSpeakInput({
-  speakingText,
-  onSpeak,
-}: {
-  speakingText: string | null;
-  onSpeak: (text: string) => void;
-}) {
-  const [text, setText] = useState("");
-  const submit = () => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    onSpeak(trimmed);
-    setText("");
-  };
-  const isSpeakingThis = !!text.trim() && speakingText === text.trim();
-  return (
-    <div className="flex items-stretch gap-2 rounded-2xl border border-border bg-card p-3 shadow-sm">
-      <input
-        type="text"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            submit();
-          }
-        }}
-        placeholder="Type and tap Speak…"
-        className="min-h-[52px] flex-1 rounded-xl border border-input bg-background px-4 text-lg outline-none focus:ring-2 focus:ring-accent"
-        autoCapitalize="sentences"
-        autoCorrect="on"
-        spellCheck
-        // Visible at all times; not gated on embedder warmup or LiveConversation
-        // state — that's the whole point of this control.
-      />
-      <Button
-        variant="accent"
-        size="lg"
-        onClick={submit}
-        disabled={!text.trim()}
-        className={cn("min-h-[52px] px-6", isSpeakingThis && "ring-2 ring-accent")}
-      >
-        <Send className="h-5 w-5" />
-        Speak
-      </Button>
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------------
-
-function MoodSelector({ mood, onChange }: { mood: Mood; onChange: (m: Mood) => void }) {
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-        Mood
-      </span>
-      {MOODS.map((m) => {
-        const active = m === mood;
-        return (
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
+          <h3 className="flex items-center gap-2 text-lg font-semibold">
+            <Calendar className="size-5" /> Prepping for an event?
+          </h3>
           <button
-            key={m}
             type="button"
-            onClick={() => onChange(m)}
-            data-active={active ? "true" : undefined}
-            aria-pressed={active}
+            onClick={onClose}
+            aria-label="Close event picker"
+            className="rounded-full p-2 hover:bg-secondary"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5">
+          <button
+            type="button"
+            onClick={() => onSelect(null)}
             className={cn(
-              "inline-flex min-h-[44px] items-center justify-center rounded-full border px-4 text-sm font-semibold capitalize transition-colors",
-              "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2",
-              active
-                ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--ink)]"
-                : "border-input bg-background text-muted-foreground hover:bg-muted",
+              "mb-3 flex w-full items-center justify-between rounded-lg border-2 px-4 py-2 text-left",
+              !selectedEventId
+                ? "border-primary bg-primary/10"
+                : "border-border bg-secondary/40 hover:bg-secondary",
             )}
           >
-            {m}
+            <span className="font-medium">No event</span>
+            {!selectedEventId && <Check className="size-4" />}
           </button>
-        );
-      })}
+          {events.length === 0 ? (
+            <p className="text-sm italic text-muted-foreground">
+              No events yet. Create one in{" "}
+              <Link to="/app/settings" search={{ tab: "events" }} className="underline">
+                Settings → Events
+              </Link>
+              .
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {events.map((e) => {
+                const sel = selectedEventId === e.id;
+                return (
+                  <button
+                    key={e.id}
+                    type="button"
+                    onClick={() => onSelect(e.id)}
+                    className={cn(
+                      "flex w-full items-start justify-between gap-3 rounded-lg border-2 px-4 py-2 text-left",
+                      sel
+                        ? "border-primary bg-primary/10"
+                        : "border-border bg-secondary/40 hover:bg-secondary",
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{e.name}</div>
+                      {(e.when || e.locationFreeform) && (
+                        <div className="truncate text-xs text-muted-foreground">
+                          {[e.when, e.locationFreeform].filter(Boolean).join(" · ")}
+                        </div>
+                      )}
+                    </div>
+                    {sel && <Check className="size-4 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }
