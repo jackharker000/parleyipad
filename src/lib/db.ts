@@ -491,6 +491,16 @@ class AacDb extends Dexie {
     this.version(10).stores({
       suggestion_choices: "id, conversation_id, person_id, ts",
     });
+    // Forward-compat shim: PR #6 (Dexie v11) shipped to production added a
+    // `cachedPhraseAudio` TTS cache table. iPads that opened that build have
+    // an existing DB at v11; without this declaration the rollback to PR #5
+    // would throw VersionError and lock them out of their own data. We don't
+    // read or write this table from PR #5 code — it just needs to exist so
+    // Dexie accepts the existing IDB and the user's people, voiceprints,
+    // transcripts, memories, and profile survive the downgrade intact.
+    this.version(11).stores({
+      cachedPhraseAudio: "id, kind, voiceId, cachedAt",
+    });
   }
 }
 
