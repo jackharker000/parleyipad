@@ -1,10 +1,18 @@
 {
-  "name": "Parley",
+  "id": "/app",
+  "name": "Parley — AAC copilot",
   "short_name": "Parley",
+  "description": "An iPad AAC copilot that listens to the conversation, recognises who's talking, and offers tap-to-speak replies in your own voice.",
   "start_url": "/app",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["fullscreen", "standalone"],
   "orientation": "landscape",
-  "background_color": "#EEECE6",
-  "theme_color": "#222428"
+  "background_color": "#FAF8F5",
+  "theme_color": "#0E7C73",
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
 }

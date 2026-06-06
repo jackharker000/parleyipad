@@ -83,11 +83,7 @@ function AppLayout() {
   }, [user]);
 
   if (loading || !user) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      </div>
-    );
+    return <GatewaySplash />;
   }
 
   // Cockpit (/app exactly) renders its own 120×120 action row + status strip
@@ -191,6 +187,26 @@ function AppLayout() {
       <main className={cn("flex-1 min-h-0", isCockpit && "relative")}>
         <Outlet />
       </main>
+    </div>
+  );
+}
+
+/**
+ * Full-screen branded splash shown while `useSession` is still resolving
+ * (the home-screen icon hit `/app`, `onAuthStateChanged` hasn't fired yet)
+ * or while we're about to redirect a signed-out user to `/login`. The
+ * background colour matches `manifest.webmanifest`'s `background_color`
+ * so iOS's standalone-PWA splash and our React splash visually agree —
+ * no flash on launch.
+ */
+function GatewaySplash() {
+  return (
+    <div
+      className="flex min-h-screen flex-col items-center justify-center gap-4 text-[var(--ink-soft)]"
+      style={{ backgroundColor: "#FAF8F5" }}
+    >
+      <ParleyLogo className="h-16 w-16 animate-pulse" />
+      <p className="text-sm">Connecting…</p>
     </div>
   );
 }

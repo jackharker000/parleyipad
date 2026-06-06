@@ -31,6 +31,12 @@ export const Route = createRootRouteWithContext<{
       { name: "apple-mobile-web-app-capable", content: "yes" },
       { name: "mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-title", content: "Parley" },
+      // Lets the cockpit draw under the iOS status bar instead of
+      // ceding a 40-pt strip — the home-screen launch feels native.
+      { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
+      // Stop iOS from autolinking phone-number-shaped strings in the
+      // live transcript (numbers in James's people column, dates).
+      { name: "format-detection", content: "telephone=no" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
