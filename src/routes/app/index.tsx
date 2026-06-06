@@ -144,6 +144,31 @@ function CockpitSkeleton() {
 
 // --------------------------------------------------------------------------
 
+/**
+ * Map the raw onnxruntime-web / transformers.js error to something the
+ * user can act on. The OOM path produces a stack of chained failures
+ * (one per backend) once the WASM init flag is poisoned, so surfacing
+ * the raw message was bewildering. Detect the memory cause specifically
+ * so the user knows to close other apps; keep a generic fallback for
+ * anything else (model download failures on flaky networks, etc.).
+ */
+function humanizeEmbedderError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("out of memory") ||
+    lower.includes("rangeerror") ||
+    lower.includes("initwasm") ||
+    lower.includes("no available backend")
+  ) {
+    return "Speaker recognition needs more memory than this iPad has free. Close other apps, then tap Retry — or carry on and everyone will be labelled Unknown.";
+  }
+  if (lower.includes("network") || lower.includes("fetch") || lower.includes("failed to fetch")) {
+    return "Couldn't download the speaker recognition model. Check your connection, then Retry — or carry on and everyone will be labelled Unknown.";
+  }
+  return "Speaker recognition couldn't start. Tap Retry, or carry on without it — everyone will be labelled Unknown.";
+}
+
 function Cockpit() {
   const settings = useSettings();
 
@@ -152,9 +177,16 @@ function Cockpit() {
   // thread so the cockpit never freezes. dispose() terminates the worker,
   // which is the only reliable way to actually release ORT's WASM heap on
   // iPad Safari.
+  //
+  // `retryEmbedderNonce` bumps when the user taps Retry after a warmup
+  // failure — the dependency change triggers a fresh effect, which
+  // disposes the previous (failed) embedder, builds a new one, and tries
+  // warming again. With a freshly-spawned worker the ORT global init
+  // state isn't poisoned by the prior failed initWasm().
   const embedderRef = useRef<SpeakerEmbedder | null>(null);
   const [embedderReady, setEmbedderReady] = useState(false);
   const [embedderError, setEmbedderError] = useState<string | null>(null);
+  const [retryEmbedderNonce, setRetryEmbedderNonce] = useState(0);
   useEffect(() => {
     setEmbedderReady(false);
     setEmbedderError(null);
@@ -168,13 +200,34 @@ function Cockpit() {
         if (!cancelled) setEmbedderReady(true);
       } catch (err) {
         if (cancelled) return;
-        setEmbedderError(err instanceof Error ? err.message : String(err));
+        // Warmup failed — most often iPad Safari's WASM heap OOMs while
+        // loading the WavLM weights, and once that happens ORT's global
+        // initWasm() flag is poisoned so every other backend errors with
+        // "previous call to 'initWasm()' failed". Tear the worker down so
+        // the next Retry tap gets a fresh ORT state, null the ref so
+        // LiveConversation routes around the missing embedder (it already
+        // handles `embedderRef.current === null` — speaker-ID is just
+        // skipped and everyone is labelled Unknown until the user
+        // retries), and mark ready so the Record button stops gating on
+        // the warmup state.
+        try {
+          await next.dispose?.();
+        } catch {
+          /* best-effort release */
+        }
+        embedderRef.current = null;
+        setEmbedderError(humanizeEmbedderError(err));
+        setEmbedderReady(true);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [settings.speakerIdWebGPU]);
+  }, [settings.speakerIdWebGPU, retryEmbedderNonce]);
+
+  const retryEmbedder = useCallback(() => {
+    setRetryEmbedderNonce((n) => n + 1);
+  }, []);
 
   const people = useLiveQuery(() => db().people.toArray(), [], EMPTY_PEOPLE);
   const voiceprints = useLiveQuery(() => db().voiceprints.toArray(), [], EMPTY_VOICEPRINTS);
@@ -653,8 +706,15 @@ function Cockpit() {
         <StateBadge state={state} embedderReady={embedderReady} />
 
         {embedderError && (
-          <span className="rounded-md bg-destructive/15 px-3 py-1.5 text-xs text-destructive">
-            Embedder failed: {embedderError}
+          <span className="inline-flex items-center gap-2 rounded-md bg-amber-100 px-3 py-1.5 text-xs text-amber-900">
+            <span>{embedderError}</span>
+            <button
+              type="button"
+              onClick={retryEmbedder}
+              className="rounded bg-amber-200 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-900 hover:bg-amber-300"
+            >
+              Retry
+            </button>
           </span>
         )}
 
