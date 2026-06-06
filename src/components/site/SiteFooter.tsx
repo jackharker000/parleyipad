@@ -32,9 +32,6 @@ export function SiteFooter() {
           <Link to="/get-started" className="text-[var(--ink-soft)] hover:text-[var(--ink)]">
             Get started
           </Link>
-          <Link to="/login" className="text-[var(--ink-soft)] hover:text-[var(--ink)]">
-            Log in
-          </Link>
         </nav>
       </div>
       <div className="border-t border-[var(--line)]">

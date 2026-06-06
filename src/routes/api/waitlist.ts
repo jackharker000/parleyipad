@@ -2,17 +2,27 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
 import { corsPreflight, requireClientToken, withCors } from "@/lib/api-cors";
-import { addWaitlistEntry, isAdminConfigured } from "@/lib/firebase/admin";
 
 /**
- * Waitlist intake endpoint. Validates a name/email/about triple and persists
- * it to Firestore via the Firebase Admin SDK (server-only credential).
+ * Waitlist intake. Forwards each signup to the operator's inbox
+ * (jackharker000@gmail.com) via Resend's HTTP API. No database; no
+ * client-side persistence. The form completes either way — if
+ * RESEND_API_KEY isn't set (local dev) we log a non-PII line and return
+ * ok so the marketing flow stays unblocked.
  *
- * When the service account isn't configured (e.g. local dev without
- * FIREBASE_SERVICE_ACCOUNT_B64) there's nowhere server-side to write to, so we
- * fall back to validating + acknowledging without persisting, and log a
- * minimal non-PII line. The form still completes either way. See docs/setup.md.
+ * Env vars:
+ *   RESEND_API_KEY     server-only. Get one from https://resend.com.
+ *   RESEND_FROM_EMAIL  server-only. From-address on Resend's verified
+ *                      domain. Defaults to "Parley <hello@parley.help>"
+ *                      so a working setup with the parley.help domain
+ *                      verified in Resend needs no extra config.
+ *
+ * Only place the recipient ever appears is this file — change it here
+ * if the operator changes hands.
  */
+
+const RECIPIENT = "jackharker000@gmail.com";
+const DEFAULT_FROM = "Parley <hello@parley.help>";
 
 const BodySchema = z.object({
   name: z.string().trim().min(1).max(200),
@@ -38,8 +48,8 @@ export const Route = createFileRoute("/api/waitlist")({
         const parsed = BodySchema.safeParse(raw);
         if (!parsed.success) {
           // Surface a field-specific message instead of the opaque "Invalid
-          // body" — the most common failure is a malformed email (e.g.
-          // "test@test" with no TLD), and the user needs to know what to fix.
+          // body" — the most common failure is a malformed email, and the
+          // user needs to know what to fix.
           return jsonResponse(
             { ok: false, error: firstValidationMessage(parsed.error) },
             400,
@@ -49,27 +59,41 @@ export const Route = createFileRoute("/api/waitlist")({
 
         const { name, email, about } = parsed.data;
 
-        // No service account configured (e.g. local dev) — acknowledge without
-        // persisting. Log only the email domain so the owner can see interest
-        // without capturing PII in server logs.
-        if (!isAdminConfigured()) {
+        const apiKey = process.env.RESEND_API_KEY;
+        if (!apiKey) {
+          // Local dev path — log the domain (not PII) so the operator can
+          // see traffic without persisting anything, and acknowledge the
+          // submission so the form completes normally.
           const domain = email.split("@")[1] ?? "unknown";
           console.info(`[api/waitlist] received signup (domain: ${domain})`);
           console.info(
-            "[api/waitlist] FIREBASE_SERVICE_ACCOUNT_B64 not set — submission was not persisted",
+            "[api/waitlist] RESEND_API_KEY not set — submission was not emailed",
           );
           return jsonResponse({ ok: true }, 200, request);
         }
 
-        // Persist to Firestore via the REST API (service-account token).
         try {
-          await addWaitlistEntry({ name, email, about });
+          await sendViaResend({
+            apiKey,
+            from: process.env.RESEND_FROM_EMAIL ?? DEFAULT_FROM,
+            to: RECIPIENT,
+            // The submitter's email goes on Reply-To so a single tap from
+            // the inbox opens a reply straight back to them.
+            replyTo: email,
+            subject: `New Parley waitlist signup — ${name}`,
+            html: renderHtml({ name, email, about }),
+            text: renderText({ name, email, about }),
+          });
         } catch (err) {
-          // Log only the error message — never the request body / PII.
+          // Log only the error message — never the request body.
           console.error(
-            `[api/waitlist] failed to persist signup: ${(err as Error).message}`,
+            `[api/waitlist] resend send failed: ${(err as Error).message}`,
           );
-          return jsonResponse({ ok: false, error: "Couldn't save your request" }, 500, request);
+          return jsonResponse(
+            { ok: false, error: "Couldn't send your request" },
+            500,
+            request,
+          );
         }
 
         return jsonResponse({ ok: true }, 200, request);
@@ -77,6 +101,71 @@ export const Route = createFileRoute("/api/waitlist")({
     },
   },
 });
+
+async function sendViaResend(opts: {
+  apiKey: string;
+  from: string;
+  to: string;
+  replyTo: string;
+  subject: string;
+  html: string;
+  text: string;
+}): Promise<void> {
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${opts.apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from: opts.from,
+      to: [opts.to],
+      reply_to: opts.replyTo,
+      subject: opts.subject,
+      html: opts.html,
+      text: opts.text,
+    }),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const body = (await res.json()) as { message?: string };
+      detail = body.message ? `: ${body.message}` : "";
+    } catch {
+      /* ignore non-JSON error bodies */
+    }
+    throw new Error(`Resend HTTP ${res.status}${detail}`);
+  }
+}
+
+function renderText(opts: { name: string; email: string; about: string }): string {
+  const aboutBlock = opts.about ? `\n\nAbout:\n${opts.about}` : "";
+  return `New Parley waitlist signup\n\nName: ${opts.name}\nEmail: ${opts.email}${aboutBlock}\n\nReply to this email to write back to them.\n`;
+}
+
+function renderHtml(opts: { name: string; email: string; about: string }): string {
+  const safeName = escapeHtml(opts.name);
+  const safeEmail = escapeHtml(opts.email);
+  const aboutBlock = opts.about
+    ? `<p style="margin: 16px 0 0;"><strong>About:</strong></p><pre style="white-space: pre-wrap; font-family: inherit; margin: 6px 0 0;">${escapeHtml(opts.about)}</pre>`
+    : "";
+  return `<!doctype html><html><body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #222; line-height: 1.5;">
+  <p style="margin: 0 0 12px;"><strong>New Parley waitlist signup</strong></p>
+  <p style="margin: 0;"><strong>Name:</strong> ${safeName}</p>
+  <p style="margin: 4px 0 0;"><strong>Email:</strong> <a href="mailto:${safeEmail}">${safeEmail}</a></p>
+  ${aboutBlock}
+  <p style="margin: 24px 0 0; color: #555; font-size: 13px;">Reply to this email to write back to them.</p>
+</body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 /**
  * Map the first Zod validation issue to a friendly, field-specific message.

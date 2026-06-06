@@ -90,16 +90,6 @@ function HomePage() {
                 See how it works
               </Link>
             </div>
-            <p className="mt-4 text-sm text-[var(--ink-soft)]">
-              Already using Parley?{" "}
-              <Link
-                to="/login"
-                className="font-semibold text-[var(--teal)] underline underline-offset-4"
-              >
-                Log in
-              </Link>
-              .
-            </p>
             <p className="mt-6 text-sm text-[var(--ink-soft)]">
               Voice recognition runs on the iPad. Your account and conversation
               history sync to our secure cloud — switch that off any time.

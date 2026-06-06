@@ -34,12 +34,6 @@ export function SiteHeader() {
         </nav>
         <div className="ml-auto flex items-center gap-2">
           <Link
-            to="/login"
-            className="rounded-md px-3 py-1.5 text-sm font-medium text-[var(--ink)] hover:bg-[var(--sand-2)]"
-          >
-            Log in
-          </Link>
-          <Link
             to="/get-started"
             className="inline-flex items-center justify-center rounded-full bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-[var(--teal-dark)]"
           >
