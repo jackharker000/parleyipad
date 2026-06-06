@@ -3,6 +3,7 @@ import { useLiveQuery } from "dexie-react-hooks";
 
 import { db } from "@/lib/db";
 import { useSession } from "@/lib/auth";
+import { useSettings } from "@/lib/settings";
 import { isFirebaseConfigured } from "@/lib/firebase/client";
 
 import { getSyncStatus, startCloudSync, subscribeSyncStatus } from "./engine";
@@ -10,8 +11,9 @@ import { getSyncStatus, startCloudSync, subscribeSyncStatus } from "./engine";
 /**
  * React surface for the write-behind sync engine.
  *
- * - Starts the engine when (signed-in) AND (Firebase is configured).
- * - Tears it down on sign-out.
+ * - Starts the engine when (signed-in) AND (cloudSyncEnabled) AND
+ *   (Firebase is configured).
+ * - Tears it down when those conditions stop holding.
  * - Exposes live status (last-flush, last-error) for the Settings panel.
  *
  * Mount once, near the top of the protected app tree. Calling
@@ -22,11 +24,14 @@ import { getSyncStatus, startCloudSync, subscribeSyncStatus } from "./engine";
  */
 export function useCloudSync(): {
   running: boolean;
+  enabled: boolean;
   pendingCount: number;
   lastFlushAt: number | null;
   lastError: string | null;
 } {
   const { user } = useSession();
+  const settings = useSettings();
+  const enabled = settings.cloudSyncEnabled !== false; // undefined = on
 
   const [status, setStatus] = useState(() => getSyncStatus());
 
@@ -37,12 +42,12 @@ export function useCloudSync(): {
   }, []);
 
   useEffect(() => {
-    if (!user || !isFirebaseConfigured()) {
+    if (!user || !enabled || !isFirebaseConfigured()) {
       return;
     }
     const dispose = startCloudSync(user.id);
     return () => dispose();
-  }, [user]);
+  }, [user, enabled]);
 
   // Live pending count for the Settings panel.
   const pendingCount = useLiveQuery(
@@ -59,6 +64,7 @@ export function useCloudSync(): {
 
   return {
     running: status.running,
+    enabled,
     pendingCount: pendingCount ?? 0,
     lastFlushAt: status.lastFlushAt,
     lastError: status.lastError,

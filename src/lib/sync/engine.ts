@@ -4,6 +4,7 @@ import { getStorage, ref, uploadBytes } from "firebase/storage";
 
 import { db, type SyncError, type SyncOutboxRow } from "@/lib/db";
 import { getFirebaseApp, getFirebaseDb, isFirebaseConfigured } from "@/lib/firebase/client";
+import { getSettingsSnapshot } from "@/lib/settings";
 
 /**
  * Write-behind cloud-sync engine.
@@ -150,7 +151,7 @@ let refCount = 0;
  * Start the write-behind sync engine for the given user. Returns a dispose
  * function that releases this caller's reference; the engine only stops
  * once every caller has disposed (or `stopCloudSync()` is called
- * explicitly, e.g. on sign-out).
+ * explicitly, e.g. by the Settings toggle going off).
  *
  * Refcounting is what lets the same engine power both the app-layout
  * mount in `routes/app.tsx` AND the Settings panel's `useCloudSync` hook
@@ -160,11 +161,7 @@ let refCount = 0;
  * Returns a no-op dispose when:
  *   • we're on the server (typeof window === "undefined")
  *   • Firebase isn't configured on this build (`VITE_FIREBASE_*` missing)
- *
- * Sync is always on for signed-in users — there is no per-account toggle.
- * (Was historically gated on `cloudSyncEnabled`; that escape valve was
- * removed because the UX of "did my voice samples save?" is load-bearing
- * for AAC and an off-by-accident state was a foot-gun.)
+ *   • the user has cloudSyncEnabled === false
  */
 export function startCloudSync(uid: string): () => void {
   if (typeof window === "undefined") return () => {};
@@ -182,6 +179,9 @@ export function startCloudSync(uid: string): () => void {
     return () => releaseRef();
   }
 
+  // First caller — boot the engine. Settings is async so we kick off
+  // speculatively; if the user has sync disabled we tear back down
+  // before any write hits the network.
   const handle: EngineHandle = {
     uid,
     unsubscribeHooks: [],
@@ -195,7 +195,11 @@ export function startCloudSync(uid: string): () => void {
 
   void (async () => {
     try {
-      if (handle.stopped) {
+      const settings = await getSettingsSnapshot();
+      // Default ON: undefined === true so new accounts get sync without
+      // a one-time settings migration.
+      const enabled = settings.cloudSyncEnabled !== false;
+      if (!enabled || handle.stopped) {
         if (active === handle) forceStop();
         return;
       }

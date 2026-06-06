@@ -165,15 +165,51 @@ export async function getIdToken(): Promise<string | null> {
  * custom claim from the ID token. `loading` is true until the first auth
  * state resolves.
  *
- * Also force-refreshes the ID token whenever the PWA returns to the
- * foreground (`visibilitychange` → visible, `pageshow`). The Firebase SDK
- * normally refreshes on its own schedule, but a PWA can sit suspended
- * for hours or days; touching the token on resume catches any expiry
- * before the next /api/admin call surprises us with a 401 and shoves the
- * user back to /login. The IDB persistence layer in
- * `lib/firebase/client.ts` makes this refresh succeed silently — no
- * network round-trip for the user.
+ * Plus a four-piece stay-logged-in pass for the iPad PWA:
+ *
+ *   1. **One-time `navigator.storage.persist()` request.** Asks the
+ *      browser to mark the origin's storage as persistent — Safari's
+ *      heuristic gates this so we won't always be granted it, but the
+ *      ask is free and on supporting runtimes it puts the IDB store
+ *      out of reach of automatic eviction.
+ *   2. **Resume-refresh** on `visibilitychange` (visible) + `pageshow`.
+ *      A PWA can sit suspended for hours; touching the token on resume
+ *      catches any expiry before the next `/api/admin/*` call surprises
+ *      us with a 401 race.
+ *   3. **Periodic refresh** every 50 min while the tab is alive. Firebase
+ *      ID tokens last 60 min; pre-emptive refresh keeps one in hand at
+ *      all times and avoids "token expired mid-flight" edge cases when
+ *      the user only briefly looks at the app.
+ *   4. **`online`-event refresh.** When the network comes back after an
+ *      outage, retry the refresh immediately rather than waiting for
+ *      the next visibility flip.
+ *
+ * The IDB persistence layer in `lib/firebase/client.ts` makes all of
+ * these refreshes succeed silently — no network round-trip for the user.
  */
+const TOKEN_REFRESH_INTERVAL_MS = 50 * 60 * 1000;
+
+let storagePersistAsked = false;
+function maybeAskStoragePersist(): void {
+  if (storagePersistAsked) return;
+  storagePersistAsked = true;
+  if (typeof navigator === "undefined") return;
+  const storage = navigator.storage;
+  if (!storage || typeof storage.persist !== "function") return;
+  void storage
+    .persist()
+    .then((granted) => {
+      // The boolean is informational only — most Safaris will deny but
+      // the IDB store stays usable either way. Log so devtools can show
+      // the outcome without surfacing UI to the user.
+      console.debug("[auth] navigator.storage.persist() →", granted);
+    })
+    .catch(() => {
+      // Some runtimes throw rather than resolve false. Silent — it's a
+      // best-effort hint, not a guarantee we ever needed.
+    });
+}
+
 export function useSession(): { user: SessionUser | null; loading: boolean } {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -184,6 +220,9 @@ export function useSession(): { user: SessionUser | null; loading: boolean } {
       setLoading(false);
       return;
     }
+
+    maybeAskStoragePersist();
+
     const unsub = onAuthStateChanged(getFirebaseAuth(), async (u) => {
       if (!u) {
         setUser(null);
@@ -199,27 +238,32 @@ export function useSession(): { user: SessionUser | null; loading: boolean } {
       setLoading(false);
     });
 
-    // Resume-refresh: when the tab comes back to the foreground (or the
-    // PWA resumes from suspend), force a token refresh so the next
-    // authenticated request can't trip a 401-expired race.
     const refresh = () => {
-      if (document.visibilityState !== "visible") return;
       const current = getFirebaseAuth().currentUser;
       if (!current) return;
       void current.getIdToken(true).catch(() => {
-        // Refresh failure is non-fatal — onAuthStateChanged will fire
-        // with null if the user is genuinely signed out and the
-        // existing redirect handles it. A network blip just leaves the
-        // old (still-valid) token in place.
+        // Refresh failure is non-fatal — onAuthStateChanged fires with
+        // null if the user is genuinely signed out and the existing
+        // redirect handles it. A network blip just leaves the old
+        // (still-valid) token in place.
       });
     };
-    document.addEventListener("visibilitychange", refresh);
-    window.addEventListener("pageshow", refresh);
+
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    window.addEventListener("pageshow", refreshIfVisible);
+    window.addEventListener("online", refresh);
+    const interval = window.setInterval(refresh, TOKEN_REFRESH_INTERVAL_MS);
 
     return () => {
       unsub();
-      document.removeEventListener("visibilitychange", refresh);
-      window.removeEventListener("pageshow", refresh);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+      window.removeEventListener("pageshow", refreshIfVisible);
+      window.removeEventListener("online", refresh);
+      window.clearInterval(interval);
     };
   }, []);
 

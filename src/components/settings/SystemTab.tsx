@@ -11,7 +11,7 @@ import { ImportDataCard } from "@/components/settings/ImportDataCard";
 import { Switch } from "@/components/ui/switch";
 import { db, type SettingsRecord } from "@/lib/db";
 import { signOut, useSession } from "@/lib/auth";
-import { useSettings } from "@/lib/settings";
+import { persistSettings, useSettings } from "@/lib/settings";
 import { drainPendingJobs } from "@/lib/jobs/drain";
 import {
   exportEncryptedBackup,
@@ -97,26 +97,6 @@ function AccountCard() {
       </CardContent>
     </Card>
   );
-}
-
-// --------------------------------------------------------------------------
-
-async function persistSettings(patch: Partial<SettingsRecord>) {
-  const existing = await db().settings.get("singleton");
-  const next: SettingsRecord = {
-    id: "singleton",
-    llmProvider: "anthropic",
-    sttProvider: "elevenlabs-scribe",
-    ttsProvider: "elevenlabs-flash",
-    speakerIdWebGPU: true,
-    speakerIdAcceptThreshold: 0.7,
-    speakerIdAskThreshold: 0.45,
-    gpsEnabled: false,
-    displayPreset: "11",
-    ...existing,
-    ...patch,
-  };
-  await db().settings.put(next);
 }
 
 // --------------------------------------------------------------------------
@@ -294,8 +274,12 @@ function GpsCard() {
 // --------------------------------------------------------------------------
 
 function CloudSyncCard() {
+  const settings = useSettings();
+  const enabled = settings.cloudSyncEnabled !== false; // undefined = on
   const { running, pendingCount, lastFlushAt, lastError } = useCloudSync();
   const configured = isFirebaseConfigured();
+
+  const setEnabled = (v: boolean) => void persistSettings({ cloudSyncEnabled: v });
 
   // Human-friendly relative time for the last-flush row.
   const lastFlushLabel = formatRelativeTime(lastFlushAt);
@@ -320,12 +304,22 @@ function CloudSyncCard() {
           </CardDescription>
         )}
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-5">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-foreground">Sync this account to the cloud</p>
+            <p className="text-xs text-muted-foreground">
+              On by default. Turn off to keep everything strictly on this device.
+            </p>
+          </div>
+          <Switch checked={enabled} onCheckedChange={setEnabled} disabled={!configured} />
+        </div>
+
         <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3 text-xs">
           <StatusRow
             label="Engine"
-            value={running ? "Running" : configured ? "Idle" : "Disabled"}
-            tone={running ? "ok" : configured ? "neutral" : "muted"}
+            value={running ? "Running" : enabled ? "Idle" : "Disabled"}
+            tone={running ? "ok" : enabled ? "neutral" : "muted"}
           />
           <StatusRow
             label="Pending writes"
