@@ -1,79 +1,25 @@
-import { db, newId, getJamesProfile, updateJamesProfile, type Person } from "./db";
+import { db, getJamesProfile } from "./db";
 
-const SEED_FLAG = "aac_seeded_v1";
 // === Tier 1.1: backfill person_id on historical suggestions_log rows ===
 const SUGGESTIONS_LOG_PERSON_ID_BACKFILL_FLAG = "suggestions_log_person_id_backfill_v1";
 
-const SEED_PEOPLE: Omit<Person, "id" | "created_at">[] = [
-  {
-    name: "Glenis",
-    relationship: "Mother",
-    notes: "James's mother, in her 70s. Lives with James in Glen Massey.",
-  },
-  {
-    name: "Matt",
-    relationship: "Brother",
-    interests: ["Sailing"],
-    notes: "James's only brother, born 1976. Lives in Remuera, Auckland. Married to Antonia. Loves sailing.",
-  },
-  {
-    name: "Antonia",
-    relationship: "Sister-in-law",
-    notes: "Married to James's brother Matt. Lives in Remuera, Auckland.",
-  },
-  {
-    name: "Jack",
-    relationship: "Nephew",
-    interests: ["Sailing", "Wing foiling"],
-    notes: "Matt and Antonia's son, born 9 Feb 2011. Studies Cambridge curriculum at ACG College in Parnell. Very smart, doing very well at school. Loves sailing and wing foiling.",
-  },
-  {
-    name: "Kevin",
-    relationship: "Uncle",
-    notes: "James's uncle. Lives in Auckland with his partner Sharron.",
-  },
-  {
-    name: "Sharron",
-    relationship: "Uncle Kevin's partner",
-    notes: "Kevin's partner. Lives in Auckland with Kevin.",
-  },
-  {
-    name: "Ross",
-    relationship: "Uncle",
-    notes: "James's uncle.",
-  },
-];
-
-export async function seedJamesIfNeeded() {
+/**
+ * First-run initialization for a fresh account.
+ *
+ * Multi-user: this app supports many different account owners, so we must NOT
+ * seed any specific person's identity or relatives. Doing so would inject one
+ * user's family (and even push them to a brand-new account's cloud backup on
+ * first sign-in). We only ensure the owner-profile row exists — blank until
+ * first-run onboarding captures the real owner's name. Their people, profile,
+ * and history are entered by them (or restored from their own cloud backup).
+ */
+export async function ensureOwnerProfile() {
   if (typeof window === "undefined") return;
-  if (localStorage.getItem(SEED_FLAG)) return;
-
   try {
-    const profile = await getJamesProfile();
-    if (!profile.updated_at) {
-      await updateJamesProfile({
-        display_name: "James",
-        age: "44",
-        background:
-          "Lives in Glen Massey with his mother Glenis (in her 70s). Has cerebral palsy and has been non-verbal his whole life. Has one brother, Matt (born 1976), who lives in Remuera, Auckland with his wife Antonia and their son Jack (born 9 Feb 2011). Also has two uncles, Kevin (lives in Auckland with his partner Sharron) and Ross.",
-        communication_style:
-          "Non-verbal his whole life due to cerebral palsy. Uses this app to communicate. Struggles to type accurately, so most of his typed input is truncated and contains errors — interpret his typing generously and infer intent from context.",
-        current_life_context:
-          "Living at home in Glen Massey with mum Glenis. Close to brother Matt's family in Auckland — nephew Jack is doing very well at ACG Parnell.",
-      });
-    }
-
-    const existing = await db.people.toArray();
-    const existingNames = new Set(existing.map((p) => p.name.toLowerCase()));
-    const now = Date.now();
-    const toAdd = SEED_PEOPLE.filter((p) => !existingNames.has(p.name.toLowerCase())).map(
-      (p) => ({ ...p, id: newId(), created_at: now }),
-    );
-    if (toAdd.length) await db.people.bulkAdd(toAdd);
-
-    localStorage.setItem(SEED_FLAG, "1");
+    // Lazily creates the blank singleton profile row if none exists yet.
+    await getJamesProfile();
   } catch (e) {
-    console.error("Seed failed", e);
+    console.error("Owner profile init failed", e);
   }
 }
 

@@ -11,6 +11,7 @@ import {
 import appCss from "../styles.css?url";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthGate } from "@/components/AuthGate";
+import { OwnerGate } from "@/components/OwnerOnboarding";
 
 function NotFoundComponent() {
   return (
@@ -78,7 +79,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       {
         name: "description",
         content:
-          "Parley — a calm, iPad-first AAC reply copilot that listens, suggests replies, and remembers. Built for James.",
+          "Parley — a calm, iPad-first AAC reply copilot that listens, suggests replies, and remembers.",
       },
       { name: "theme-color", content: "#222428" },
       { name: "apple-mobile-web-app-capable", content: "yes" },
@@ -134,7 +135,9 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthGate>
-        <Outlet />
+        <OwnerGate>
+          <Outlet />
+        </OwnerGate>
       </AuthGate>
       <Toaster richColors position="top-center" />
     </QueryClientProvider>

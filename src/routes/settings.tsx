@@ -76,6 +76,7 @@ import {
   updateSettings,
   getJamesProfile,
   updateJamesProfile,
+  ownerName,
   newId,
   type JamesProfile,
   type JamesDocument,
@@ -110,6 +111,8 @@ export const Route = createFileRoute("/settings")({
 type Voice = { voice_id: string; name: string; labels: Record<string, string> };
 
 function SettingsPage() {
+  const ownerProfile = useLiveQuery(() => getJamesProfile(), []);
+  const ownerLabel = ownerProfile?.display_name?.trim() || "you";
   return (
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-6xl px-6 py-6">
@@ -117,7 +120,7 @@ function SettingsPage() {
           <div className="mb-4 flex items-center gap-3">
             <TabsList className="h-12 flex-1 justify-start gap-1 bg-secondary/50">
               <TabsTrigger value="james" className="h-10 gap-2 px-4 text-base">
-                <User className="size-4" /> About James
+                <User className="size-4" /> About {ownerLabel}
               </TabsTrigger>
               <TabsTrigger value="people" className="h-10 gap-2 px-4 text-base">
                 <Users className="size-4" /> People
@@ -390,7 +393,7 @@ function SystemTab() {
                     <div className="text-sm font-medium">Live suggestions (fast)</div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       Powers suggestion chips, predictions and expand-and-speak.
-                      James will feel every extra second.
+                      The user will feel every extra second.
                     </p>
                     <Select
                       value={fastValue}
@@ -423,7 +426,7 @@ function SystemTab() {
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       Summary, memory extraction, event prep, reply drafts. The
-                      extra second is invisible to James.
+                      extra second is invisible to the user.
                     </p>
                     <Select
                       value={smartValue}
@@ -655,9 +658,9 @@ function VoiceDesignerPanel({
   const saveFn = useServerFn(saveDesignedVoice);
   const [open, setOpen] = useState(false);
   const [description, setDescription] = useState(
-    "A calm, authoritative 44-year-old middle-class New Zealand man. Warm but understated, measured pace, gentle dry humour, clearly articulated.",
+    "A warm, natural, clearly articulated voice with a measured pace and gentle, understated tone.",
   );
-  const [name, setName] = useState("James");
+  const [name, setName] = useState("");
   const [previews, setPreviews] = useState<Preview[]>([]);
   const [chosen, setChosen] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -848,10 +851,12 @@ function JamesProfileCard() {
     <Card className="p-6">
       <div className="flex items-center gap-2">
         <User className="size-5" />
-        <h2 className="text-lg font-semibold">About James</h2>
+        <h2 className="text-lg font-semibold">
+          About {profile?.display_name?.trim() || "you"}
+        </h2>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
-        The richer this is, the more the AI suggestions will sound like him.
+        The richer this is, the more the AI suggestions will sound like you.
         Edit anytime — changes apply to the next conversation.
       </p>
 
@@ -1032,7 +1037,7 @@ function JamesDocumentsSection() {
         <h3 className="text-base font-semibold">Reference documents</h3>
       </div>
       <p className="mt-1 text-sm text-muted-foreground">
-        Attach background docs about James — life history, medical notes,
+        Attach background docs about you — life history, medical notes,
         favourite stories, anything the AI should know. Their contents are
         included with every suggestion. Plain-text files only (.txt, .md, .csv,
         .json, .yaml, .xml, .html). Each file is capped at ~60k characters.
@@ -1465,7 +1470,7 @@ function PersonDetail({
         </Section>
       )}
       {person.style_notes && (
-        <Section title="How James talks with them">
+        <Section title="How you talk with them">
           <p className="whitespace-pre-wrap text-sm">{person.style_notes}</p>
         </Section>
       )}
@@ -2245,7 +2250,7 @@ function PersonEditor({
       </Field>
       <Field
         label="Notes"
-        hint="Anything James would want the AI to know about them"
+        hint="Anything you'd want the AI to know about them"
       >
         <Textarea
           rows={3}
@@ -2688,7 +2693,7 @@ function EventDetail({ eventId }: { eventId: string }) {
           existingQuestions: event.key_questions.map((k) => k.text),
           model: s.smart_model ?? "gemini/gemini-2.5-flash",
           jamesProfile: {
-            name: profile.display_name || "James",
+            name: ownerName(profile),
             background: profile.background,
             personality: profile.personality,
             humor: profile.humor_style,

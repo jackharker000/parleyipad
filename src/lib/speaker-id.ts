@@ -8,7 +8,7 @@ export function labelTranscriptForPrompt(
   mapping: Record<string, string>,
   peopleById: Map<string, Person>,
   jamesLabel?: string,
-  jamesName = "James",
+  jamesName = "the user",
 ): { speaker: string; text: string }[] {
   return segments.map((s) => {
     if (s.speaker === "__james_self__") return { ...s, speaker: jamesName };

@@ -206,8 +206,8 @@ function AuthScreen() {
                 {busy ? "Creating…" : "Create account"}
               </Button>
               <p className="text-xs text-muted-foreground">
-                Tip: to share an account between James and a carer, just use the
-                same email and password on each device.
+                Tip: to share an account between the user and a carer, just use
+                the same email and password on each device.
               </p>
             </form>
           </TabsContent>

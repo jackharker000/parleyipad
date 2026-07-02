@@ -33,7 +33,7 @@ export const Route = createFileRoute("/helpers")({
       {
         name: "description",
         content:
-          "Draft messages, emails and Facebook posts in James's voice — copy and paste into the app of your choice.",
+          "Draft messages, emails and Facebook posts in your voice — copy and paste into the app of your choice.",
       },
     ],
   }),

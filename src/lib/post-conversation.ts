@@ -21,6 +21,7 @@ import {
   db,
   newId,
   getJamesProfile,
+  ownerName,
   type Person,
   type Voiceprint,
   type ProfileProposal,
@@ -88,7 +89,7 @@ export async function rediarizeAfterStop(ctx: Tier2Ctx): Promise<RediarizeAfterS
   const conv = await db.conversations.get(ctx.conversationId);
   const speakerMap = conv?.speaker_map ?? {};
   const profile = await getJamesProfile();
-  const jamesName = profile.display_name?.toLowerCase() ?? "james";
+  const jamesName = ownerName(profile).toLowerCase();
   const jamesLabels = new Set<string>();
   for (const [label, personId] of Object.entries(speakerMap)) {
     const person = await db.people.get(personId);
@@ -320,7 +321,7 @@ export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
   const conv = await db.conversations.get(ctx.conversationId);
   const speakerMap = conv?.speaker_map ?? {};
   const profile = await getJamesProfile();
-  const jamesName = profile.display_name ?? "James";
+  const jamesName = ownerName(profile);
 
   const labelToPerson = new Map<string, string>(Object.entries(speakerMap));
 
@@ -389,6 +390,7 @@ export async function enrichProfilesAfterStop(ctx: Tier2Ctx): Promise<void> {
             dynamic_tags: person.dynamic_tags,
           },
           filteredTranscript: filtered.slice(0, 200),
+          ownerName: jamesName,
           model: ctx.smartModel,
         },
       });
@@ -423,17 +425,17 @@ export async function detectIntroductionsAfterStop(
   ctx: Tier2Ctx,
   rediarize: RediarizeAfterStopResult,
 ): Promise<void> {
+  const profile = await getJamesProfile();
+  const jamesName = ownerName(profile);
+
   // Cheap pre-filter: use the existing regex-based introduction detector.
   // If it finds zero candidates we skip the LLM call entirely.
   const transcriptForRegex = ctx.segs.map((s) => ({
     text: s.text,
     speaker_label: s.speaker_label,
   }));
-  const regexHits = extractIntroducedNames(transcriptForRegex);
+  const regexHits = extractIntroducedNames(transcriptForRegex, jamesName);
   if (regexHits.length === 0) return;
-
-  const profile = await getJamesProfile();
-  const jamesName = profile.display_name ?? "James";
 
   // Build the full transcript for the LLM with current human labels where
   // available.
