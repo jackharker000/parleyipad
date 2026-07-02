@@ -66,15 +66,66 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
   return brandedErrorResponse();
 }
 
+/**
+ * CORS for the native iPad app. The Capacitor shell serves the bundled UI from
+ * capacitor://localhost and calls server functions here cross-origin (see
+ * src/lib/native-bridge.ts). Browsers/webviews send a preflight because the
+ * calls carry Authorization + a custom content type. Only the allow-listed
+ * native origins get CORS headers — normal web traffic is same-origin and
+ * completely unaffected.
+ */
+const NATIVE_APP_ORIGINS = new Set(
+  (process.env.NATIVE_APP_ORIGINS ?? "capacitor://localhost,ionic://localhost")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+
+function nativeCorsOrigin(request: Request): string | null {
+  const origin = request.headers.get("origin");
+  return origin && NATIVE_APP_ORIGINS.has(origin) ? origin : null;
+}
+
+function preflightResponse(request: Request, origin: string): Response {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "access-control-allow-origin": origin,
+      "access-control-allow-methods": "GET, POST, OPTIONS",
+      "access-control-allow-headers":
+        request.headers.get("access-control-request-headers") ?? "authorization, content-type",
+      "access-control-max-age": "86400",
+      vary: "Origin",
+    },
+  });
+}
+
+function withNativeCors(response: Response, origin: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", origin);
+  headers.append("vary", "Origin");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
+    const corsOrigin = nativeCorsOrigin(request);
+    if (corsOrigin && request.method === "OPTIONS") {
+      return preflightResponse(request, corsOrigin);
+    }
     try {
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
-      return await normalizeCatastrophicSsrResponse(response);
+      const normalized = await normalizeCatastrophicSsrResponse(response);
+      return corsOrigin ? withNativeCors(normalized, corsOrigin) : normalized;
     } catch (error) {
       console.error(error);
-      return brandedErrorResponse();
+      const failure = brandedErrorResponse();
+      return corsOrigin ? withNativeCors(failure, corsOrigin) : failure;
     }
   },
 };
