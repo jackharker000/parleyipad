@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { Loader2 } from "lucide-react";
-import { getJamesProfile, updateJamesProfile, needsOwnerOnboarding } from "@/lib/db";
+import { db, updateJamesProfile, needsOwnerOnboarding } from "@/lib/db";
 import { invalidateContextCache } from "@/lib/context";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,11 @@ import { ParleyLogo } from "@/components/ParleyLogo";
  * so they skip straight through.
  */
 export function OwnerGate({ children }: { children: React.ReactNode }) {
-  const profile = useLiveQuery(() => getJamesProfile(), []);
+  // Read-only querier: getJamesProfile() WRITES the default row when missing,
+  // and Dexie hard-throws on readwrite transactions inside a liveQuery — a
+  // fresh device would crash to the error page. `null` = row missing (needs
+  // onboarding, which creates it on submit); `undefined` = still loading.
+  const profile = useLiveQuery(async () => (await db.james_profile.get("singleton")) ?? null, []);
 
   // Profile is loading from IndexedDB — brief; avoid flashing the cockpit or
   // the onboarding form before we know which one to show.

@@ -111,7 +111,10 @@ export const Route = createFileRoute("/settings")({
 type Voice = { voice_id: string; name: string; labels: Record<string, string> };
 
 function SettingsPage() {
-  const ownerProfile = useLiveQuery(() => getJamesProfile(), []);
+  // Read-only: getJamesProfile() writes when the row is missing, which Dexie
+  // forbids inside a liveQuery. OwnerGate guarantees the row exists by the
+  // time Settings is reachable, so a plain get is equivalent.
+  const ownerProfile = useLiveQuery(() => db.james_profile.get("singleton"), []);
   const ownerLabel = ownerProfile?.display_name?.trim() || "you";
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -819,7 +822,8 @@ function CharCount({ value, max }: { value: string | undefined; max: number }) {
 }
 
 function JamesProfileCard() {
-  const profile = useLiveQuery(() => getJamesProfile(), []);
+  // Read-only for the same liveQuery reason as above; the row exists by now.
+  const profile = useLiveQuery(() => db.james_profile.get("singleton"), []);
   const [draft, setDraft] = useState<JamesProfile | null>(null);
   const [saving, setSaving] = useState(false);
 
