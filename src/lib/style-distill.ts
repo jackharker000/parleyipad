@@ -11,7 +11,7 @@
  * strictly best-effort polish on top of the live style-evidence loop.
  */
 
-import { db, getJamesProfile, getSettings, newId, type StyleProfileJson } from "./db";
+import { db, getJamesProfile, getSettings, newId, ownerName, type StyleProfileJson } from "./db";
 import { distillStyleProfile } from "./aac.functions";
 
 const MIN_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 h
@@ -89,7 +89,7 @@ export async function runStyleDistillation(opts?: RunStyleDistillationOptions): 
       data: {
         samples,
         jamesProfile: {
-          name: profileRow.display_name || "James",
+          name: ownerName(profileRow),
           background: profileRow.background,
           personality: profileRow.personality,
           humor: profileRow.humor_style,

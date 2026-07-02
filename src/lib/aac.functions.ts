@@ -600,9 +600,12 @@ export const generateSuggestions = createServerFn({ method: "POST" })
       .join("\n");
 
     const jp = data.jamesProfile;
+    // The account owner this app speaks AS. Every prompt below reads as this
+    // person by name (gender-neutral "they/them" so it fits any owner).
+    const owner = jp?.name ?? "the user";
     const profileBlock = jp
       ? `# About ${jp.name} (the AAC user you are speaking AS)
-${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics he loves: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics he avoids: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use his actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes: ${jp.freeform}\n` : ""}`
+${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics they love: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics they avoid: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use their actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes: ${jp.freeform}\n` : ""}`
       : "";
 
     const peopleBlock = data.people?.length
@@ -611,7 +614,7 @@ ${data.people
   .map(
     (p) =>
       `## ${p.name}${p.relationship ? ` (${p.relationship})` : ""}
-${p.interests?.length ? `Interests: ${p.interests.join(", ")}\n` : ""}${p.notes ? `Notes: ${p.notes}\n` : ""}${p.style_notes ? `How James talks with them: ${p.style_notes}\n` : ""}${p.recentMemories?.length ? `Recent memories with them:\n- ${p.recentMemories.join("\n- ")}\n` : ""}${p.followUps?.length ? `Open follow-ups to bring up:\n- ${p.followUps.join("\n- ")}\n` : ""}`,
+${p.interests?.length ? `Interests: ${p.interests.join(", ")}\n` : ""}${p.notes ? `Notes: ${p.notes}\n` : ""}${p.style_notes ? `How ${owner} talks with them: ${p.style_notes}\n` : ""}${p.recentMemories?.length ? `Recent memories with them:\n- ${p.recentMemories.join("\n- ")}\n` : ""}${p.followUps?.length ? `Open follow-ups to bring up:\n- ${p.followUps.join("\n- ")}\n` : ""}`,
   )
   .join("\n")}`
       : "";
@@ -624,8 +627,8 @@ ${data.place.recentMemories?.length ? `Recent memories here:\n- ${data.place.rec
 
     const ev = data.event;
     const eventBlock = ev
-      ? `# Event James is at: ${ev.name}
-${ev.when ? `When: ${ev.when}\n` : ""}${ev.location ? `Where: ${ev.location}\n` : ""}${ev.peopleNames?.length ? `Attendees: ${ev.peopleNames.join(", ")}\n` : ""}${ev.keyInfo ? `Key info: ${ev.keyInfo}\n` : ""}${ev.selectedKeyPoints?.length ? `Key points James wants to make:\n- ${ev.selectedKeyPoints.join("\n- ")}\n` : ""}${ev.selectedKeyQuestions?.length ? `Key questions James wants to ask:\n- ${ev.selectedKeyQuestions.join("\n- ")}\n` : ""}${ev.docs?.length ? `Reference materials for the event:\n${ev.docs.join("\n\n")}\n` : ""}
+      ? `# Event ${owner} is at: ${ev.name}
+${ev.when ? `When: ${ev.when}\n` : ""}${ev.location ? `Where: ${ev.location}\n` : ""}${ev.peopleNames?.length ? `Attendees: ${ev.peopleNames.join(", ")}\n` : ""}${ev.keyInfo ? `Key info: ${ev.keyInfo}\n` : ""}${ev.selectedKeyPoints?.length ? `Key points ${owner} wants to make:\n- ${ev.selectedKeyPoints.join("\n- ")}\n` : ""}${ev.selectedKeyQuestions?.length ? `Key questions ${owner} wants to ask:\n- ${ev.selectedKeyQuestions.join("\n- ")}\n` : ""}${ev.docs?.length ? `Reference materials for the event:\n${ev.docs.join("\n\n")}\n` : ""}
 Strongly bias suggestions toward making these key points and asking these key questions when natural.`
       : "";
 
@@ -637,8 +640,8 @@ Strongly bias suggestions toward making these key points and asking these key qu
     // Real things James has said in past conversations. The strongest signal
     // for "sound like him" — concrete examples of his actual phrasing.
     const voiceSamplesBlock = data.jamesVoiceSamples?.length
-      ? `# How James actually talks (real quotes from his past conversations)
-These are genuine lines James has spoken before. Mirror his natural phrasing, vocabulary, sentence length, rhythm, and humour. Reuse his real turns of phrase where they fit the moment. Do NOT copy a quote verbatim unless it's a perfect fit — adapt the VOICE, not the exact words.
+      ? `# How ${owner} actually talks (real quotes from their past conversations)
+These are genuine lines ${owner} has spoken before. Mirror their natural phrasing, vocabulary, sentence length, rhythm, and humour. Reuse their real turns of phrase where they fit the moment. Do NOT copy a quote verbatim unless it's a perfect fit — adapt the VOICE, not the exact words.
 ${data.jamesVoiceSamples.map((s) => `- "${promptQuote(s)}"`).join("\n")}
 `
       : "";
@@ -647,8 +650,8 @@ ${data.jamesVoiceSamples.map((s) => `- "${promptQuote(s)}"`).join("\n")}
     // What James has chosen vs. passed over before. Picked > alternatives; when
     // he typed his own, every suggestion missed and his own line is the target.
     const choiceMemoriesBlock = data.choiceMemories?.length
-      ? `# What James has chosen before (his revealed preferences)
-Learn from these past decisions. When he picked one option over others, lean toward the style/content of the picked one and away from the rejected ones. When he rejected ALL suggestions and typed his own, those suggestions missed — aim much closer to what he actually said.
+      ? `# What ${owner} has chosen before (their revealed preferences)
+Learn from these past decisions. When ${owner} picked one option over others, lean toward the style/content of the picked one and away from the rejected ones. When they rejected ALL suggestions and typed their own, those suggestions missed — aim much closer to what they actually said.
 ${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
 `
       : "";
@@ -672,9 +675,9 @@ ${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
       if (!hasPer && !hasGlobal) return "";
 
       const lines: string[] = [];
-      lines.push("# Style evidence (what James actually picks vs. ignores)");
+      lines.push(`# Style evidence (what ${owner} actually picks vs. ignores)`);
       lines.push(
-        "For each present person, the recent suggestion log shows which categories he picks, how he edits, and what to avoid.",
+        "For each present person, the recent suggestion log shows which categories they pick, how they edit, and what to avoid.",
       );
       for (const p of ev.perPerson) {
         const fewSamples =
@@ -705,7 +708,7 @@ ${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
                 ? "tightens"
                 : "tweaks";
           lines.push(
-            `- When he edits, he typically ${verb} the wording (+${p.avgWordsAddedOnEdit} / -${p.avgWordsRemovedOnEdit} words).`,
+            `- When they edit, they typically ${verb} the wording (+${p.avgWordsAddedOnEdit} / -${p.avgWordsRemovedOnEdit} words).`,
           );
         }
         if (p.recentPickedSamples.length) {
@@ -755,16 +758,12 @@ ${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
 
     const moodGuidance: Record<string, string> = {
       normal: "",
-      calm: "James's current mood: CALM and relaxed. Suggestions should sound measured, gentle, unhurried, and grounded. Avoid exclamation marks or high-energy phrasing.",
-      excited:
-        "James's current mood: EXCITED and energetic. Suggestions should feel enthusiastic, upbeat, and animated. Use lively language and the occasional exclamation where natural, but still in his real voice.",
-      sad: "James's current mood: SAD or low. Suggestions should be quieter, more reflective, sometimes wistful. It's okay to acknowledge feelings, give shorter answers, or politely deflect.",
-      upset:
-        "James's current mood: UPSET, frustrated or annoyed. Suggestions can be more blunt, firm, or short. He may want to push back, set a limit, or end a topic. Stay respectful but don't sugarcoat.",
-      empathetic:
-        "James's current mood: EMPATHETIC. He wants to support the other person. Suggestions should validate feelings, ask caring follow-up questions, and offer warmth before any opinions.",
-      amused:
-        "James's current mood: AMUSED and playful. Lean into his humor and signature phrases. Light teasing, jokes, and playful comebacks are welcome where they fit his style.",
+      calm: `${owner}'s current mood: CALM and relaxed. Suggestions should sound measured, gentle, unhurried, and grounded. Avoid exclamation marks or high-energy phrasing.`,
+      excited: `${owner}'s current mood: EXCITED and energetic. Suggestions should feel enthusiastic, upbeat, and animated. Use lively language and the occasional exclamation where natural, but still in their real voice.`,
+      sad: `${owner}'s current mood: SAD or low. Suggestions should be quieter, more reflective, sometimes wistful. It's okay to acknowledge feelings, give shorter answers, or politely deflect.`,
+      upset: `${owner}'s current mood: UPSET, frustrated or annoyed. Suggestions can be more blunt, firm, or short. They may want to push back, set a limit, or end a topic. Stay respectful but don't sugarcoat.`,
+      empathetic: `${owner}'s current mood: EMPATHETIC. They want to support the other person. Suggestions should validate feelings, ask caring follow-up questions, and offer warmth before any opinions.`,
+      amused: `${owner}'s current mood: AMUSED and playful. Lean into their humor and signature phrases. Light teasing, jokes, and playful comebacks are welcome where they fit their style.`,
     };
     const moodBlock =
       data.mood && data.mood !== "normal" ? `# Mood\n${moodGuidance[data.mood]}\n` : "";
@@ -777,7 +776,7 @@ ${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
     // === Tier 3.2: conversation-arc guidance ===
     const arcGuidance: Record<NonNullable<typeof data.arc>, string> = {
       greeting: "short, warm, low-info opening replies. Mirror their energy.",
-      catching_up: "open questions, brief updates from James's own life context.",
+      catching_up: `open questions, brief updates from ${owner}'s own life context.`,
       decision: `committal options — "yes", "let's", "I'd rather", short and definite.`,
       venting: `empathetic validation FIRST ("that sounds hard"), no fixes, gentle follow-ups.`,
       wrapping_up: `closure-friendly — "good to talk", "speak soon", confirm any agreed next step.`,
@@ -795,20 +794,20 @@ ${data.choiceMemories.map((s) => `- ${s}`).join("\n")}
       : [];
     const categoryBiasBlock = (trustedCats.length || nearMissCats.length)
       ? `# Category performance signals
-${trustedCats.length ? `Reliable categories (James picks these fast and unchanged): ${trustedCats.join(", ")}` : ""}
+${trustedCats.length ? `Reliable categories (${owner} picks these fast and unchanged): ${trustedCats.join(", ")}` : ""}
 ${nearMissCats.length ? `Under-performing categories (slow tap or often edited) — when used, generate with MORE diversity and stronger personal voice: ${nearMissCats.join(", ")}` : ""}
 `
       : "";
 
     const presentNames = (data.people ?? []).map((p) => p.name);
-    const presentList = presentNames.length ? presentNames.join(", ") : "(only James)";
-    const system = `You are an AAC (Augmentative and Alternative Communication) copilot. You generate reply options for ${jp?.name ?? "James"}, a non-speaking user, to TAP and speak aloud in real time. Suggestions must sound like HIM — not generic. Use his personality, humor, signature phrases, and shared history with the people present.
+    const presentList = presentNames.length ? presentNames.join(", ") : `(only ${owner})`;
+    const system = `You are an AAC (Augmentative and Alternative Communication) copilot. You generate reply options for ${owner}, a non-speaking user, to TAP and speak aloud in real time. Suggestions must sound like THEM — not generic. Use their personality, humor, signature phrases, and shared history with the people present.
 
 STRICT PRIVACY & SCOPE RULES — these override everything else:
 - The ONLY other people in this conversation are: ${presentList}. Treat anyone else as NOT present.
-- You may ONLY reference specific topics, events, plans, feelings, or anecdotes from the "Recent memories with them" and "Open follow-ups" sections of the people listed above, plus generic info in James's profile. Do NOT bring up anything that was discussed with other people in past conversations — those are private to those people.
+- You may ONLY reference specific topics, events, plans, feelings, or anecdotes from the "Recent memories with them" and "Open follow-ups" sections of the people listed above, plus generic info in ${owner}'s profile. Do NOT bring up anything that was discussed with other people in past conversations — those are private to those people.
 - Do NOT name, quote, paraphrase, or allude to any other person who is not present, and do NOT surface topics that only appear in another person's history.
-- James's general profile (background, interests, humor, life context) is fair game because it is general knowledge about him. But specific stories or sensitive disclosures (health, family struggles, work problems, opinions about others) must NOT be carried into a conversation with someone different unless that exact topic also appears in the present people's own memories/follow-ups.
+- ${owner}'s general profile (background, interests, humor, life context) is fair game because it is general knowledge about them. But specific stories or sensitive disclosures (health, family struggles, work problems, opinions about others) must NOT be carried into a conversation with someone different unless that exact topic also appears in the present people's own memories/follow-ups.
 - When in doubt about whether something is private, leave it out and prefer a neutral question or in-context reply instead.
 
 Each suggestion must be under 16 words and feel natural to say out loud. Avoid repeating any text in "alreadyShown". Prefer concrete references over generic small talk ONLY when those references come from the present people's own memories/follow-ups.`;
@@ -831,7 +830,7 @@ ${transcriptText || "(no transcript yet — conversation just starting)"}
 
 ${data.alreadyShown?.length ? `# Recently ignored or already shown (do NOT repeat)\n${data.alreadyShown.join(" | ")}\n` : ""}
 ${questionGuidance}
-Return exactly 6 suggestions in James's voice.`;
+Return exactly 6 suggestions in ${owner}'s voice.`;
 
     const res = await chatCompletion(data.model, {
         // === Tier 3.4: bump temperature when there are under-performing
@@ -902,6 +901,8 @@ const summarySchema = z.object({
   transcript: z.array(z.object({ speaker: z.string(), text: z.string() })),
   placeName: z.string().optional(),
   peopleNames: z.array(z.string()).optional(),
+  /** Display name of the account owner so the record reads about them by name. */
+  ownerName: z.string().optional(),
   model: z.string().optional(),
 });
 
@@ -909,6 +910,7 @@ export const summarizeConversation = createServerFn({ method: "POST" })
   .inputValidator((d) => summarySchema.parse(d))
   .handler(async ({ data }) => {
     const transcriptText = data.transcript.map((s) => `${s.speaker}: ${s.text}`).join("\n");
+    const owner = data.ownerName?.trim() || "the AAC user";
 
     if (!transcriptText.trim()) {
       return {
@@ -920,12 +922,12 @@ export const summarizeConversation = createServerFn({ method: "POST" })
       };
     }
 
-    const system = `You analyze a conversation that James (a non-speaking AAC user) just had, and produce a thorough record so the system genuinely remembers it next time. Be generous and detailed — it is better to capture too much than to miss something James might value later.
+    const system = `You analyze a conversation that ${owner} (a non-speaking AAC user) just had, and produce a thorough record so the system genuinely remembers it next time. Be generous and detailed — it is better to capture too much than to miss something ${owner} might value later.
 
 Return, via the tool:
 - summary: a detailed, multi-paragraph narrative (roughly 6–12 sentences). Cover what was actually discussed (each distinct topic), the emotional tone and how it shifted, anything decided or planned, questions left open, and anything notable about how each person was doing. Write in clear past tense about the real content — never generic filler.
 - highlights: 4–8 short, concrete bullet points — the moments, facts, or exchanges most worth remembering at a glance.
-- memories: extract EVERY durable thing worth remembering for future conversations — be thorough, not minimal. Include facts (about James or the people present), stated preferences and dislikes, life events (past or upcoming), plans and commitments (todos), opinions expressed, health/work/family/hobby details, and relationships mentioned. Each memory: a single self-contained sentence plus its kind (fact | preference | event | todo). Aim for as many as the conversation genuinely supports (often 5–15 for a real conversation); return an empty list only if nothing was said.
+- memories: extract EVERY durable thing worth remembering for future conversations — be thorough, not minimal. Include facts (about ${owner} or the people present), stated preferences and dislikes, life events (past or upcoming), plans and commitments (todos), opinions expressed, health/work/family/hobby details, and relationships mentioned. Each memory: a single self-contained sentence plus its kind (fact | preference | event | todo). Aim for as many as the conversation genuinely supports (often 5–15 for a real conversation); return an empty list only if nothing was said.
 - followUps: specific topics or questions to raise next time (e.g. "Ask how Mum's hospital appointment went"). Be concrete.`;
 
     const ctx = `${data.placeName ? `Place: ${data.placeName}\n` : ""}${data.peopleNames?.length ? `People present: ${data.peopleNames.join(", ")}\n` : ""}\nTranscript:\n${transcriptText}`;
@@ -1057,6 +1059,7 @@ export const expandUtterance = createServerFn({ method: "POST" })
       .join("\n");
 
     const jp = data.jamesProfile;
+    const owner = jp?.name ?? "the user";
     const profileBlock = jp
       ? `About ${jp.name}: ${jp.background ?? ""}\nCommunication style: ${jp.communication ?? ""}\nPersonality: ${jp.personality ?? ""}\nHumor: ${jp.humor ?? ""}\n`
       : "";
@@ -1065,15 +1068,15 @@ export const expandUtterance = createServerFn({ method: "POST" })
       : "";
     const placeBlock = data.place ? `Location: ${data.place.name}\n` : "";
     const voiceSamplesBlock = data.jamesVoiceSamples?.length
-      ? `How James actually talks (real quotes from past conversations — match this voice, vocabulary, and rhythm):\n${data.jamesVoiceSamples.map((s) => `- "${promptQuote(s)}"`).join("\n")}\n`
+      ? `How ${owner} actually talks (real quotes from past conversations — match this voice, vocabulary, and rhythm):\n${data.jamesVoiceSamples.map((s) => `- "${promptQuote(s)}"`).join("\n")}\n`
       : "";
 
-    const system = `You are an AAC writing assistant for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy whose typing is heavily truncated and full of typos. Your job: take his raw typed input and rewrite it as ONE clear, natural spoken sentence (or two short sentences max) in HIS voice, appropriate as the next reply in the live conversation. Preserve his intent exactly — never add facts, opinions, claims, or details he did not type.
+    const system = `You are an AAC writing assistant for ${owner}, a non-speaking user with cerebral palsy whose typing is heavily truncated and full of typos. Your job: take their raw typed input and rewrite it as ONE clear, natural spoken sentence (or two short sentences max) in THEIR voice, appropriate as the next reply in the live conversation. Preserve their intent exactly — never add facts, opinions, claims, or details they did not type.
 
 CRITICAL — minimal expansion rule:
-- If his input is just 1–3 characters (e.g. "N", "Y", "ok", "mm"), produce the smallest possible natural utterance ("No.", "Yes.", "Okay.", "Mm-hmm.") and STOP. Do NOT add a follow-on clause that explains, qualifies, or answers anything he didn't type. "N" must become "No." — NOT "No, they're working." or "No, I don't think so."
-- If his input is a single short word with no spaces (e.g. "tired", "later"), produce just that thought expanded grammatically ("I'm tired.", "Maybe later.") — not a full sentence with extra reasoning.
-- Only when his input is longer than ~6 characters with multiple words may you smooth grammar and add small connector words. Even then, never invent objects, times, names, or topics he didn't include.
+- If their input is just 1–3 characters (e.g. "N", "Y", "ok", "mm"), produce the smallest possible natural utterance ("No.", "Yes.", "Okay.", "Mm-hmm.") and STOP. Do NOT add a follow-on clause that explains, qualifies, or answers anything they didn't type. "N" must become "No." — NOT "No, they're working." or "No, I don't think so."
+- If their input is a single short word with no spaces (e.g. "tired", "later"), produce just that thought expanded grammatically ("I'm tired.", "Maybe later.") — not a full sentence with extra reasoning.
+- Only when their input is longer than ~6 characters with multiple words may you smooth grammar and add small connector words. Even then, never invent objects, times, names, or topics they didn't include.
 
 Fix spelling, expand abbreviations to common meanings, add small connector words where structurally required. Keep it concise, conversational, and under 25 words. Output ONLY the final sentence to be spoken aloud, with no quotes, no preface, no explanation.`;
 
@@ -1081,7 +1084,7 @@ Fix spelling, expand abbreviations to common meanings, add small connector words
 Recent conversation:
 ${transcriptText || "(just starting)"}
 
-James typed: "${data.rawText}"
+${owner} typed: "${data.rawText}"
 
 Rewrite as the spoken reply:`;
 
@@ -1132,6 +1135,7 @@ export const predictUtterances = createServerFn({ method: "POST" })
       .map((s) => `${s.speaker}: ${s.text}`)
       .join("\n");
     const jp = data.jamesProfile;
+    const owner = jp?.name ?? "the user";
     const profileBlock = jp
       ? `About ${jp.name}: ${jp.background ?? ""}\nPersonality: ${jp.personality ?? ""}\nHumor: ${jp.humor ?? ""}\nCommunication style: ${jp.communication ?? ""}\n${jp.signaturePhrases?.length ? `Signature phrases: ${jp.signaturePhrases.join("; ")}\n` : ""}`
       : "";
@@ -1140,25 +1144,25 @@ export const predictUtterances = createServerFn({ method: "POST" })
       : "";
     const placeBlock = data.place ? `Location: ${data.place.name}\n` : "";
     const voiceSamplesBlock = data.jamesVoiceSamples?.length
-      ? `How James actually talks (real quotes — match this voice):\n${data.jamesVoiceSamples.map((s) => `- "${promptQuote(s)}"`).join("\n")}\n`
+      ? `How ${owner} actually talks (real quotes — match this voice):\n${data.jamesVoiceSamples.map((s) => `- "${promptQuote(s)}"`).join("\n")}\n`
       : "";
 
-    const system = `You are an AAC predictive-text engine for ${jp?.name ?? "James"}, a non-speaking user with cerebral palsy and slow, effortful typing. He has begun typing a reply. Your job: predict the most likely COMPLETE sentences he is trying to say, so he can tap one instead of finishing typing.
+    const system = `You are an AAC predictive-text engine for ${owner}, a non-speaking user with cerebral palsy and slow, effortful typing. They have begun typing a reply. Your job: predict the most likely COMPLETE sentences they are trying to say, so they can tap one instead of finishing typing.
 
 Rules:
-- Treat his partial input as a rough, possibly-misspelled, possibly-abbreviated prefix or sketch of his intent. Interpret generously.
-- Return 6 distinct complete utterances, each a natural, ready-to-speak sentence in HIS voice, ordered most-likely first.
-- They must be plausible continuations/completions of what he has typed AND fit the live conversation.
-- Vary them: cover the obvious literal completion, a couple of close variants, and a couple that resolve ambiguity differently — but every one must be consistent with his partial text.
-- Never invent specific facts, names, times, or claims he didn't imply. Keep each under 16 words.`;
+- Treat their partial input as a rough, possibly-misspelled, possibly-abbreviated prefix or sketch of their intent. Interpret generously.
+- Return 6 distinct complete utterances, each a natural, ready-to-speak sentence in THEIR voice, ordered most-likely first.
+- They must be plausible continuations/completions of what has been typed AND fit the live conversation.
+- Vary them: cover the obvious literal completion, a couple of close variants, and a couple that resolve ambiguity differently — but every one must be consistent with their partial text.
+- Never invent specific facts, names, times, or claims they didn't imply. Keep each under 16 words.`;
 
     const user = `${profileBlock}${peopleBlock}${placeBlock}${voiceSamplesBlock}
 Recent conversation:
 ${transcriptText || "(just starting)"}
 
-James has typed so far: "${data.partialText}"
+${owner} has typed so far: "${data.partialText}"
 
-Predict the 6 most likely complete sentences he is trying to say.`;
+Predict the 6 most likely complete sentences they are trying to say.`;
 
     const res = await chatCompletion(data.model, {
       messages: [
@@ -1227,9 +1231,10 @@ export const draftFacebookPost = createServerFn({ method: "POST" })
   .inputValidator((d) => fbPostSchema.parse(d))
   .handler(async ({ data }) => {
     const jp = data.jamesProfile;
+    const owner = jp?.name ?? "the user";
     const profileBlock = jp
       ? `# About ${jp.name} (the person posting)
-${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics he loves: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics he avoids: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use his actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes about him:\n${jp.freeform}\n` : ""}`
+${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics they love: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics they avoid: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use their actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes about them:\n${jp.freeform}\n` : ""}`
       : "";
 
     const postType = data.postType ?? "status";
@@ -1242,11 +1247,11 @@ ${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Pers
             ? "a Facebook Messenger message"
             : "a Facebook status update";
 
-    const system = `You are a writing assistant helping ${jp?.name ?? "James"}, a non-speaking man with cerebral palsy, post on Facebook. He types with great difficulty so his input is heavily truncated and full of typos — interpret it generously and infer intent from context. Your job is to turn his rough typing into ${typeHint} that sounds authentically like HIM (his personality, humor, vocabulary). NEVER invent facts, opinions, names, plans, or details he did not type or that aren't in his profile. Keep it natural, warm, and concise — Facebook tone, not formal writing. Use emojis sparingly only if it fits his personality. No hashtags unless he typed them.`;
+    const system = `You are a writing assistant helping ${owner}, a non-speaking person with cerebral palsy, post on Facebook. They type with great difficulty so their input is heavily truncated and full of typos — interpret it generously and infer intent from context. Your job is to turn their rough typing into ${typeHint} that sounds authentically like THEM (their personality, humor, vocabulary). NEVER invent facts, opinions, names, plans, or details they did not type or that aren't in their profile. Keep it natural, warm, and concise — Facebook tone, not formal writing. Use emojis sparingly only if it fits their personality. No hashtags unless they typed them.`;
 
     const user = `${profileBlock}
 ${data.context ? `# Context for this post\n${data.context}\n` : ""}
-# What James typed (rough, may have typos / be truncated)
+# What ${owner} typed (rough, may have typos / be truncated)
 "${data.rawText}"
 
 Produce one polished version (the recommended one) plus 3 alternative variations with different tones (e.g. shorter / warmer / drier-witted). Keep each under 60 words. Return them via the tool call.`;
@@ -1338,9 +1343,10 @@ export const generateEventPrep = createServerFn({ method: "POST" })
   .inputValidator((d) => eventPrepSchema.parse(d))
   .handler(async ({ data }) => {
     const jp = data.jamesProfile;
+    const owner = jp?.name ?? "the user";
     const profileBlock = jp
       ? `# About ${jp.name}
-${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics he loves: ${jp.topicsLoved}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}`
+${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics they love: ${jp.topicsLoved}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}`
       : "";
 
     const docsBlock = data.docs?.length
@@ -1352,12 +1358,12 @@ ${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Pers
         ? `# Already drafted (offer DIFFERENT, complementary items)\n${data.existingPoints?.length ? `Points:\n- ${data.existingPoints.join("\n- ")}\n` : ""}${data.existingQuestions?.length ? `Questions:\n- ${data.existingQuestions.join("\n- ")}\n` : ""}`
         : "";
 
-    const system = `You help ${jp?.name ?? "James"}, a non-speaking AAC user, prepare for an upcoming event or meeting. Generate concrete, useful KEY POINTS he may want to make and KEY QUESTIONS he may want to ask, grounded in his profile, the event details, attendees, the user's prep prompt, and any reference documents provided. Items must sound like him, be specific (not generic), and be tappable as standalone spoken lines (under ~20 words each).`;
+    const system = `You help ${owner}, a non-speaking AAC user, prepare for an upcoming event or meeting. Generate concrete, useful KEY POINTS they may want to make and KEY QUESTIONS they may want to ask, grounded in their profile, the event details, attendees, the user's prep prompt, and any reference documents provided. Items must sound like them, be specific (not generic), and be tappable as standalone spoken lines (under ~20 words each).`;
 
     const user = `${profileBlock}
 # Event
 Name: ${data.eventName}
-${data.when ? `When: ${data.when}\n` : ""}${data.location ? `Where: ${data.location}\n` : ""}${data.peopleNames?.length ? `Attendees: ${data.peopleNames.join(", ")}\n` : ""}${data.keyInfo ? `Key info: ${data.keyInfo}\n` : ""}${data.prepPrompt ? `\n# James's prep instructions\n${data.prepPrompt}\n` : ""}
+${data.when ? `When: ${data.when}\n` : ""}${data.location ? `Where: ${data.location}\n` : ""}${data.peopleNames?.length ? `Attendees: ${data.peopleNames.join(", ")}\n` : ""}${data.keyInfo ? `Key info: ${data.keyInfo}\n` : ""}${data.prepPrompt ? `\n# ${owner}'s prep instructions\n${data.prepPrompt}\n` : ""}
 ${docsBlock}
 ${existingBlock}
 Generate 6-10 key points and 6-10 key questions tailored to this event.`;
@@ -1437,9 +1443,10 @@ export const draftReply = createServerFn({ method: "POST" })
   .inputValidator((d) => draftReplySchema.parse(d))
   .handler(async ({ data }) => {
     const jp = data.jamesProfile;
+    const owner = jp?.name ?? "the user";
     const profileBlock = jp
       ? `# About ${jp.name} (the person writing)
-${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics he loves: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics he avoids: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use his actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes about him:\n${jp.freeform}\n` : ""}`
+${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Personality: ${jp.personality}\n` : ""}${jp.humor ? `Humor style: ${jp.humor}\n` : ""}${jp.communication ? `Communication style: ${jp.communication}\n` : ""}${jp.topicsLoved ? `Topics they love: ${jp.topicsLoved}\n` : ""}${jp.topicsAvoided ? `Topics they avoid: ${jp.topicsAvoided}\n` : ""}${jp.currentLifeContext ? `Current life context: ${jp.currentLifeContext}\n` : ""}${jp.signaturePhrases?.length ? `Signature phrases (use their actual voice):\n- ${jp.signaturePhrases.join("\n- ")}\n` : ""}${jp.freeform ? `Other notes about them:\n${jp.freeform}\n` : ""}`
       : "";
 
     const platformLabel =
@@ -1451,20 +1458,20 @@ ${jp.background ? `Background: ${jp.background}\n` : ""}${jp.personality ? `Pers
 
     const toneHint =
       data.platform === "email"
-        ? "Email tone: complete sentences, polite, can be a few short paragraphs. Sign off as he normally would (or omit signature if his profile doesn't suggest one)."
+        ? "Email tone: complete sentences, polite, can be a few short paragraphs. Sign off as they normally would (or omit signature if their profile doesn't suggest one)."
         : data.platform === "imessage"
-          ? "Text-message tone: short, casual, lower-case ok, contractions, can use a single emoji if it fits him. Usually 1-2 short sentences."
-          : "Facebook tone: warm, conversational, concise. Emojis sparingly only if it fits his personality.";
+          ? "Text-message tone: short, casual, lower-case ok, contractions, can use a single emoji if it fits them. Usually 1-2 short sentences."
+          : "Facebook tone: warm, conversational, concise. Emojis sparingly only if it fits their personality.";
 
-    const system = `You are a writing assistant helping ${jp?.name ?? "James"}, a non-speaking man with cerebral palsy, write ${platformLabel}. He types with great difficulty so his input is heavily truncated and full of typos — interpret it generously. Rewrite as authentically HIM (his personality, humor, vocabulary). NEVER invent facts, opinions, names, plans, or details he did not type or that aren't in his profile. ${toneHint}`;
+    const system = `You are a writing assistant helping ${owner}, a non-speaking person with cerebral palsy, write ${platformLabel}. They type with great difficulty so their input is heavily truncated and full of typos — interpret it generously. Rewrite as authentically THEM (their personality, humor, vocabulary). NEVER invent facts, opinions, names, plans, or details they did not type or that aren't in their profile. ${toneHint}`;
 
     const incomingBlock = data.incoming?.trim()
-      ? `# What he received / is replying to\n"""\n${data.incoming.trim()}\n"""\n`
+      ? `# What they received / is replying to\n"""\n${data.incoming.trim()}\n"""\n`
       : "";
 
     const user = `${profileBlock}
 ${data.context ? `# Context\n${data.context}\n` : ""}${incomingBlock}
-# What James typed (rough, may have typos / be truncated)
+# What ${owner} typed (rough, may have typos / be truncated)
 "${data.rawText}"
 
 Produce one polished version (the recommended one) plus 3 alternative variations with different tones (e.g. shorter / warmer / drier-witted). Return them via the tool call.`;
@@ -1549,15 +1556,16 @@ const extractInterestsSchema = z.object({
 export const extractInterests = createServerFn({ method: "POST" })
   .inputValidator((d) => extractInterestsSchema.parse(d))
   .handler(async ({ data }) => {
-    const system = `You are a careful profile-keeper for ${data.jamesName ?? "James"}, a non-speaking AAC user. Looking at a message he just wrote (and optionally what he received), suggest 0-3 SHORT additions to his profile that would help an AI assistant respond more like him in the future. Categories: "topic_loved" (a hobby/subject he clearly cares about), "current_context" (a current life event/plan/health/family update), "signature_phrase" (a recurring expression or way of speaking). Only suggest things clearly evidenced in the text. Skip if nothing meaningful is new. Each suggestion must be under 12 words. Do NOT repeat anything already present in his current profile fields.`;
+    const owner = data.jamesName?.trim() || "the user";
+    const system = `You are a careful profile-keeper for ${owner}, a non-speaking AAC user. Looking at a message they just wrote (and optionally what they received), suggest 0-3 SHORT additions to their profile that would help an AI assistant respond more like them in the future. Categories: "topic_loved" (a hobby/subject they clearly care about), "current_context" (a current life event/plan/health/family update), "signature_phrase" (a recurring expression or way of speaking). Only suggest things clearly evidenced in the text. Skip if nothing meaningful is new. Each suggestion must be under 12 words. Do NOT repeat anything already present in their current profile fields.`;
 
-    const user = `# Already in his profile (do NOT repeat)
+    const user = `# Already in their profile (do NOT repeat)
 Topics loved: ${data.currentTopicsLoved || "(none)"}
 Current life context: ${data.currentLifeContext || "(none)"}
 Signature phrases: ${data.currentSignaturePhrases || "(none)"}
 
-${data.incoming ? `# What he received\n"""\n${data.incoming}\n"""\n` : ""}
-# What he just wrote
+${data.incoming ? `# What they received\n"""\n${data.incoming}\n"""\n` : ""}
+# What they just wrote
 """
 ${data.draft}
 """
@@ -1747,9 +1755,10 @@ export const distillStyleProfile = createServerFn({ method: "POST" })
     }
 
     const jp = data.jamesProfile;
+    const owner = jp?.name ?? "the user";
     const profileLine = jp
       ? `${jp.name}${jp.communication ? ` — communication style: ${jp.communication}` : ""}`
-      : "James";
+      : "the user";
 
     // Compact sample list — cap to keep the prompt bounded.
     const sampleLines = data.samples.slice(0, 400).map((s, i) => {
@@ -1763,14 +1772,14 @@ export const distillStyleProfile = createServerFn({ method: "POST" })
       return `${i + 1}. ${tagStr} ${s.category}${who}: "${s.shown}"${edit}`;
     });
 
-    const system = `You distill James's communication style from real picked vs. ignored suggestions. Return a structured StyleProfileJson via the emit_profile tool. Be conservative — only assert patterns you can see in the samples.`;
+    const system = `You distill ${owner}'s communication style from real picked vs. ignored suggestions. Return a structured StyleProfileJson via the emit_profile tool. Be conservative — only assert patterns you can see in the samples.`;
     const user = `User: ${profileLine}
 Window: last ${data.windowDays} days, ${data.samples.length} logged suggestions.
 ${data.previous ? `Previous distilled profile (for reference, may be wrong/stale):\n${data.previous}\n` : ""}
 Sample log (one per line, with [picked|edited|ignored|shown] tag):
 ${sampleLines.join("\n")}
 
-Now emit a StyleProfileJson. Focus on what James KEEPS (picked) and how he REWRITES (edited). Treat (ignored) lines as anti-examples. Do not over-claim if signal is thin.`;
+Now emit a StyleProfileJson. Focus on what ${owner} KEEPS (picked) and how they REWRITE (edited). Treat (ignored) lines as anti-examples. Do not over-claim if signal is thin.`;
 
     const res = await chatCompletion(data.model ?? "google/gemini-2.5-pro", {
         messages: [
@@ -1866,7 +1875,7 @@ const tieBreakerSchema = z.object({
 export const aiRediarizeTieBreaker = createServerFn({ method: "POST" })
   .inputValidator((d) => tieBreakerSchema.parse(d))
   .handler(async ({ data }) => {
-    const system = `You are a forensic transcript reviewer. A non-speaking AAC user, James, just finished a conversation. A first-pass automatic diarizer assigned each utterance a speaker label, but several were ambiguous. The user has confirmed the full list of speakers in the room.
+    const system = `You are a forensic transcript reviewer. A non-speaking AAC user just finished a conversation. A first-pass automatic diarizer assigned each utterance a speaker label, but several were ambiguous. The user has confirmed the full list of speakers in the room.
 
 For EACH ambiguous candidate utterance you are given two possible speakers from the confirmed list. Decide who actually said it using BOTH:
 1. Voice-style cues already inferred from the rest of the transcript.
@@ -1972,6 +1981,8 @@ const enrichPersonSchema = z.object({
     dynamic_tags: z.array(z.string()).optional(),
   }),
   filteredTranscript: z.array(z.object({ speaker: z.string(), text: z.string() })).max(200),
+  /** Display name of the account owner (the AAC user in this pair). */
+  ownerName: z.string().optional(),
   model: z.string().optional(),
 });
 
@@ -2001,11 +2012,12 @@ export const enrichPersonProfile = createServerFn({ method: "POST" })
         error: null as string | null,
       };
     }
-    const system = `You analyse a transcript filtered to a SINGLE pair: James (a non-speaking AAC user) and ONE other person. You propose small, conservative updates to your stored profile of that person so future AI replies feel more attuned to them.
+    const owner = data.ownerName?.trim() || "the AAC user";
+    const system = `You analyse a transcript filtered to a SINGLE pair: ${owner} (a non-speaking AAC user) and ONE other person. You propose small, conservative updates to your stored profile of that person so future AI replies feel more attuned to them.
 
 Categories (only propose what is strongly evidenced — skip categories with no evidence):
 - interests (array): hobbies / subjects they clearly care about, each <= 5 words.
-- style_notes (text, append): how James interacts with THIS person specifically.
+- style_notes (text, append): how ${owner} interacts with THIS person specifically.
 - topics_loved (text, append): topics they brought up enthusiastically.
 - topics_avoided (text, append): topics they steered away from.
 - relationship_dynamics (text, append): freeform observation about the dynamic.
@@ -2020,7 +2032,7 @@ NEVER propose anything already present (verbatim or paraphrased). Be terse. Each
 Current stored profile:
 ${profileText}
 
-Filtered transcript (only turns by James and ${data.personName}):
+Filtered transcript (only turns by ${owner} and ${data.personName}):
 ${transcriptText}`;
 
     const res = await chatCompletion(data.model ?? "google/gemini-2.5-pro", {
@@ -2119,17 +2131,17 @@ export const detectIntroductions = createServerFn({ method: "POST" })
         error: null as string | null,
       };
     }
-    const system = `You scan a finished conversation transcript for SELF-INTRODUCTIONS by people James (a non-speaking AAC user) hadn't met before. For each genuine introduction, extract: the speaker's first name (preferred), role/relationship if explicit, and which speaker label uttered the introduction.
+    const system = `You scan a finished conversation transcript for SELF-INTRODUCTIONS by people ${data.jamesName} (a non-speaking AAC user) hadn't met before. For each genuine introduction, extract: the speaker's first name (preferred), role/relationship if explicit, and which speaker label uttered the introduction.
 
 Rules:
 - Only flag introductions for people NOT already in existingPeopleNames (case-insensitive, first-name match).
-- Confidence >= 0.7 required: the person must clearly introduce themselves, e.g. "Hi James, I'm Sarah from the agency", "This is Tom, I'll be helping today". Casual mentions of a third party DO NOT count.
-- If James says someone's name but they haven't introduced themselves, that does NOT count.
-- NEVER propose James himself.
+- Confidence >= 0.7 required: the person must clearly introduce themselves, e.g. "Hi ${data.jamesName}, I'm Sarah from the agency", "This is Tom, I'll be helping today". Casual mentions of a third party DO NOT count.
+- If ${data.jamesName} says someone's name but they haven't introduced themselves, that does NOT count.
+- NEVER propose ${data.jamesName} themselves.
 
 Return via emit_introductions tool. Empty array if nothing qualifies.`;
 
-    const user = `James's name: ${data.jamesName}
+    const user = `The AAC user's name: ${data.jamesName}
 Existing people in the address book: ${data.existingPeopleNames.join(", ") || "(none)"}
 
 Transcript:
@@ -2326,30 +2338,30 @@ export const predictMood = createServerFn({ method: "POST" })
     }
 
     const prosodyText = data.prosody
-      ? `Acoustic prosody summary (OTHER speaker; James is non-speaking):\n` +
+      ? `Acoustic prosody summary (OTHER speaker; the AAC user is non-speaking):\n` +
         `- mean RMS: ${data.prosody.otherMeanRms?.toFixed(3) ?? "n/a"}\n` +
         `- RMS variance: ${data.prosody.otherRmsVariance?.toFixed(4) ?? "n/a"}\n` +
         `- spectral centroid: ${data.prosody.otherSpectralCentroid?.toFixed(1) ?? "n/a"}\n`
       : "";
 
-    const system = `You infer the current emotional MOOD of James, a non-speaking AAC user, based on the live conversation he is in.
+    const system = `You infer the current emotional MOOD of the AAC user, a non-speaking person, based on the live conversation they are in.
 
-You DO NOT have his voice — he is non-speaking. Read:
+You DO NOT have their voice — they are non-speaking. Read:
 1. What the OTHER person/people just said (lexical cues — upset, joking, asking for help?).
 2. The conversational turn-by-turn dynamic.
 3. Optional acoustic prosody summary of the OTHER speaker.
 4. The previous mood (for stickiness — don't flip without evidence).
 
-Output ONE mood tag for the tone James should likely reply in:
+Output ONE mood tag for the tone the AAC user should likely reply in:
 - normal: neutral, default register.
 - calm: measured, gentle, low-energy.
 - excited: high-energy, animated, positive.
 - sad: quiet, reflective, low.
 - upset: frustrated, blunt, push-back.
-- empathetic: the OTHER person is venting/struggling — James should support them.
+- empathetic: the OTHER person is venting/struggling — the AAC user should support them.
 - amused: playful, joking, light.
 
-Be CONSERVATIVE. "normal" when nothing strongly suggests another tag. Confidence below 0.55 → return "normal". This auto-fills James's mood pill but he can override with one tap — prefer humility.`;
+Be CONSERVATIVE. "normal" when nothing strongly suggests another tag. Confidence below 0.55 → return "normal". This auto-fills the mood pill but the user can override with one tap — prefer humility.`;
 
     const user = `${data.previousMood ? `Previous mood: ${data.previousMood}\n\n` : ""}${prosodyText ? `${prosodyText}\n` : ""}Recent turns:
 ${transcriptText}`;
@@ -2365,7 +2377,7 @@ ${transcriptText}`;
             type: "function",
             function: {
               name: "emit_mood",
-              description: "Emit a single predicted mood for James's next reply",
+              description: "Emit a single predicted mood for the AAC user's next reply",
               parameters: {
                 type: "object",
                 properties: {

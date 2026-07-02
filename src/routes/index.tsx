@@ -28,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   db,
   getSettings,
+  getJamesProfile,
   newId,
   type Conversation,
   type EventItem,
@@ -56,7 +57,7 @@ import {
 import { getCrossSessionDeadPhrases } from "@/lib/style-evidence";
 import { labelTranscriptForPrompt } from "@/lib/speaker-id";
 import { extractIntroducedNames } from "@/lib/auto-person";
-import { seedJamesIfNeeded, backfillSuggestionsLogPersonIds } from "@/lib/seed";
+import { ensureOwnerProfile, backfillSuggestionsLogPersonIds } from "@/lib/seed";
 import { runStyleDistillation } from "@/lib/style-distill";
 import {
   rediarizeAfterStop,
@@ -271,6 +272,9 @@ function Home() {
   const [ipadModel, setIpadModel] = useState<string>("auto");
   const fastModelRef = useRef<string>("gemini/gemini-2.5-flash-lite");
   const smartModelRef = useRef<string>("gemini/gemini-2.5-flash");
+  // Account owner's display name, so transcript labels + the summary prompt
+  // read as whoever is signed in (not a hardcoded "James").
+  const ownerNameRef = useRef<string>("");
 
   // Speaker map
   // `speakerMap` only ever contains CONFIRMED entries (label -> personId).
@@ -370,7 +374,7 @@ function Home() {
     if (showPeoplePicker) void refreshVoiceprintStatus();
   }, [showPeoplePicker, refreshVoiceprintStatus]);
   useEffect(() => {
-    seedJamesIfNeeded();
+    void ensureOwnerProfile();
     // === Tier 1.1: one-time backfill of person_id on historical
     // suggestions_log rows so style-evidence aggregation has signal from
     // pre-existing conversations. ===
@@ -472,9 +476,10 @@ function Home() {
         } else {
           let forceNew = false;
           if (opts.allowSelfIntroOverride !== false) {
-            const introducedName = extractIntroducedNames([
-              { text, speaker_label: "" },
-            ])[0]?.name;
+            const introducedName = extractIntroducedNames(
+              [{ text, speaker_label: "" }],
+              ownerNameRef.current || undefined,
+            )[0]?.name;
             if (introducedName) {
               const preview = diarizerRef.current.peek(mfcc);
               if (preview.label && preview.wouldMerge) {
@@ -745,9 +750,10 @@ function Home() {
         const cluster = diarizerRef.current.get(speakerLabel);
         const status = clusterStatusRef.current[speakerLabel];
         if (cluster && status?.kind !== "confirmed") {
-          const introHere = extractIntroducedNames([
-            { text, speaker_label: speakerLabel },
-          ])[0]?.name;
+          const introHere = extractIntroducedNames(
+            [{ text, speaker_label: speakerLabel }],
+            ownerNameRef.current || undefined,
+          )[0]?.name;
           const askTarget = expectingNameForClusterRef.current;
           const isAskReply =
             askTarget !== null && (askTarget === speakerLabel || askTarget === "");
@@ -1033,6 +1039,9 @@ function Home() {
         s.fast_model ?? s.suggestion_model ?? "gemini/gemini-2.5-flash-lite";
       smartModelRef.current = s.smart_model ?? "gemini/gemini-2.5-flash";
 
+      const prof = await getJamesProfile();
+      if (!cancelled) ownerNameRef.current = prof.display_name ?? "";
+
       const people = await db.people.orderBy("name").toArray();
       if (!cancelled) setAllPeople(people);
 
@@ -1239,6 +1248,7 @@ function Home() {
               transcript,
               placeName: placeName ?? undefined,
               peopleNames,
+              ownerName: ownerNameRef.current || undefined,
               model: smartModelRef.current,
             },
           });
@@ -1366,6 +1376,7 @@ function Home() {
         speakerMapRef.current,
         peopleById,
         jamesLabelRef.current,
+        ownerNameRef.current || undefined,
       );
       const ctx = await buildConversationContext({
         personIds: personIdsRef.current,
@@ -2094,6 +2105,7 @@ function Home() {
         speakerMapRef.current,
         peopleById,
         jamesLabelRef.current,
+        ownerNameRef.current || undefined,
       );
       const ctx = await buildConversationContext({
         personIds: personIdsRef.current,
@@ -2232,6 +2244,7 @@ function Home() {
           speakerMapRef.current,
           peopleById,
           jamesLabelRef.current,
+          ownerNameRef.current || undefined,
         );
         const ctx = await buildConversationContext({
           personIds: personIdsRef.current,

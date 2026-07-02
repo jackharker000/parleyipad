@@ -1,4 +1,4 @@
-import { db, getJamesProfile, type EventItem, type Person, type Place } from "./db";
+import { db, getJamesProfile, ownerName, type EventItem, type Person, type Place } from "./db";
 import { getStyleEvidence, type StyleEvidence } from "./style-evidence";
 import { formatMemoryForPrompt, retrieveTopK } from "./retrieval";
 
@@ -371,6 +371,7 @@ export async function buildConversationContext(opts: {
   }
 
   const profile = await getJamesProfile();
+  const owner = ownerName(profile);
   const styleProfile = await db.style_profile.get("singleton");
 
   // Reference documents attached to James's profile — fold into freeform
@@ -390,7 +391,7 @@ export async function buildConversationContext(opts: {
   }
   const freeformCombined = [
     profile.freeform_notes,
-    docsBlock.trim() ? `Reference documents about James:${docsBlock}` : "",
+    docsBlock.trim() ? `Reference documents about ${owner}:${docsBlock}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -510,7 +511,7 @@ export async function buildConversationContext(opts: {
 
   const context: ConversationContext = {
     jamesProfile: {
-      name: profile.display_name || "James",
+      name: owner,
       background: profile.background,
       personality: profile.personality,
       humor: profile.humor_style,

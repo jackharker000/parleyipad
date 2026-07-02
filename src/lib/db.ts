@@ -611,9 +611,32 @@ export async function updateSettings(patch: Partial<Settings>) {
 
 export const DEFAULT_JAMES_PROFILE: JamesProfile = {
   id: "singleton",
-  display_name: "James",
+  // Blank by default so a brand-new account doesn't inherit "James". First-run
+  // onboarding captures the real owner's name (see OwnerOnboarding). Existing
+  // installs already have their name stored, so they're unaffected.
+  display_name: "",
   updated_at: 0,
 };
+
+/**
+ * The display name of the account owner — the non-speaking user this app
+ * speaks FOR. Single source of truth for every prompt and UI label so the
+ * app reads as whoever's actually signed in, not a hardcoded "James".
+ * Falls back to a neutral term only if onboarding hasn't set a name yet.
+ */
+export function ownerName(
+  profile?: Pick<JamesProfile, "display_name"> | null,
+): string {
+  const n = profile?.display_name?.trim();
+  return n && n.length > 0 ? n : "the user";
+}
+
+/** True when no owner name has been set yet — drives first-run onboarding. */
+export function needsOwnerOnboarding(
+  profile?: Pick<JamesProfile, "display_name"> | null,
+): boolean {
+  return !profile?.display_name?.trim();
+}
 
 export async function getJamesProfile(): Promise<JamesProfile> {
   const existing = await db.james_profile.get("singleton");

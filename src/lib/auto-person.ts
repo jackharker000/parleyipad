@@ -14,9 +14,11 @@ const SELF_INTRO_REGEXES = [
 ];
 
 // Words that look like names but aren't. Compared case-insensitively.
+// NOTE: the account owner's own name is excluded dynamically (see the
+// `ownerName` param below) rather than hardcoded here, so this list stays
+// generic across every user of the app.
 const STOP_NAMES = new Set(
   [
-    "James",
     "Mr",
     "Mrs",
     "Ms",
@@ -97,18 +99,27 @@ function normaliseName(raw: string): string | null {
   return stripped[0].toUpperCase() + stripped.slice(1).toLowerCase();
 }
 
-/** Names introduced via self-intro patterns in the transcript. */
+/**
+ * Names introduced via self-intro patterns in the transcript.
+ *
+ * `ownerName` (the signed-in account owner) is excluded so the app never
+ * proposes creating a Person record for the user it's speaking as — even
+ * when their own name is spoken during an introduction.
+ */
 export function extractIntroducedNames(
   segments: { text: string; speaker_label: string }[],
+  ownerName?: string,
 ): { name: string; speaker_label: string }[] {
   const out: { name: string; speaker_label: string }[] = [];
   const seen = new Set<string>();
+  const ownerLc = ownerName?.trim().toLowerCase();
   for (const seg of segments) {
     for (const rx of SELF_INTRO_REGEXES) {
       const m = seg.text.match(rx);
       if (m?.[1]) {
         const name = normaliseName(m[1]);
         if (!name) continue;
+        if (ownerLc && name.toLowerCase() === ownerLc) continue;
         const key = name.toLowerCase() + "|" + seg.speaker_label;
         if (seen.has(key)) continue;
         seen.add(key);
